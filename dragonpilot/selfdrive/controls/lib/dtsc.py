@@ -44,8 +44,8 @@ DECEL_BP = np.array([1.0, 1.5, 2.0, 2.5, 3.0])
 DECEL_V  = np.array([0.0, -0.5, -1.5, -3.0, -3.5])
 
 # --- 減速度與遲滯限制 ---
-MAX_COMFORT_DECEL = -2.5       # 最大舒適減速度 (-3.0 m/s²)
-EMERGENCY_DECEL   = -3.5       # 緊急減速極限
+MAX_COMFORT_DECEL = -2.0       # 最大舒適減速度 (-3.0 m/s²)
+EMERGENCY_DECEL   = -3.0       # 緊急減速極限
 MIN_CURVE_DISTANCE = 10.0      # 彎道距離小於 10m 視為緊急
 MAX_EXIT_ACCEL = 0.4           # 出彎最大加速度
 
