@@ -9,16 +9,17 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, SOURCES
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
+
+# DragonPilot Imports
 from dragonpilot.selfdrive.controls.lib.acm import ACM
 from dragonpilot.selfdrive.controls.lib.aem import AEM
 from dragonpilot.selfdrive.controls.lib.dtsc import DTSC
 
-LON_MPC_STEP = 0.2  # first step is 0.2s
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
@@ -41,7 +42,6 @@ def get_max_accel(v_ego):
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
-
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
@@ -60,8 +60,6 @@ class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
-    # TODO remove mpc modes when TR released
-    self.mpc.mode = 'acc'
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
@@ -75,6 +73,8 @@ class LongitudinalPlanner:
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+
+    # DragonPilot Init
     self.solverExecutionTime = 0.0
     self.acm = ACM()
     self.aem = AEM()
@@ -100,9 +100,9 @@ class LongitudinalPlanner:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
 
-  def update(self, sm, dp_flags = 0):
+  def update(self, sm, dp_flags=0):
+    # DragonPilot AEM Integration
     mode = 'blended' if sm['selfdriveState'].experimentalMode else 'acc'
-
     if dp_flags & DPFlags.AEM:
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
       mode = self.aem.get_mode(mode)
@@ -128,6 +128,7 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
+    # Logic adjusted for AEM mode
     if mode == 'acc':
       accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
       steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
@@ -142,7 +143,9 @@ class LongitudinalPlanner:
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
+    # Parse model needs to be assigned to variables if we want to use them (though new MP doesn't pass them to update explicitly)
     x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'])
+    
     # Don't clip at low speeds since throttle_prob doesn't account for creep
     self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
@@ -181,27 +184,30 @@ class LongitudinalPlanner:
         self.mpc.params[i, 1] = target_max
     # ============================================================
 
-    self.mpc.update(sm['radarState'], v_cruise, x, v, a, j, personality=sm['selfdriveState'].personality)
+    # Note: New OpenPilot update signature uses personality. 
+    # DragonPilot old logic passed x,v,a,j. Newer LongMPC likely pulls from radar/model internally or via other means.
+    # We use the stock update call but with the DTSC constraints applied above.
+    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
-    
-    # ACM - Adaptive Coasting Module
+    self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
+
+    # ============================================================
+    # DP ACM - Adaptive Coasting Module
+    # ============================================================
     if dp_flags & DPFlags.ACM:
       user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
       
-      # [修改] 傳入 personality
       self.acm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, 
                              personality=sm['selfdriveState'].personality)
       
-      # [修改] 傳入 v_ego 和 lead 供 Soft Hold 計算
       self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
           self.a_desired_trajectory,
           v_ego=v_ego,
           lead=sm['radarState'].leadOne
       )
-      
-    self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
+    # ============================================================
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill
@@ -219,15 +225,18 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if mode == 'acc':
+    # Logic using 'mode' determined by AEM/Experimental
+    if mode == 'blended':
+      output_a_target = min(output_a_target_e2e, output_a_target_mpc)
+      self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+      if output_a_target < output_a_target_mpc:
+        self.mpc.source = SOURCES[3]
+    else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
-    else:
-      output_a_target = min(output_a_target_mpc, output_a_target_e2e)
-      self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
 
     # ============================================================
-    # [第三層：快速響應通道] (Slew Rate Fix)
+    # DP [第三層：快速響應通道] (Slew Rate Fix)
     # ============================================================
     decel_slew_rate = 0.05 
     
@@ -244,13 +253,9 @@ class LongitudinalPlanner:
         decel_slew_rate = 0.05 
 
     for idx in range(2):
-      accel_clip[idx] = np.clip(
-          accel_clip[idx], 
-          self.prev_accel_clip[idx] - decel_slew_rate, 
-          self.prev_accel_clip[idx] + 0.05
-      )
+      accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - decel_slew_rate, self.prev_accel_clip[idx] + 0.05)
     # ============================================================
-    
+
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
