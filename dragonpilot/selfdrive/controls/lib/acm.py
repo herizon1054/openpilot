@@ -2,7 +2,11 @@ import time
 import numpy as np
 from cereal import log
 from openpilot.common.swaglog import cloudlog
-# [新增] 引入 MPC 計算安全距離所需的常數與函式
+
+# ==============================================================================
+# [移植注意] 引入 MPC 函式庫
+# 目的：為了計算與 MPC 一致的「安全跟車距離」，需要引用 long_mpc 的物理常數與公式。
+# ==============================================================================
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   COMFORT_BRAKE, STOP_DISTANCE, get_safe_obstacle_distance, 
   get_stopped_equivalence_factor, get_T_FOLLOW
@@ -33,10 +37,22 @@ LEAD_COOLDOWN_TIME = 0.5
 SPEED_BP = [0., 10., 20., 30.]
 MIN_DIST_V = [15., 20., 25., 30.]
 
-# --- [新增] Soft Hold (預防點頭) 參數 ---
-SOFT_HOLD_ACCEL = -0.00       # 限制為 0 加速度 (滑行)，避免正向加速
-SOFT_HOLD_RANGE_MIN = 0.76    # 觸發下限 (76%)
-SOFT_HOLD_RANGE_MAX = 1.00    # 觸發上限 (100%)
+# ==============================================================================
+# [Soft Hold 參數設定] 防止煞車點頭 (Anti-Nodding)
+# 原理：MPC 在距離 < 75% 安全距離時會觸發 DANGER_ZONE_COST (急煞)。
+#       我們在 76% ~ 100% 這個緩衝區間提早介入，強迫滑行，避免「撞牆」。
+# ==============================================================================
+SOFT_HOLD_ACCEL = -0.00       # 強制限制加速度上限 (0.0=滑行, -0.05=微煞)
+SOFT_HOLD_RANGE_MIN = 0.76    # 觸發下限：76% 安全距離 (低於此值交給 MPC 急煞)
+SOFT_HOLD_RANGE_MAX = 1.00    # 觸發上限：100% 安全距離 (進入理想距離即開始防守)
+
+# ==============================================================================
+# [Soft Stop 參數設定] 防止煞停頓挫 (Soft Stop)
+# 原理：解決低速煞停最後一刻，因距離些微誤差觸發 MPC 急煞導致的「頓一下」。
+# ==============================================================================
+SOFT_STOP_SPEED_MAX = 5.0     # 啟用速度：低於 5 m/s (18 km/h) 才介入
+SOFT_STOP_MAX_DECEL = -1.35   # 限制最大煞車力道 (太小會煞不住，太大会頓挫)
+SOFT_STOP_RANGE_CRITICAL = 0.50 # 緊急界線：如果距離剩不到 50% (約2.7米)，取消限制
 
 class ACM:
   def __init__(self):
@@ -53,7 +69,7 @@ class ACM:
     self.current_pitch = 0.0
     self.current_max_offset = 0.0 
 
-    # [新增] 記錄駕駛風格
+    # [移植注意] 需紀錄駕駛風格 (Personality) 以計算正確的 T_FOLLOW
     self.personality = log.LongitudinalPersonality.standard
 
   def _check_emergency_conditions(self, lead, v_ego, current_time):
@@ -113,9 +129,9 @@ class ACM:
             not in_cooldown and
             self._is_in_coast_window)
 
-  # [修改] 增加 personality 參數
+  # [移植注意] update_states 介面變更：新增 personality 參數
   def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, personality=log.LongitudinalPersonality.standard):
-    self.personality = personality # 更新風格
+    self.personality = personality # 儲存當前 OP 的駕駛風格設定
     
     if not self.enabled or len(cc.orientationNED) != 3:
       self.active = False
@@ -144,62 +160,76 @@ class ACM:
 
     self._active_prev = self.active
 
-  # [新增] Soft Hold 核心邏輯
+  # ============================================================================
+  # [Soft Hold + Soft Stop 核心邏輯]
+  # ============================================================================
   def _apply_soft_hold(self, a_desired_trajectory, v_ego, lead):
-    # 1. 如果沒有前車，直接跳過
+    # 1. 前置檢查：無前車則不介入
     if not lead.status:
       return a_desired_trajectory
 
-    # 2. 坡度檢查：太陡的上坡或下坡都不啟用
-    # 上坡 > 1.5% (0.015) -> 不啟用 (需要動力爬坡)
-    # 下坡 < -3.0% (-0.030) -> 不啟用 (避免滑行過快，交給 MPC/DTSC)
+    # 2. 坡度保護 (重要！)：
+    #    上坡 (>1.5%)：需要油門爬坡，禁止限制加速度，否則會掉速。
+    #    下坡 (<-3.0%)：重力會讓車加速，禁止強制滑行，交給 MPC 原生邏輯處理煞車。
     if self.current_pitch > PITCH_UPHILL_THRESHOLD or self.current_pitch < PITCH_DOWNHILL_THRESHOLD:
       return a_desired_trajectory
 
-    # 3. 取得當前風格的跟車時間 (T_FOLLOW)
+    # 3. [Hybrid 油電修正 + 靜止鎖定]
+    #    修改點：增加 (and lead.vLead > 0.2) 條件。
+    #    意義：只有當前車「真的在動」且「正在遠離」時，才解除 Soft Hold。
+    #    效果：防止前車靜止時，因雷達 vRel 雜訊跳動導致的「煞停後又蠕行」問題。
+    if lead.vRel > 0.1 and lead.vLead > 0.2:
+        return a_desired_trajectory
+
+    # 4. 計算 100% 理想安全距離
     t_follow = get_T_FOLLOW(self.personality)
-
-    # 4. 計算 100% 理想安全距離 (參考 long_mpc 公式)
     desired_dist = get_safe_obstacle_distance(v_ego, t_follow)
-
-    # 5. 計算前車等效距離 (雷達距離 + 靜止等效因子)
     lead_obstacle_dist = lead.dRel + get_stopped_equivalence_factor(lead.vLead)
 
-    # 6. 計算距離比例 Ratio
+    # 5. 計算距離比例 (Ratio)
     if desired_dist < 0.1:
       ratio = 10.0
     else:
       ratio = lead_obstacle_dist / desired_dist
 
-    # 7. 判斷是否在 76% ~ 100% 緩衝區間
+    # --- 邏輯 A: Soft Hold (防止煞車點頭) ---
+    #    區間：0.76 < Ratio < 1.00
+    #    動作：限制正向加速為 0 (滑行)
     if SOFT_HOLD_RANGE_MIN < ratio < SOFT_HOLD_RANGE_MAX:
-      # 強制將加速度上限壓在 -0.00 (滑行)
-      # 若 MPC 原本要加速 (>0)，會被壓回 0
-      # 若 MPC 原本要煞車 (<-0.5)，保持原煞車值
-      return np.minimum(a_desired_trajectory, SOFT_HOLD_ACCEL)
+      a_desired_trajectory = np.minimum(a_desired_trajectory, SOFT_HOLD_ACCEL)
+
+    # --- 邏輯 B: Soft Stop (防止低速煞停頓挫) ---
+    #    條件：低速 (<18kph) 且 距離尚可 (>50%)
+    #    動作：限制最大煞車力道，避免 MPC 因距離誤差觸發急煞
+    if (v_ego < SOFT_STOP_SPEED_MAX) and (ratio > SOFT_STOP_RANGE_CRITICAL):
+        # np.maximum 限制負值不要太負 (例如 -3.0 -> -1.35)
+        a_desired_trajectory = np.maximum(a_desired_trajectory, SOFT_STOP_MAX_DECEL)
 
     return a_desired_trajectory
 
-  # [修改] 增加 v_ego 與 lead 參數
+  # [移植注意] update_a_desired_trajectory 介面變更：新增 v_ego, lead 參數
   def update_a_desired_trajectory(self, a_desired_trajectory, v_ego=0.0, lead=None):
     
     traj = a_desired_trajectory
 
-    # 1. 執行原本的 ACM 邏輯 (遠距離滑行)
+    # --- 階段 1: ACM 原生邏輯 (遠距離滑行) ---
     if self.active:
       min_accel = np.min(traj)
+      # 安全檢查：若 MPC 請求急煞，強制退出 ACM
       if min_accel < EMERGENCY_DECEL_THRESHOLD:
         cloudlog.warning(f"ACM aborting: MPC requested {min_accel:.2f} m/s² braking")
         self.active = False
       else:
+        # ACM 運作中：將微減速 (-1.0 ~ 0) 全部抹平為 0 (滑行)
         modified_trajectory = np.copy(traj)
         for i in range(len(modified_trajectory)):
           if -1.0 < modified_trajectory[i] < 0:
             modified_trajectory[i] = 0.0
         traj = modified_trajectory
     
-    # 2. 執行 Soft Hold 邏輯 (近距離緩衝)
-    # 這是最後一道防線，權限高於 ACM
+    # --- 階段 2: Soft Hold & Stop 邏輯 (近距離/跟車) ---
+    # 這是最後一道防線，權限高於 ACM。
+    # 即使 ACM 說可以滑行，如果進入 Soft Hold 區間，這裡會再次檢查。
     if lead is not None:
         traj = self._apply_soft_hold(traj, v_ego, lead)
     
