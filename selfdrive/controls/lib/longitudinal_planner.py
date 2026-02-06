@@ -15,10 +15,19 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
+# ============================================================
 # DragonPilot Imports
+# ============================================================
 from dragonpilot.selfdrive.controls.lib.acm import ACM
 from dragonpilot.selfdrive.controls.lib.aem import AEM
 from dragonpilot.selfdrive.controls.lib.dtsc import DTSC
+
+class DPFlags:
+  ACM = 1
+  AEM = 2
+  DTSC = 2 ** 2
+
+# ============================================================
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -29,12 +38,6 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
-
-class DPFlags:
-  ACM = 1
-  AEM = 2
-  DTSC = 2 ** 2
-  pass
 
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
@@ -47,8 +50,6 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns
   """
-  # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
-  # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
   a_y = v_ego ** 2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
   a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
@@ -74,11 +75,13 @@ class LongitudinalPlanner:
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
+    # ============================================================
     # DragonPilot Init
-    self.solverExecutionTime = 0.0
+    # ============================================================
     self.acm = ACM()
     self.aem = AEM()
     self.dtsc = DTSC(aggressiveness=0.8)
+    # ============================================================
 
   @staticmethod
   def parse_model(model_msg):
@@ -101,11 +104,15 @@ class LongitudinalPlanner:
     return x, v, a, j, throttle_prob
 
   def update(self, sm, dp_flags=0):
-    # DragonPilot AEM Integration
+    # ============================================================
+    # DP AEM Integration (Pre-Calculation)
+    # Determine mode (ACC vs Blended/Sport) early to affect limits
+    # ============================================================
     mode = 'blended' if sm['selfdriveState'].experimentalMode else 'acc'
     if dp_flags & DPFlags.AEM:
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
       mode = self.aem.get_mode(mode)
+    # ============================================================
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -128,13 +135,17 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    # Logic adjusted for AEM mode
+    # ============================================================
+    # DP AEM Logic: Adjust Accel Clip based on Mode
+    # ============================================================
     if mode == 'acc':
       accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
       steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
       accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
     else:
+      # In blended/sport mode, we allow full acceleration range (ignoring turn limits)
       accel_clip = [ACCEL_MIN, ACCEL_MAX]
+    # ============================================================
 
     if reset_state:
       self.v_desired_filter.x = v_ego
@@ -143,8 +154,9 @@ class LongitudinalPlanner:
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
-    # Parse model needs to be assigned to variables if we want to use them (though new MP doesn't pass them to update explicitly)
-    x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'])
+    
+    # Need to parse model for throttle prob
+    _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
     
     # Don't clip at low speeds since throttle_prob doesn't account for creep
     self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
@@ -161,15 +173,15 @@ class LongitudinalPlanner:
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
 
     # ============================================================
-    # DP DTSC 混合雙效控制 (Hybrid Control)
+    # DP DTSC Integration (Hybrid Control - Pre MPC)
     # ============================================================
     if dp_flags & DPFlags.DTSC:
-      # [第一層：規劃層] (Planning Level)
+      # Layer 1: Planning Level (Reduce Cruise Speed)
       dtsc_suggested_speed = getattr(self.dtsc, 'get_suggested_speed', lambda: 255.0)()
       if dtsc_suggested_speed < 254.0:
           v_cruise = min(v_cruise, dtsc_suggested_speed)
 
-      # [第二層：限制層] (Constraint Level)
+      # Layer 2: Constraint Level (MPC Limits)
       a_min_dtsc, a_max_dtsc = self.dtsc.get_mpc_constraints(
         sm['modelV2'], v_ego, accel_clip[0], accel_clip[1])
 
@@ -177,6 +189,7 @@ class LongitudinalPlanner:
         target_min = max(accel_clip[0], a_min_dtsc[i])
         target_max = min(accel_clip[1], a_max_dtsc[i])
 
+        # Safety check: ensure min <= max
         if target_min > target_max:
              target_min = target_max - 0.05
 
@@ -184,9 +197,7 @@ class LongitudinalPlanner:
         self.mpc.params[i, 1] = target_max
     # ============================================================
 
-    # Note: New OpenPilot update signature uses personality. 
-    # DragonPilot old logic passed x,v,a,j. Newer LongMPC likely pulls from radar/model internally or via other means.
-    # We use the stock update call but with the DTSC constraints applied above.
+    # Run MPC
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -194,7 +205,7 @@ class LongitudinalPlanner:
     self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
 
     # ============================================================
-    # DP ACM - Adaptive Coasting Module
+    # DP ACM Integration (Post MPC Trajectory Modification)
     # ============================================================
     if dp_flags & DPFlags.ACM:
       user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
@@ -225,7 +236,7 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    # Logic using 'mode' determined by AEM/Experimental
+    # Use the mode determined by AEM earlier
     if mode == 'blended':
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
@@ -236,7 +247,7 @@ class LongitudinalPlanner:
       self.output_should_stop = output_should_stop_mpc
 
     # ============================================================
-    # DP [第三層：快速響應通道] (Slew Rate Fix)
+    # DP Dynamic Slew Rate (For smoother or harder braking)
     # ============================================================
     decel_slew_rate = 0.05 
     
@@ -248,14 +259,13 @@ class LongitudinalPlanner:
     is_dtsc_braking = (is_dtsc_active and output_a_target < 0.0)
 
     if is_dtsc_braking:
-        decel_slew_rate = 0.10  
+        decel_slew_rate = 0.10 # Harder braking for DTSC
     elif is_aem_braking:
-        decel_slew_rate = 0.05 
+        decel_slew_rate = 0.05 # Standard slew for AEM/Blended
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - decel_slew_rate, self.prev_accel_clip[idx] + 0.05)
-    # ============================================================
-
+    
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
