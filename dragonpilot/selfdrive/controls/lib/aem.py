@@ -97,7 +97,7 @@ class AEM:
 
         # 8. 決策邏輯 (Debounce 防抖動)
         TRIGGER_THRESHOLD = 0.45
-        CONFIRMATION_FRAMES = 5
+        CONFIRMATION_FRAMES = 4
 
         if self.urgency_val > TRIGGER_THRESHOLD:
             self.high_urgency_counter += 1
