@@ -54,9 +54,9 @@ SOFT_STOP_SPEED_MIN = 0.5     # [修改] 極低速：0.5 m/s (1.8 km/h)
 # 速度 > 18km/h 時，允許最大煞車力道為 -1.35 (正常減速)
 # 速度 < 1.8km/h 時，限制最大煞車力道為 -0.50 (極致柔順，消除點頭)
 SOFT_STOP_MAX_DECEL = -1.35   
-SOFT_STOP_MIN_DECEL = -0.50   
+SOFT_STOP_MIN_DECEL = -0.75   
 
-SOFT_STOP_RANGE_CRITICAL = 0.50 # 緊急界線：距離剩不到 50% 則取消限制 (安全優先)
+SOFT_STOP_RANGE_CRITICAL = 0.60 # 緊急界線：距離剩不到 50% 則取消限制 (安全優先)
 
 class ACM:
   def __init__(self):
