@@ -155,14 +155,19 @@ class ACM:
     if self.current_pitch > PITCH_UPHILL_THRESHOLD:
       return a_desired_trajectory
       
-    # [修改] 下坡不再直接 return，而是進入下方的特殊處理邏輯
-
     # 3. [優化] 起步/加速保護
     #    如果前車正在遠離 (vRel > 0)，立即解除限制，避免跟車遲鈍。
     if lead.vRel > 0.1 and lead.vLead > 0.2:
         return a_desired_trajectory
 
-    # 4. 計算安全距離與比例
+    # 4. [新增優化] 前車靜止/極低速 (紅燈排隊) -> 禁用 Soft Hold
+    #    0.5 m/s 約 1.8 km/h。當前車幾乎不動時，將控制權完全交還給 MPC。
+    #    這允許 MPC 在最後煞停階段執行「鬆煞車」的微修正，避免被 Soft Hold 
+    #    強制壓著減速，從而消除最後一哩路的僵硬感與頓挫。
+    if lead.vLead < 0.5:
+        return a_desired_trajectory
+
+    # 5. 計算安全距離與比例
     t_follow = get_T_FOLLOW(self.personality)
     desired_dist = get_safe_obstacle_distance(v_ego, t_follow)
     lead_obstacle_dist = lead.dRel + get_stopped_equivalence_factor(lead.vLead)
