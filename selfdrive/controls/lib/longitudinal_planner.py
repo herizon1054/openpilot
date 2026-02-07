@@ -191,7 +191,7 @@ class LongitudinalPlanner:
     self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
 
     # ============================================================
-    # DP ACM Integration (Modified for 76% Coasting Fix)
+    # DP ACM Integration (方案A：起步保護 + 官方加速度限制)
     # ============================================================
     if dp_flags & DPFlags.ACM:
       user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
@@ -199,10 +199,9 @@ class LongitudinalPlanner:
       self.acm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, 
                              personality=sm['selfdriveState'].personality)
       
-      # [DP TWEAK] 起步保護邏輯：
-      # 將門檻提高到 30 km/h (約 8.33 m/s)。
-      # 當車速低於此數值且 MPC 請求正向加速 (>0.1) 時，強制跳過 ACM 的軌跡修正。
-      # 確保 0-30km/h 的起步過程動力連貫，不會被 76% 滑行邏輯切斷。
+      # [方案A 重點] 起步保護邏輯：
+      # 當車速 < 30 km/h (8.33 m/s) 且正在加速 (>0.1) 時，強制跳過 ACM。
+      # 這會讓 MPC 保持官方的加速起點，避免掉入滑行區間的「負加速度深坑」。
       is_starting_up = v_ego < 8.33 and self.a_desired_trajectory[0] > 0.1
       
       if not is_starting_up:
@@ -237,7 +236,7 @@ class LongitudinalPlanner:
       self.output_should_stop = output_should_stop_mpc
 
     # ============================================================
-    # DP Dynamic Slew Rate (Fix for slow acceleration buildup)
+    # DP Dynamic Slew Rate (方案A：僅保留減速邏輯，加速恢復官方設定)
     # ============================================================
     decel_slew_rate = 0.05 
     
@@ -253,16 +252,11 @@ class LongitudinalPlanner:
     elif is_aem_braking:
         decel_slew_rate = 0.05
 
-    # [DP TWEAK] 動態加速 Slew Rate：
-    # 解決起步時加速度被鎖定在 +0.05/step 導致的階梯式爬升問題。
-    # 當車速 < 8.33 m/s (30 km/h) 時，允許加速度每幀增加 0.12，讓起步更靈敏。
-    accel_up_slew = 0.12 if v_ego < 8.33 else 0.05
-
     for idx in range(2):
       accel_clip[idx] = np.clip(
           accel_clip[idx], 
           self.prev_accel_clip[idx] - decel_slew_rate, 
-          self.prev_accel_clip[idx] + accel_up_slew
+          self.prev_accel_clip[idx] + 0.05 # [方案A] 恢復官方 +0.05 設定
       )
     
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
