@@ -36,7 +36,7 @@ SOFT_HOLD_RANGE_MAX = 1.00    # 觸發上限：100% 安全距離
 # --- 4. Soft Stop (防頓挫) 參數 ---
 # 作用：低速煞停時限制最大減速度，避免點頭
 SOFT_STOP_SPEED_MAX = 5.0     # 啟用速度：< 5 m/s (18 km/h)
-SOFT_STOP_MAX_DECEL = -1.35   # 最大煞車力道限制
+SOFT_STOP_MAX_DECEL = -1.50   # 最大煞車力道限制
 SOFT_STOP_RANGE_CRITICAL = 0.50 # 緊急界線：距離剩 50% 時取消限制
 
 # --- 5. 其他常數 ---
