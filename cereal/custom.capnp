@@ -12,6 +12,13 @@ $Cxx.namespace("cereal");
 
 struct ControlsStateExt @0x81c2f05a394cf4af {
   alkaActive @0 :Bool;
+  accelPersonality @1 :AccelerationPersonality;
+
+  enum AccelerationPersonality {
+    sport @0;
+    normal @1;
+    eco @2;
+  }
 }
 
 struct CarStateExt @0xaedffd8f31e7b55d {

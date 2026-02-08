@@ -132,7 +132,25 @@ SETTINGS = [
         "title": lambda: tr("Dynamic Turn Speed Control (DTSC)"),
         "description": lambda: tr("DTSC automatically adjusts the vehicle's predicted speed based on upcoming road curvature and grip conditions.<br>Originally from the openpilot TACO branch."),
       },
-
+      {
+        "key": "AccelPersonalityEnabled",
+        "type": "toggle_item",
+        "title": lambda: tr("Dynamic Accel Personality"),
+        "description": lambda: tr(""),
+      },
+      {
+        "key": "AccelPersonality",
+        "type": "text_spin_button_item",
+        "title": lambda: tr("Accel Personality"),
+        "description": lambda: tr(""),
+        "default": 1,
+        "options": [
+          lambda: tr("sport"),
+          lambda: tr("normal"),
+          lambda: tr("eco"),
+        ],
+        "condition": "not MICI",
+      },
     ],
   },
   {

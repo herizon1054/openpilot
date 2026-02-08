@@ -16,6 +16,8 @@ else:
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx import AcadosOcpSolverCython
 
 from casadi import SX, vertcat
+from dragonpilot.selfdrive.controls.lib.accel_controller import AccelPersonalityController
+
 
 MODEL_NAME = 'long'
 LONG_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -220,6 +222,7 @@ class LongitudinalMpc:
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     self.reset()
     self.source = SOURCES[2]
+    self.accel_controller = AccelPersonalityController()
 
   def reset(self):
     self.solver.reset()
@@ -320,6 +323,15 @@ class LongitudinalMpc:
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
+    if self.accel_controller.is_enabled():
+      min_accel = self.accel_controller.get_min_accel(v_ego)
+      max_accel = self.accel_controller.get_max_accel(v_ego)
+    else:
+      min_accel = CRUISE_MIN_ACCEL
+      max_accel = CRUISE_MAX_ACCEL
+    a_cruise_min = min_accel
+    a_cruise_max = max_accel
+
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
 
@@ -331,9 +343,9 @@ class LongitudinalMpc:
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
-    v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
+    v_lower = v_ego + (T_IDXS * a_cruise_min * 1.05)
     # TODO does this make sense when max_a is negative?
-    v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
+    v_upper = v_ego + (T_IDXS * a_cruise_max * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
 
