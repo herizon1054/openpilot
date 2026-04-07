@@ -1,24 +1,13 @@
-import os
 import time
 from enum import Enum, auto
 
 from openpilot.common.params import Params
 
 
-LOG_PATH = "/data/media/0/realdata/debug.log"
 PARAM_REFRESH_SEC = 2.0
 MIN_SPEED_MS = 0.1
-# 最高車速限制約 35 km/h，超過此速度的大轉向屬危險動作，HTD 拒絕作動
+# [安全鎖 4] 最高車速限制，約 35 km/h。超過此速度的 90 度大轉向屬危險動作，HTD 拒絕作動
 MAX_SPEED_MS = 9.72
-
-
-def _log(message: str) -> None:
-  try:
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-      f.write(f"{time.time():.3f} {message}\n")
-  except Exception:
-    pass
 
 
 class HTDState(Enum):
@@ -37,10 +26,12 @@ class HumanTurnDetection:
     self._angle_threshold_deg = 90.0
 
     # --- 以下為寫死的系統參數，不再從 Params 讀取 ---
+    # 統一釋放角度為 20 度
     self._angle_release_deg = 20.0
     self._torque_start_nm = 2.0
     self._torque_release_nm = 0.6
-    self._resume_angle_lock_deg = 90.0
+    # [新增] 安全接管角度鎖：當角度大於此值時，即使秒數倒數完畢也拒絕恢復自動駕駛
+    self._resume_angle_lock_deg = 60.0
 
     self._state: HTDState = HTDState.INACTIVE
     self._state_change_time = 0.0
@@ -65,18 +56,16 @@ class HumanTurnDetection:
       return
     self._last_params_read = now
     
-    # 僅讀取 UI 上有開放設定的參數，並限制頻率避免 100Hz 迴圈中的 I/O 延遲
+    # 僅讀取 UI 上有開放設定的參數，避免其他未註冊的參數引發 Exception
     self._enabled = self._params.get_bool("dp_htd_enabled")
     self._angle_threshold_deg = self._get_float("dp_htd_turn_angle_threshold", 90.0)
 
-  def _transition(self, new_state: HTDState, reason: str) -> None:
+  # [修正] 增加 reason 參數，避免原版傳入字串時引發 TypeError 崩潰
+  def _transition(self, new_state: HTDState, reason: str = "") -> None:
     if new_state == self._state:
       return
     self._state = new_state
     self._state_change_time = time.monotonic()
-    _log(
-      f"HTD {new_state.name} reason={reason} angle={self._last_angle:.1f} torque={self._last_torque:.2f} pressed={self._last_pressed} delay={self._dynamic_delay:.2f}"
-    )
 
   def update(
     self, lat_active: bool, cruise_enabled: bool, steering_angle_deg: float, steering_torque_nm: float, v_ego: float, steering_pressed: bool = False
@@ -92,14 +81,16 @@ class HumanTurnDetection:
     self._last_torque = abs(steering_torque_nm)
     self._last_pressed = steering_pressed
 
-    # 定速巡航鎖：當定速巡航啟用時，強制讓 HTD 暫停作動
+    # ==========================================
+    # [新增] 定速巡航鎖：當定速巡航啟用時，強制讓 HTD 暫停作動
+    # ==========================================
     if cruise_enabled:
       if self._state != HTDState.INACTIVE:
         self._transition(HTDState.INACTIVE, "cruise_active")
       self._trigger_start_time = 0.0
       return True, self._state
 
-    # 超速時強制失效
+    # [安全鎖 4] 超速時強制失效
     if not self._enabled or not lat_active or v_ego < MIN_SPEED_MS or v_ego > MAX_SPEED_MS:
       if self._state != HTDState.INACTIVE:
         self._transition(HTDState.INACTIVE, "disabled_or_speed_limit")
@@ -108,7 +99,7 @@ class HumanTurnDetection:
 
     if self._state == HTDState.INACTIVE:
       if self._should_trigger():
-        self._max_turn_angle = self._last_angle
+        self._max_turn_angle = self._last_angle  # 初始化最大角度
         self._transition(HTDState.MANUAL_TURN, "trigger")
         return False, self._state
       return True, self._state
@@ -133,11 +124,12 @@ class HumanTurnDetection:
 
     # 確保等待時間達到動態秒數 (絕對不會低於 0.5 秒)，避免 Panda 扭力突波報錯
     if time.monotonic() - self._state_change_time >= self._dynamic_delay:
-      # 接管角度鎖：若方向盤角度仍大於安全閥值 (預設 90 度)，拒絕恢復自動駕駛
+      # [新增安全鎖 5] 接管角度鎖：若方向盤角度仍大於安全閥值 (預設 60 度)，拒絕恢復自動駕駛
       if self._last_angle > self._resume_angle_lock_deg:
+        # 維持在 RAMPING 狀態，持續回傳 False 不接管，直到角度回正進入安全範圍
         return False, self._state
 
-      self._max_turn_angle = 0.0
+      self._max_turn_angle = 0.0  # 徹底恢復前，重置角度紀錄
       self._transition(HTDState.INACTIVE, "resume")
       return True, self._state
 
@@ -151,7 +143,7 @@ class HumanTurnDetection:
     if condition_met:
       if self._trigger_start_time == 0.0:
         self._trigger_start_time = time.monotonic()
-      elif time.monotonic() - self._trigger_start_time >= 0.1:
+      elif time.monotonic() - self._trigger_start_time >= 0.2:
         return True
     else:
       self._trigger_start_time = 0.0
@@ -159,10 +151,10 @@ class HumanTurnDetection:
     return False
 
   def _should_release(self) -> bool:
-    # 完美回正：物理方向盤已經被轉回 20 度內，且扭力小
+    # [軌道 A] 完美回正：物理方向盤已經被轉回 20 度內，且扭力小
     perfect_return = self._last_torque <= self._torque_release_nm and self._last_angle <= self._angle_release_deg
 
-    # 放開方向盤
+    # [軌道 B] 放開方向盤
     hands_off = not self._last_pressed
 
     # 只要滿足任一條件，就同意進入 RAMPING 緩衝倒數
