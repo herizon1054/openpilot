@@ -39,7 +39,7 @@ MIN_DIST_V = [5., 10., 15., 20.]
 # --- Soft Hold (柔和跟車/滑行介入) 設定 ---
 SOFT_HOLD_RANGE_MIN = 0.76             
 SOFT_HOLD_RANGE_MAX = 0.99             
-SOFT_HOLD_TTC_THRESHOLD = 2.0          # [新增] TTC 大於此數值時，暫停 Soft Hold 運作
+SOFT_HOLD_TTC_THRESHOLD = 3.0          # [新增] TTC 大於此數值時，暫停 Soft Hold 運作
 
 # 車速 (km/h) 對應 最高加速度限制 (m/s²) 的插值陣列
 SOFT_HOLD_SPEED_BP = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
