@@ -78,12 +78,9 @@ mount_nvme() {
 
 set_lite_hw() {
   if grep -q "tici" /sys/firmware/devicetree/base/model 2>/dev/null; then
-    output=$(i2cget -y 0 0x10 0x00 2>/dev/null)
-
-    if [ -z "$output" ]; then
-      echo "Lite HW"
-      export LITE=1
-    fi
+    # 移除 i2cget 檢查，直接強制設定為 Lite
+    echo "Lite HW (Forced)"
+    export LITE=1
   fi
 }
 
