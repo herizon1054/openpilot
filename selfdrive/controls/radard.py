@@ -26,7 +26,7 @@ V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 # [自訂參數區] 
 # ==========================================
 STATIONARY_MAX_DIST = 90.0         # 縮短靜止車最遠偵測距離，避免隧道微彎誤判
-STATIONARY_MIN_PROB = 0.5          # 靜止車固定最低信心度門檻 (嚴格遵守 0.5)
+STATIONARY_MIN_PROB = 0.4          # 靜止車基礎最低信心度門檻 (後續會透過 np.interp 動態調整)
 
 BLIND_SPOT_PRIORITY_DIST = 23.0    # 低速盲區煞停「強制接管並鎖定」的距離 (公尺)
 BLIND_SPOT_HYSTERESIS_DIST = 25.0  # 盲區煞停「解除鎖定」的退場距離 (公尺)
@@ -140,7 +140,7 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   is_dynamic_target = dist_sane and vel_sane and (lead.prob > current_prob_threshold)
   
-  # 2. 靜止車強化邏輯 (固定橫向容錯 + 固定 0.5 信心度)
+  # 2. 靜止車強化邏輯
   model_x = track.dRel + RADAR_TO_CAMERA
   expected_yRel = -np.interp(model_x, path_x, path_y)
   
@@ -151,19 +151,28 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   v_absolute = track.vRel + v_ego
   is_physically_stationary = abs(v_absolute) < 2.0
   
-  # 靜止車固定使用 STATIONARY_MIN_PROB (0.5)
-  is_stationary_target = (0.0 < track.dRel <= STATIONARY_MAX_DIST) and is_physically_stationary and dist_sane and y_sane_on_path and (lead.prob > STATIONARY_MIN_PROB)
+  # ==========================================
+  # 針對隧道幽靈視覺點：依距離動態調整靜止車信心度門檻
+  # ==========================================
+  # 使用 np.interp 讓信心度門檻隨距離平滑過渡：
+  # 距離 <= 30m 時門檻為 0.5 (防近距誤判)
+  # 距離 >= 90m 時門檻為 0.4 (提早預警遠處靜止車)
+  dynamic_stat_prob = np.interp(track.dRel, [30.0, 90.0], [0.5, 0.4])
+
+  is_stationary_target = (0.0 < track.dRel <= STATIONARY_MAX_DIST) and is_physically_stationary and dist_sane and y_sane_on_path and (lead.prob > dynamic_stat_prob)
 
   is_valid_lead = is_dynamic_target or is_stationary_target
 
   if is_valid_lead:
-    track.is_stopped_car_count = min(track.is_stopped_car_count + 6, 25)
+    # 靜止車確認容錯上限提高至 50
+    track.is_stopped_car_count = min(track.is_stopped_car_count + 6, 50)
 
   best_track = None
 
   if is_dynamic_target:
     best_track = track
-  elif track.is_stopped_car_count >= 20: 
+  # 靜止車鎖定門檻提高至 40，相當於需連續約 0.4 秒穩定偵測才會正式鎖定
+  elif track.is_stopped_car_count >= 40: 
     best_track = track
 
   for c in tracks.values():
@@ -318,7 +327,8 @@ class RadarD:
     if len(leads_v3) > 0:
       lead_prob = leads_v3[0].prob
 
-      if 0.15 <= lead_prob < 0.5:
+      # 將空曠雜訊過濾下限調整為 0.2，減少平時的降階誤判
+      if 0.2 <= lead_prob < 0.5:
         # 疑似雨中水花遮擋，緩慢累積 (20Hz * 6秒 = 上限 120 分，保留一點緩衝)
         self.low_prob_score = min(self.low_prob_score + 1, 120)
         
@@ -327,7 +337,7 @@ class RadarD:
         self.low_prob_score = max(self.low_prob_score - 2, 0)
         
       else:
-        # 小於 0.15 視為完全遮擋或空曠處雜訊，緩慢冷卻 (允許短暫斷訊)
+        # 小於 0.2 視為完全遮擋或空曠處雜訊，緩慢冷卻 (允許短暫斷訊)
         self.low_prob_score = max(self.low_prob_score - 1, 0)
 
       # --- 決定是否降階 ---
