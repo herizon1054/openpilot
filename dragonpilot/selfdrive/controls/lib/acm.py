@@ -37,13 +37,13 @@ SPEED_BP = [0., 10., 20., 30.]
 MIN_DIST_V = [5., 10., 15., 20.]       
 
 # --- Soft Hold (柔和跟車/滑行介入) 設定 ---
-SOFT_HOLD_ACCEL = -0.00                
 SOFT_HOLD_RANGE_MIN = 0.76             
 SOFT_HOLD_RANGE_MAX = 0.99             
+SOFT_HOLD_TTC_THRESHOLD = 2.0          # [新增] TTC 大於此數值時，暫停 Soft Hold 運作
 
-SOFT_HOLD_ENABLE_KPH = 60.0            
-SOFT_HOLD_DISABLE_KPH = 50.0           
-SOFT_HOLD_EXCEPTION_LEAD_KPH = 10.0    
+# 車速 (km/h) 對應 最高加速度限制 (m/s²) 的插值陣列
+SOFT_HOLD_SPEED_BP = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
+SOFT_HOLD_ACCEL_V  = [ 0.7,  0.6,  0.5,  0.4,  0.3,  0.2,  0.1]
 
 
 class ACM:
@@ -61,7 +61,6 @@ class ACM:
     self.current_pitch = 0.0              
     self.current_max_offset = 0.0         
 
-    self._soft_hold_allowed_speed = False 
     self.personality = log.LongitudinalPersonality.standard 
     self._dtsc_is_active = False          
 
@@ -156,18 +155,20 @@ class ACM:
     target_factor = 1.0   
     ratio = 10.0          
     
-    current_soft_hold_accel = SOFT_HOLD_ACCEL 
+    # 計算當前車速並透過插值取得對應的 Soft Hold 允許最高加速度
+    v_ego_kph = v_ego * 3.6
+    current_soft_hold_accel = np.interp(v_ego_kph, SOFT_HOLD_SPEED_BP, SOFT_HOLD_ACCEL_V)
 
     if lead is not None and lead.status:
-        v_ego_kph = v_ego * 3.6
         is_lead_braking = lead.aLeadK < -0.1
         
+        # [新增] 獨立計算當下給 Soft Hold 邏輯使用的 TTC
+        current_ttc = lead.dRel / max(v_ego, 0.1)
+        
+        # 車速 10 以下且前車正在煞車時，保持完全不加速的保守設定
         if v_ego_kph <= 10.0 and is_lead_braking:
             current_soft_hold_accel = -0.00
-        elif v_ego_kph <= 10.0 and not is_lead_braking:
-            current_soft_hold_accel = 0.0
 
-    if lead is not None and lead.status:
         if self.current_pitch <= PITCH_UPHILL_THRESHOLD:
             desired_dist = get_safe_obstacle_distance(v_ego, t_follow)
             lead_obstacle_dist = lead.dRel + get_stopped_equivalence_factor(lead.vLead)
@@ -177,21 +178,11 @@ class ACM:
             else:
                 ratio = lead_obstacle_dist / desired_dist
 
-            v_ego_kph = v_ego * 3.6
-
-            if v_ego_kph > SOFT_HOLD_ENABLE_KPH:
-                self._soft_hold_allowed_speed = True
-            elif v_ego_kph < SOFT_HOLD_DISABLE_KPH:
-                self._soft_hold_allowed_speed = False
-
-            lead_v_kph = lead.vLead * 3.6
-            is_exception = lead_v_kph < SOFT_HOLD_EXCEPTION_LEAD_KPH
-            run_soft_hold = self._soft_hold_allowed_speed or is_exception
             distance_factor = 1.0 
 
-            if run_soft_hold:
-                if SOFT_HOLD_RANGE_MIN < ratio < SOFT_HOLD_RANGE_MAX:
-                    distance_factor = 0.0
+            # [修改] 若距離進入比例範圍內，且 TTC 小於等於門檻值 (2.0) 才允許觸發
+            if SOFT_HOLD_RANGE_MIN < ratio < SOFT_HOLD_RANGE_MAX and current_ttc <= SOFT_HOLD_TTC_THRESHOLD:
+                distance_factor = 0.0
 
             v_rel_factor = np.interp(lead.vRel, [-2.5, -0.5], [0.0, 1.0])
             target_factor = max(distance_factor, v_rel_factor)
