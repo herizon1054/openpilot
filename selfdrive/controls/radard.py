@@ -25,7 +25,7 @@ V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 # ==========================================
 # [自訂參數區] 
 # ==========================================
-STATIONARY_MAX_DIST = 90.0         # 縮短靜止車最遠偵測距離，避免隧道微彎誤判
+STATIONARY_MAX_DIST = 90.0         # 直路靜止車最遠偵測距離，彎道時會動態縮減
 STATIONARY_MIN_PROB = 0.4          # 靜止車基礎最低信心度門檻 (後續會透過 np.interp 動態調整)
 
 BLIND_SPOT_PRIORITY_DIST = 23.0    # 低速盲區煞停「強制接管並鎖定」的距離 (公尺)
@@ -140,26 +140,38 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   is_dynamic_target = dist_sane and vel_sane and (lead.prob > current_prob_threshold)
   
-  # 2. 靜止車強化邏輯
+  # 2. 靜止車強化邏輯 (已加入曲率動態防禦機制)
   model_x = track.dRel + RADAR_TO_CAMERA
   expected_yRel = -np.interp(model_x, path_x, path_y)
   
-  # --- 固定橫向容錯為 1.0m ---
-  y_threshold = 1.0
-  y_sane_on_path = abs(track.yRel - expected_yRel) < y_threshold
+  # ==========================================
+  # [新增] 依據預測軌跡計算曲率，動態防禦隧道幽靈煞車
+  # ==========================================
+  # 取前方 50m 處的預測橫向偏移絕對值，作為「彎道曲率指標」
+  # (直路時接近 0.0m，彎道時可能大於 2.0m)
+  curve_offset = abs(np.interp(50.0, path_x, path_y))
+  
+  # A. 動態調整橫向容錯 (y_threshold)：
+  # 直路容許 1.0m，彎道縮緊到 0.5m，避免彎道中雷達掃到牆壁
+  dynamic_y_threshold = np.interp(curve_offset, [0.5, 2.5], [1.0, 0.5])
+  y_sane_on_path = abs(track.yRel - expected_yRel) < dynamic_y_threshold
+  
+  # B. 動態調整最遠偵測距離 (dynamic_max_dist)：
+  # 直路看 90m，彎道強制只看 50m，直接無視 50m 外的牆壁訊號
+  dynamic_max_dist = np.interp(curve_offset, [0.5, 2.5], [STATIONARY_MAX_DIST, 50.0])
   
   v_absolute = track.vRel + v_ego
   is_physically_stationary = abs(v_absolute) < 2.0
   
-  # ==========================================
-  # 針對隧道幽靈視覺點：依距離動態調整靜止車信心度門檻
-  # ==========================================
-  # 使用 np.interp 讓信心度門檻隨距離平滑過渡：
-  # 距離 <= 30m 時門檻為 0.5 (防近距誤判)
-  # 距離 >= 90m 時門檻為 0.4 (提早預警遠處靜止車)
-  dynamic_stat_prob = np.interp(track.dRel, [30.0, 90.0], [0.5, 0.4])
+  # C. 動態調整信心度門檻 (雙重查表)：
+  # 遠處物體的基礎門檻，先受「曲率」影響 (直路 0.45，彎道變嚴格到 0.55)
+  far_distance_prob = np.interp(curve_offset, [0.5, 2.5], [0.45, 0.55])
+  
+  # 最後依「實際距離」決定最終門檻 (30m 內固定 0.5，90m 漸變至 far_distance_prob)
+  dynamic_stat_prob = np.interp(track.dRel, [30.0, 90.0], [0.5, far_distance_prob])
 
-  is_stationary_target = (0.0 < track.dRel <= STATIONARY_MAX_DIST) and is_physically_stationary and dist_sane and y_sane_on_path and (lead.prob > dynamic_stat_prob)
+  # 將上述動態條件整合進靜止車判斷中
+  is_stationary_target = (0.0 < track.dRel <= dynamic_max_dist) and is_physically_stationary and dist_sane and y_sane_on_path and (lead.prob > dynamic_stat_prob)
 
   is_valid_lead = is_dynamic_target or is_stationary_target
 
