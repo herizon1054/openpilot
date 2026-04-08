@@ -13,32 +13,26 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 
 
-# Default lead acceleration decay set to 50% at 1s
 _LEAD_ACCEL_TAU = 1.5
-
-# radar tracks
-SPEED, ACCEL = 0, 1     # Kalman filter states enum
-
-# stationary qualification parameters
-V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
+SPEED, ACCEL = 0, 1
+V_EGO_STATIONARY = 4.
 
 # ==========================================
 # [自訂參數區] 
 # ==========================================
-STATIONARY_MAX_DIST = 90.0         # 直路靜止車最遠偵測距離，彎道時會動態縮減
-STATIONARY_MIN_PROB = 0.4          # 靜止車基礎最低信心度門檻 (後續會透過 np.interp 動態調整)
-
-BLIND_SPOT_PRIORITY_DIST = 23.0    # 低速盲區煞停「強制接管並鎖定」的距離 (公尺)
-BLIND_SPOT_HYSTERESIS_DIST = 25.0  # 盲區煞停「解除鎖定」的退場距離 (公尺)
+STATIONARY_MAX_DIST = 90.0
+STATIONARY_MIN_PROB = 0.4
+BLIND_SPOT_PRIORITY_DIST = 23.0
+BLIND_SPOT_HYSTERESIS_DIST = 25.0
 # ==========================================
 
-RADAR_TO_CENTER = 2.7   # (deprecated) RADAR is ~ 2.7m ahead from center of car
-RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
+RADAR_TO_CENTER = 2.7
+RADAR_TO_CAMERA = 1.52
 
 
 class KalmanParams:
   def __init__(self, dt: float):
-    assert dt > .01 and dt < .2, "Radar time step must be between .01s and 0.2s"
+    assert dt > .01 and dt < .2
     self.A = [[1.0, dt], [0.0, 1.0]]
     self.C = [1.0, 0.0]
     dts = [i * 0.01 for i in range(1, 21)]
@@ -85,7 +79,6 @@ class Track:
       self.aLeadTau.update(0.0)
 
     self.cnt += 1
-
     self.is_stopped_car_count = max(0, self.is_stopped_car_count - 1)
 
   def get_RadarState(self, model_prob: float = 0.0):
@@ -111,8 +104,7 @@ class Track:
     return model_prob > .9
 
   def __str__(self):
-    ret = f"x: {self.dRel:4.1f}  y: {self.yRel:4.1f}  v: {self.vRel:4.1f}  a: {self.aLeadK:4.1f}"
-    return ret
+    return f"x: {self.dRel:4.1f}  y: {self.yRel:4.1f}  v: {self.vRel:4.1f}  a: {self.aLeadK:4.1f}"
 
 
 def laplacian_pdf(x: float, mu: float, b: float):
@@ -131,59 +123,36 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
 
   track = max(tracks.values(), key=prob)
 
-  # ==========================================
-  # 目標分類與驗證邏輯
-  # ==========================================
-  
-  # 1. 動態車條件：使用動態降階門檻
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   is_dynamic_target = dist_sane and vel_sane and (lead.prob > current_prob_threshold)
   
-  # 2. 靜止車強化邏輯 (已加入曲率動態防禦機制)
   model_x = track.dRel + RADAR_TO_CAMERA
   expected_yRel = -np.interp(model_x, path_x, path_y)
   
-  # ==========================================
-  # [新增] 依據預測軌跡計算曲率，動態防禦隧道幽靈煞車
-  # ==========================================
-  # 取前方 50m 處的預測橫向偏移絕對值，作為「彎道曲率指標」
-  # (直路時接近 0.0m，彎道時可能大於 2.0m)
   curve_offset = abs(np.interp(50.0, path_x, path_y))
   
-  # A. 動態調整橫向容錯 (y_threshold)：
-  # 直路容許 1.0m，彎道縮緊到 0.5m，避免彎道中雷達掃到牆壁
-  dynamic_y_threshold = np.interp(curve_offset, [0.5, 2.5], [1.0, 0.5])
+  dynamic_y_threshold = np.interp(curve_offset, [0.3, 1.2], [1.0, 0.5])
   y_sane_on_path = abs(track.yRel - expected_yRel) < dynamic_y_threshold
   
-  # B. 動態調整最遠偵測距離 (dynamic_max_dist)：
-  # 直路看 90m，彎道強制只看 50m，直接無視 50m 外的牆壁訊號
-  dynamic_max_dist = np.interp(curve_offset, [0.5, 2.5], [STATIONARY_MAX_DIST, 50.0])
+  dynamic_max_dist = np.interp(curve_offset, [0.3, 1.2], [STATIONARY_MAX_DIST, 55.0])
   
   v_absolute = track.vRel + v_ego
   is_physically_stationary = abs(v_absolute) < 2.0
   
-  # C. 動態調整信心度門檻 (雙重查表)：
-  # 遠處物體的基礎門檻，先受「曲率」影響 (直路 0.45，彎道變嚴格到 0.55)
-  far_distance_prob = np.interp(curve_offset, [0.5, 2.5], [0.45, 0.55])
-  
-  # 最後依「實際距離」決定最終門檻 (30m 內固定 0.5，90m 漸變至 far_distance_prob)
-  dynamic_stat_prob = np.interp(track.dRel, [30.0, 90.0], [0.5, far_distance_prob])
+  dynamic_stat_prob = np.interp(track.dRel, [30.0, 90.0], [0.5, 0.4])
 
-  # 將上述動態條件整合進靜止車判斷中
   is_stationary_target = (0.0 < track.dRel <= dynamic_max_dist) and is_physically_stationary and dist_sane and y_sane_on_path and (lead.prob > dynamic_stat_prob)
 
   is_valid_lead = is_dynamic_target or is_stationary_target
 
   if is_valid_lead:
-    # 靜止車確認容錯上限提高至 50
     track.is_stopped_car_count = min(track.is_stopped_car_count + 6, 50)
 
   best_track = None
 
   if is_dynamic_target:
     best_track = track
-  # 靜止車鎖定門檻提高至 40，相當於需連續約 0.4 秒穩定偵測才會正式鎖定
   elif track.is_stopped_car_count >= 40: 
     best_track = track
 
@@ -219,7 +188,6 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
              low_speed_override: bool = True, is_locked: bool = False,
              current_prob_threshold: float = 0.5) -> Tuple[dict[str, Any], bool]:
   
-  # --- Step 1: 取得視覺融合目標 ---
   gate_threshold = min(current_prob_threshold, STATIONARY_MIN_PROB)
   
   if len(tracks) > 0 and ready and lead_msg.prob > gate_threshold:
@@ -233,7 +201,6 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   elif ready and (lead_msg.prob > 0.5):
     fused_lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
 
-  # --- Step 2: 盲區雷達強制接管與單向條件鎖定邏輯 ---
   lead_dict = fused_lead_dict  
   new_locked_state = is_locked 
 
@@ -282,9 +249,6 @@ class RadarD:
     self.ready = False
     self.lead_one_locked = False 
 
-    # ==========================================
-    # 純視覺動態信心度參數狀態 (積分制漏桶)
-    # ==========================================
     self.dynamic_prob_threshold = 0.5  
     self.low_prob_score = 0            
 
@@ -318,7 +282,6 @@ class RadarD:
     self.radar_state.radarErrors = rr.errors
     self.radar_state.carStateMonoTime = sm.logMonoTime['carState']
 
-    # 擷取預測路徑
     if len(sm['modelV2'].position.x) > 0:
       path_x = list(sm['modelV2'].position.x)
       path_y = list(sm['modelV2'].position.y)
@@ -333,29 +296,19 @@ class RadarD:
       
     leads_v3 = sm['modelV2'].leadsV3
 
-    # ==========================================
-    # 動態信心度門檻調節邏輯 (彈性積分制漏桶演算法，5秒累積)
-    # ==========================================
     if len(leads_v3) > 0:
       lead_prob = leads_v3[0].prob
 
-      # 將空曠雜訊過濾下限調整為 0.2，減少平時的降階誤判
       if 0.2 <= lead_prob < 0.5:
-        # 疑似雨中水花遮擋，緩慢累積 (20Hz * 6秒 = 上限 120 分，保留一點緩衝)
         self.low_prob_score = min(self.low_prob_score + 1, 120)
-        
       elif lead_prob >= 0.5:
-        # 清楚看到真車，快速扣分，加速解除降階狀態
         self.low_prob_score = max(self.low_prob_score - 2, 0)
-        
       else:
-        # 小於 0.2 視為完全遮擋或空曠處雜訊，緩慢冷卻 (允許短暫斷訊)
         self.low_prob_score = max(self.low_prob_score - 1, 0)
 
-      # --- 決定是否降階 ---
-      if self.low_prob_score >= 100: # 累積達到約 5 秒的不穩定狀態才降階
+      if self.low_prob_score >= 100: 
         self.dynamic_prob_threshold = 0.45
-      elif self.low_prob_score == 0: # 徹底冷卻後恢復原廠門檻
+      elif self.low_prob_score == 0: 
         self.dynamic_prob_threshold = 0.5
 
     if len(leads_v3) > 1:
