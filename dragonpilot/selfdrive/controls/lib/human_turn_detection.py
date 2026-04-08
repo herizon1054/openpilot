@@ -1,31 +1,17 @@
-import os
 import time
 from enum import Enum, auto
-
 from openpilot.common.params import Params
 
 
-LOG_PATH = "/data/media/0/realdata/debug.log"
 PARAM_REFRESH_SEC = 2.0
 MIN_SPEED_MS = 0.1
-# [安全鎖 4] 最高車速限制，約 45 km/h。超過此速度的 90 度大轉向屬危險動作，HTD 拒絕作動
-MAX_SPEED_MS = 12.5
-
-
-def _log(message: str) -> None:
-  try:
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-      f.write(f"{time.time():.3f} {message}\n")
-  except Exception:
-    pass
-
+# [安全鎖 4] 最高車速限制，約 35 km/h。超過此速度的 90 度大轉向屬危險動作，HTD 拒絕作動
+MAX_SPEED_MS = 9.72
 
 class HTDState(Enum):
   INACTIVE = auto()
   MANUAL_TURN = auto()
   RAMPING = auto()
-
 
 class HumanTurnDetection:
   def __init__(self) -> None:
@@ -35,7 +21,6 @@ class HumanTurnDetection:
     # --- 由 UI 控制的變數 ---
     self._enabled = True
     self._angle_threshold_deg = 90.0
-
     # --- 以下為寫死的系統參數，不再從 Params 讀取 ---
     # 統一釋放角度為 20 度
     self._angle_release_deg = 20.0
@@ -43,19 +28,16 @@ class HumanTurnDetection:
     self._torque_release_nm = 0.6
     # [新增] 安全接管角度鎖：當角度大於此值時，即使秒數倒數完畢也拒絕恢復自動駕駛
     self._resume_angle_lock_deg = 60.0
-
     self._state: HTDState = HTDState.INACTIVE
     self._state_change_time = 0.0
 
     # 紀錄帶有正負號的原始數值，用於方向一致性判斷
     self._last_angle_raw = 0.0
     self._last_torque_raw = 0.0
-
     self._last_angle = 0.0
     self._last_torque = 0.0
     self._last_pressed = False
     self._trigger_start_time = 0.0
-
     # 紀錄這一次彎道的最大角度
     self._max_turn_angle = 0.0
     # 準備接管時的動態等待秒數
@@ -71,14 +53,12 @@ class HumanTurnDetection:
     self._enabled = self._params.get_bool("dp_htd_enabled")
     self._angle_threshold_deg = self._get_float("dp_htd_turn_angle_threshold", 90.0)
 
-  def _transition(self, new_state: HTDState, reason: str) -> None:
+  # [修正] 增加 reason 參數預設值，避免未傳入字串時引發 TypeError 崩潰
+  def _transition(self, new_state: HTDState, reason: str = "") -> None:
     if new_state == self._state:
       return
     self._state = new_state
     self._state_change_time = time.monotonic()
-    _log(
-      f"HTD {new_state.name} reason={reason} angle={self._last_angle:.1f} torque={self._last_torque:.2f} pressed={self._last_pressed} delay={self._dynamic_delay:.2f}"
-    )
 
   def update(
     self, lat_active: bool, cruise_enabled: bool, steering_angle_deg: float, steering_torque_nm: float, v_ego: float, steering_pressed: bool = False
@@ -93,6 +73,15 @@ class HumanTurnDetection:
     self._last_angle = abs(steering_angle_deg)
     self._last_torque = abs(steering_torque_nm)
     self._last_pressed = steering_pressed
+
+    # ==========================================
+    # [新增] 定速巡航鎖：當定速巡航啟用時，強制讓 HTD 暫停作動
+    # ==========================================
+    if cruise_enabled:
+      if self._state != HTDState.INACTIVE:
+        self._transition(HTDState.INACTIVE, "cruise_active")
+      self._trigger_start_time = 0.0
+      return True, self._state
 
     # [安全鎖 4] 超速時強制失效
     if not self._enabled or not lat_active or v_ego < MIN_SPEED_MS or v_ego > MAX_SPEED_MS:
