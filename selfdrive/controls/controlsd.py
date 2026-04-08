@@ -247,7 +247,7 @@ class Controls:
     dat = messaging.new_message('controlsStateExt')
     dat.valid = True
     dat.controlsStateExt.alkaActive = self.alka_active
-    dat.controlsStateExt.htdAction = self.htd.htd_action_active # 新增：傳遞 HTD 判斷狀態
+    dat.controlsStateExt.htdAction = (self.htd_state != HTDState.INACTIVE) # 新增：傳遞 HTD 判斷狀態
     self.pm.send('controlsStateExt', dat)
 
     # carControl
