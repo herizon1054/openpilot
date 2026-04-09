@@ -70,22 +70,29 @@ class ACM:
     if not lead or not lead.status:
       return False
 
-    self.lead_ttc = lead.dRel / max(v_ego, 0.1) 
+    # [修正] 使用相對速度 (closing_speed) 來計算真實的 TTC，並防止除以零
+    closing_speed = max(v_ego - lead.vLead, 0.1)
+    self.lead_ttc = lead.dRel / closing_speed 
+    
     relative_speed = v_ego - lead.vLead         
     min_dist_for_speed = np.interp(v_ego, SPEED_BP, MIN_DIST_V)
 
-    if lead.dRel < min_dist_for_speed and (
-        self.lead_ttc < EMERGENCY_TTC or
-        relative_speed > EMERGENCY_RELATIVE_SPEED):
+    # [修正] 只要 TTC 過低，或相對速差過大，或距離過近，就立刻解除滑行 (將 and 改為 or 提高安全性)
+    if (self.lead_ttc < EMERGENCY_TTC) or \
+       (relative_speed > EMERGENCY_RELATIVE_SPEED) or \
+       (lead.dRel < min_dist_for_speed and relative_speed > 0):
       self._last_lead_time = current_time
       if self.active:
-        cloudlog.warning(f"ACM emergency disable: dRel={lead.dRel:.1f}m, TTC={self.lead_ttc:.1f}s")
+        cloudlog.warning(f"ACM emergency disable: dRel={lead.dRel:.1f}m, TTC={self.lead_ttc:.1f}s, RelSpeed={relative_speed:.1f}m/s")
       return True
     return False
 
   def _update_lead_status(self, lead, v_ego, current_time):
     if lead and lead.status:
-      self.lead_ttc = lead.dRel / max(v_ego, 0.1)
+      # [修正] 使用相對速度 (closing_speed) 計算 TTC
+      closing_speed = max(v_ego - lead.vLead, 0.1)
+      self.lead_ttc = lead.dRel / closing_speed
+      
       self.current_ttc_threshold = np.interp(v_ego, TTC_BP, TTC_V) 
       if self.lead_ttc < self.current_ttc_threshold:
         self._has_lead = True
@@ -162,8 +169,9 @@ class ACM:
     if lead is not None and lead.status:
         is_lead_braking = lead.aLeadK < -0.1
         
-        # [新增] 獨立計算當下給 Soft Hold 邏輯使用的 TTC
-        current_ttc = lead.dRel / max(v_ego, 0.1)
+        # [修正] 獨立計算當下給 Soft Hold 邏輯使用的 TTC，同樣改用相對速差
+        closing_speed = max(v_ego - lead.vLead, 0.1)
+        current_ttc = lead.dRel / closing_speed
         
         # 車速 10 以下且前車正在煞車時，保持完全不加速的保守設定
         if v_ego_kph <= 10.0 and is_lead_braking:
@@ -180,7 +188,7 @@ class ACM:
 
             distance_factor = 1.0 
 
-            # [修改] 若距離進入比例範圍內，且 TTC 小於等於門檻值 (2.0) 才允許觸發
+            # [修改] 若距離進入比例範圍內，且 TTC 小於等於門檻值 (3.0) 才允許觸發
             if SOFT_HOLD_RANGE_MIN < ratio < SOFT_HOLD_RANGE_MAX and current_ttc <= SOFT_HOLD_TTC_THRESHOLD:
                 distance_factor = 0.0
 
