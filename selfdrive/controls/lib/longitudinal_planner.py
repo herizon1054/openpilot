@@ -225,7 +225,8 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     # ACM - Adaptive Coasting Module
     if dp_flags & DPFlags.ACM:
       user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
-      self.acm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, personality=personality, dtsc_is_active=is_dtsc_active)
+      # [修改處] 在這裡將 mode=mode 傳進 ACM
+      self.acm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, mode=mode, personality=personality, dtsc_is_active=is_dtsc_active)
 
       lead = sm['radarState'].leadOne
       self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
