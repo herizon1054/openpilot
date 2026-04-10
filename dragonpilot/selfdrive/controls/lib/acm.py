@@ -128,9 +128,13 @@ class ACM:
             not in_cooldown and
             self._is_in_coast_window)
 
-  def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, personality=log.LongitudinalPersonality.standard, dtsc_is_active=False):
+  # [修改] 加入 mode 參數
+  def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, mode='acc', personality=log.LongitudinalPersonality.standard, dtsc_is_active=False):
     self.personality = personality
     self._dtsc_is_active = dtsc_is_active 
+    
+    # [新增] 紀錄目前是否為一般模式 (acc)
+    self._is_normal_mode = (mode == 'acc')
 
     if not self.enabled or len(cc.orientationNED) != 3:
       self.active = False
@@ -209,7 +213,9 @@ class ACM:
     return a_desired_trajectory
 
   def update_a_desired_trajectory(self, a_desired_trajectory, v_ego=0.0, lead=None, t_follow=None):
-    if getattr(self, '_dtsc_is_active', False):
+    # [修改] 如果 DTSC 啟用，或者「不是一般模式(acc)」，就不做任何介入，直接回傳原軌跡
+    if getattr(self, '_dtsc_is_active', False) or \
+       not getattr(self, '_is_normal_mode', True):
         return a_desired_trajectory
 
     traj = a_desired_trajectory
