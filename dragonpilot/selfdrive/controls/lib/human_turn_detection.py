@@ -27,7 +27,7 @@ class HumanTurnDetection:
     self._torque_start_nm = 2.0
     self._torque_release_nm = 0.6
     # [新增] 安全接管角度鎖：當角度大於此值時，即使秒數倒數完畢也拒絕恢復自動駕駛
-    self._resume_angle_lock_deg = 60.0
+    self._resume_angle_lock_deg = 40.0
     self._state: HTDState = HTDState.INACTIVE
     self._state_change_time = 0.0
 
@@ -117,7 +117,7 @@ class HumanTurnDetection:
 
     # 確保等待時間達到動態秒數 (絕對不會低於 0.5 秒)，避免 Panda 扭力突波報錯
     if time.monotonic() - self._state_change_time >= self._dynamic_delay:
-      # [新增安全鎖 5] 接管角度鎖：若方向盤角度仍大於安全閥值 (預設 60 度)，拒絕恢復自動駕駛
+      # [新增安全鎖 5] 接管角度鎖：若方向盤角度仍大於安全閥值 (預設 40 度)，拒絕恢復自動駕駛
       if self._last_angle > self._resume_angle_lock_deg:
         # 維持在 RAMPING 狀態，持續回傳 False 不接管，直到角度回正進入安全範圍
         return False, self._state
