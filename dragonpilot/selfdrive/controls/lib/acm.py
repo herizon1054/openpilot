@@ -19,7 +19,7 @@ SPEED_OFFSET_MAX_FLAT_KPH = 15.0
 SPEED_OFFSET_MAX_DOWNHILL_KPH = 5.0    
 
 # --- 坡度判斷門檻 ---
-PITCH_UPHILL_THRESHOLD = 0.015         
+PITCH_UPHILL_THRESHOLD = 0.05         
 PITCH_DOWNHILL_THRESHOLD = -0.030      
 
 # --- TTC (Time To Collision) 碰撞時間設定 ---
