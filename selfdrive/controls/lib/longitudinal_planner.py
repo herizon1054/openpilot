@@ -167,7 +167,14 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
-    _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
+    x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'])
+    
+    # 获取y坐标
+    if len(sm['modelV2'].position.y) == ModelConstants.IDX_N:
+        y = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, sm['modelV2'].position.y)
+    else:
+        y = np.zeros(len(T_IDXS_MPC))
+    
     # Don't clip at low speeds since throttle_prob doesn't account for creep
     self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
@@ -214,8 +221,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     if force_slow_decel:
       v_cruise_target = 0.0
 
-    # 傳入 override 參數給 MPC
-    self.mpc.update(radar_state, v_cruise_target, personality=personality, 
+    # 傳入 override 參數給 MPC - 修復：添加缺失的x, v, a, j, y參數
+    self.mpc.update(radar_state, v_cruise_target, x, v, a, j, y,
+                    personality=personality, 
                     a_cruise_min_override=a_cruise_min_override, 
                     t_follow_override=t_follow_override)
 
