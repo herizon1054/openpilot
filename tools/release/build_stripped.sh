@@ -26,7 +26,7 @@ git checkout --orphan tmp
 
 # remove everything except .git
 echo "[-] erasing old sunnypilot T=$SECONDS"
-# git submodule deinit -f --all  # <--- 已註解：保留子模組設定
+git submodule deinit -f --all
 git rm -rf --cached .
 find . -maxdepth 1 -not -path './.git' -not -name '.' -not -name '..' -exec rm -rf '{}' \;
 
@@ -43,15 +43,12 @@ cd $SOURCE_DIR
 
 # in the directory
 cd $TARGET_DIR
-# rm -rf .git/modules/  # <--- 已註解：保留子模組的 Git 結構
+rm -rf .git/modules/
 rm -f panda/board/obj/panda.bin.signed
 rm -f panda/board/obj/panda_h7.bin.signed
 
 # Release branch must not contain LFS pointers; strip LFS tracking and commit files as regular content.
-# 已修改：加入檔案檢查，避免找不到 .gitattributes 時報錯
-if [ -f .gitattributes ]; then
-  sed -i '/filter=lfs/d' .gitattributes
-fi
+sed -i '/filter=lfs/d' .gitattributes || true
 
 find openpilot/selfdrive/modeld/models -name '*.onnx' -size +95M -exec ./openpilot/common/file_chunker.py {} \;
 
