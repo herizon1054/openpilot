@@ -2003,8 +2003,10 @@ msgstr ""
 "停，不需要額外的紅綠燈辨識模型。<br>移植自 openpilot carrot (cp) 分支。"
 #: dragonpilot/settings/min-feat.lon.traffic-stop.py:32
 #, python-format
+
 msgid "m"
 msgstr "公尺"
+
 #: dragonpilot/settings/min-feat.lon.traffic-stop.py:24
 #, python-format
 msgid ""
