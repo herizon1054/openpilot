@@ -1,0 +1,22 @@
+settings:
+  - key: dp_lon_traffic_stop
+    type: toggle_item
+    title: "紅綠燈／停止標誌自動停車"
+    description: "利用駕駛模型自己預測的行駛軌跡，偵測前方紅燈或停止標誌，讓車輛自然平順地煞停，不需要額外的紅綠燈辨識模型。<br>移植自 openpilot carrot (cp) 分支。"
+    category: "Longitudinal"
+    flags: PERSISTENT
+    param_type: BOOL
+    default: "0"
+  - key: dp_lon_traffic_stop_distance_adjust_m
+    type: spin_button_item
+    title: "停止距離微調"
+    description: "微調車輛相對於偵測到的停止線的停車位置。正值停更遠，負值停更近。<br>這是疊加在固定的相機到車頭保桿修正值之上，建議從小數值開始並依自己的裝機情況調整。"
+    category: "Longitudinal"
+    default: 0
+    min_val: -5
+    max_val: 5
+    step: 1
+    suffix: "m"
+    depends_on: "dp_lon_traffic_stop == 1"
+    flags: PERSISTENT
+    param_type: INT

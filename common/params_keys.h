@@ -165,4 +165,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_ui_rainbow", {PERSISTENT, BOOL, "0"}},
     {"dp_lane_turn_desire", {PERSISTENT, BOOL, "0"}},
     {"dp_lane_turn_value", {PERSISTENT, INT, "20"}},
+    {"dp_htd_enabled", {PERSISTENT, BOOL, "0"}},
+    {"dp_htd_turn_angle_threshold", {PERSISTENT, INT, "60"}},
+    {"AccelPersonalityEnabled", {PERSISTENT, BOOL, "0"}},
+    {"AccelPersonality", {PERSISTENT, INT, "1"}},
+    {"dp_lon_dtsc", {PERSISTENT, BOOL, "0"}},
+    {"dp_lon_traffic_stop", {PERSISTENT, BOOL, "0"}},
+    {"dp_lon_traffic_stop_distance_adjust_m", {PERSISTENT, INT, "0"}},
 };
