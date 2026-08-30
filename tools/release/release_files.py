@@ -17,8 +17,8 @@ blacklist = [
   # no LFS or submodules in release
   ".lfsconfig",
   ".gitattributes",
-  ".git$",
-  ".gitmodules",
+#  ".git$",
+#  ".gitmodules",
   ".run/",
   ".idea/",
 ]
