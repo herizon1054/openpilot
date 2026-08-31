@@ -165,7 +165,10 @@ class TrafficStopController:
   def __init__(self):
     self.params = Params()
     self.is_enabled = self.params.get_bool(PARAM_ENABLED)
-    self.distance_adjust_m = float(self.params.get_int(PARAM_DISTANCE_ADJUST) or 0)
+    # dp: 這支 fork 的 Params class（common/params_pyx.pyx）只有 get()/get_bool()，
+    # 沒有 get_int()——get() 會依 params_keys.h 裡登記的 ParamKeyType 自動轉型，
+    # INT 類型的 key 會直接回傳 python int，不需要另外轉型或給預設值。
+    self.distance_adjust_m = float(self.params.get(PARAM_DISTANCE_ADJUST))
     self._poll_frame = 0
 
     self.state = CRUISE
@@ -193,8 +196,8 @@ class TrafficStopController:
     if self._poll_frame >= PARAM_POLL_FRAMES:
       self._poll_frame = 0
       self.is_enabled = self.params.get_bool(PARAM_ENABLED)
-      adj = self.params.get_int(PARAM_DISTANCE_ADJUST)
-      self.distance_adjust_m = float(np.clip(adj if adj is not None else 0, -5, 5))
+      adj = self.params.get(PARAM_DISTANCE_ADJUST)
+      self.distance_adjust_m = float(np.clip(adj, -5, 5))
 
   def _reset(self):
     self.state = CRUISE
