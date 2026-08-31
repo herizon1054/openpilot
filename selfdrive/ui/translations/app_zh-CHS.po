@@ -1578,3 +1578,40 @@ msgstr "设定触发自动转弯辅助的最高车速限制 (预设为 20 km/h)�
 
 msgid " km/h"
 msgstr " km/h"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:8
+#, python-format
+msgid "Traffic Light / Stop Sign Stopping"
+msgstr "红绿灯／停止标志自动停车"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:22
+#, python-format
+msgid "Traffic Stop Distance Adjust"
+msgstr "停止距离微调"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:10
+#, python-format
+msgid ""
+"Uses the driving model's own predicted path to detect an upcoming red light "
+"or stop sign and brings the car to a smooth stop, without needing a "
+"dedicated traffic-light recognition model.<br>Ported from the openpilot "
+"carrot (cp) branch."
+msgstr ""
+"利用驾驶模型自己预测的行驶轨迹，侦测前方红灯或停止标志，让车辆自然平顺地煞"
+"停，不需要额外的红绿灯辨识模型。<br>移植自 openpilot carrot (cp) 分支。"
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:32
+#, python-format
+
+msgid "m"
+msgstr "公尺"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:24
+#, python-format
+msgid ""
+"Fine-tune where the car stops relative to the detected stop line. Positive "
+"values stop further back, negative values stop closer.<br>This is on top of "
+"a fixed camera-to-bumper correction - start small and adjust based on your "
+"own installation."
+msgstr ""
+"微调车辆相对于侦测到的停止线的停车位置。正值停更远，负值停更近。<br>这是叠加"
+"在固定的相机到车头保杆修正值之上，建议从小数值开始并依自己的装机情况调整。"

@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: dragonpilot\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-09 12:19+0800\n"
+"POT-Creation-Date: 2026-08-27 15:54+0000\n"
 "PO-Revision-Date: 2025-12-18 12:30+0800\n"
 "Last-Translator: dragonpilot\n"
 "Language-Team: Chinese (Traditional)\n"
@@ -15,6 +15,16 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
+
+#: dragonpilot/settings/min-feat.lat.lane_turn_desire.py:31
+#, python-format
+msgid " km/h"
+msgstr " 公里/時"
+
+#: dragonpilot/settings/min-feat.lat.htd.py:31
+#, python-format
+msgid " °"
+msgstr ""
 
 #: dragonpilot/settings/min-feat.lat.lca.py:23
 #, python-format
@@ -26,12 +36,10 @@ msgstr "+ 自動變換車道延遲："
 msgid "0 min = Immediately"
 msgstr "0 分鐘 = 立即"
 
-#: dragonpilot/settings/min-feat.lon.acm.py:9
+#: dragonpilot/settings/min-feat.lon.acc.py:24
 #, python-format
-msgid ""
-"Adaptive Coasting Mode (ACM) reduces braking to allow smoother coasting when "
-"appropriate."
-msgstr "自適應滑行模式 (ACM) 在適當情況下減少煞車，實現更平順的滑行。"
+msgid "Accel Personality"
+msgstr ""
 
 #: dragonpilot/settings/min-feat.lon.aem.py:8
 #, python-format
@@ -48,6 +56,11 @@ msgstr "自適駕駛風格 (APM)"
 msgid ""
 "Adaptive mode switcher between ACC and Blended based on driving context."
 msgstr "根據駕駛情境自動在 ACC 和混合模式間切換。"
+
+#: dragonpilot/settings/min-feat.lat.lane_turn_desire.py:23
+#, python-format
+msgid "Adjust Lane Turn Speed"
+msgstr ""
 
 #: dragonpilot/settings/openpilot.toggles.py:89
 #, python-format
@@ -96,8 +109,8 @@ msgid ""
 "Automatically switches personality to \"Aggressive\" below 0 km/h and "
 "restores your selected personality above 5 km/h."
 msgstr ""
-"當車速低於 0 km/h 時，自動切換至「積極」模式；當車速高於 5 km/h 時，恢復成"
-"您原先選擇的模式。"
+"當車速低於 0 km/h 時，自動切換至「積極」模式；當車速高於 5 km/h 時，恢復成您"
+"原先選擇的模式。"
 
 #: dragonpilot/settings/brand-vag-avoid-eps-lockout.py:8
 #, python-format
@@ -124,6 +137,16 @@ msgstr "將遙測數據廣播至 opview 應用程式 (Android 適用)。"
 #, python-format
 msgid "Clear SSH Keys"
 msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.dtsc.py:9
+#, python-format
+msgid ""
+"DTSC automatically adjusts the vehicle's predicted speed based on upcoming "
+"road curvature and grip conditions.<br>Originally from the openpilot TACO "
+"branch."
+msgstr ""
+"DTSC 根據前方道路曲率和抓地力條件自動調整車輛預測速度。<br>源自 openpilot "
+"TACO 分支。"
 
 #: dragonpilot/settings/min-feat.dev.delay-loggerd.py:8
 #, python-format
@@ -192,9 +215,39 @@ msgstr ""
 msgid "Door Auto Lock/Unlock"
 msgstr "車門自動鎖定/解鎖"
 
+#: dragonpilot/settings/min-feat.lat.htd.py:24
+#, python-format
+msgid "Driver steering angle that triggers HTD (degrees)."
+msgstr ""
+
 #: dragonpilot/settings/openpilot.toggles.py:87
 #, python-format
 msgid "Driving Personality"
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.acc.py:8
+#, python-format
+msgid "Dynamic Accel Personality"
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.dtsc.py:8
+#, python-format
+msgid "Dynamic Turn Speed Control (DTSC)"
+msgstr "動態轉彎速度控制 (DTSC)"
+
+#: dragonpilot/settings/min-feat.lon.acc.py:25
+#, python-format
+msgid "Dynamic acceleration selection mode"
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.acc.py:9
+#, python-format
+msgid "Dynamic acceleration switch"
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.acc.py:33
+#, python-format
+msgid "Eco"
 msgstr ""
 
 #: dragonpilot/settings/openpilot.developer.py:29
@@ -202,15 +255,15 @@ msgstr ""
 msgid "Enable ADB"
 msgstr ""
 
-#: dragonpilot/settings/min-feat.lon.acm.py:8
-#, python-format
-msgid "Enable Adaptive Coasting Mode (ACM)"
-msgstr "啟用自適應滑行模式 (ACM)"
-
 #: dragonpilot/settings/min-feat.dev.o3-v2.py:19
 #, python-format
 msgid "Enable Beep (Warning)"
 msgstr "啟用蜂鳴器（警告）"
+
+#: dragonpilot/settings/min-feat.lat.htd.py:8
+#, python-format
+msgid "Enable Human Turn Detection"
+msgstr ""
 
 #: dragonpilot/settings/openpilot.toggles.py:44
 #, python-format
@@ -283,6 +336,17 @@ msgstr ""
 "微調車輛在車道內的位置。正值使車輛向左偏移，負值使車輛向右偏移。<br>建議從較"
 "小的數值（±5 公分）開始，並依個人喜好進行調整。"
 
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:24
+#, python-format
+msgid ""
+"Fine-tune where the car stops relative to the detected stop line. Positive "
+"values stop further back, negative values stop closer.<br>This is on top of "
+"a fixed camera-to-bumper correction - start small and adjust based on your "
+"own installation."
+msgstr ""
+"微調車輛相對於偵測到的停止線的停車位置。正值停更遠，負值停更近。<br>這是疊加"
+"在固定的相機到車頭保桿修正值之上，建議從小數值開始並依自己的裝機情況調整。"
+
 #: dragonpilot/settings/openpilot.developer.py:64
 #, python-format
 msgid "GitHub Username (SSH Keys)"
@@ -292,6 +356,15 @@ msgstr ""
 #, python-format
 msgid "Hide HUD When Moves above:"
 msgstr "行駛超過此速度時隱藏 HUD："
+
+#: dragonpilot/settings/min-feat.lat.lane_turn_desire.py:9
+#, python-format
+msgid ""
+"If you're driving below the set speed and have your blinker on, the car will "
+"plan a turn in that direction at the nearest drivable path. This prevents "
+"situations (like at red lights) where the car might plan the wrong turn "
+"direction. From SunnyPilot."
+msgstr ""
 
 #: dragonpilot/settings/openpilot.developer.py:40
 #, python-format
@@ -342,6 +415,11 @@ msgstr "MAIN+"
 msgid "MAIN-"
 msgstr "MAIN-"
 
+#: dragonpilot/settings/min-feat.lon.acc.py:32
+#, python-format
+msgid "Normal"
+msgstr ""
+
 #: dragonpilot/settings/min-feat.ui.display-mode.py:10
 #, python-format
 msgid "OP+"
@@ -352,13 +430,13 @@ msgstr "OP+"
 msgid "OP-"
 msgstr "OP-"
 
-#: dragonpilot/settings/min-feat.dev.delay-loggerd.py:15
-#: dragonpilot/settings/min-feat.dev.auto-shutdown.py:15
-#: dragonpilot/settings/min-feat.dev.alert-mode.py:10
-#: dragonpilot/settings/min-feat.ui.hide-hud.py:15
-#: dragonpilot/settings/min-feat.ui.lead-stats.py:10
 #: dragonpilot/settings/min-feat.lat.lca.py:15
 #: dragonpilot/settings/min-feat.lat.lca.py:30
+#: dragonpilot/settings/min-feat.dev.delay-loggerd.py:15
+#: dragonpilot/settings/min-feat.ui.lead-stats.py:10
+#: dragonpilot/settings/min-feat.dev.auto-shutdown.py:15
+#: dragonpilot/settings/min-feat.ui.hide-hud.py:15
+#: dragonpilot/settings/min-feat.dev.alert-mode.py:10
 #, python-format
 msgid "Off"
 msgstr "關閉"
@@ -372,6 +450,11 @@ msgstr "關閉 = 停用自動變換車道。"
 #, python-format
 msgid "Off = Disable LCA.<br>1 mph = 1.2 km/h."
 msgstr "關閉 = 停用變換車道輔助。<br>1 英里/時 = 1.2 公里/時。"
+
+#: dragonpilot/settings/min-feat.lon.ocm.py:8
+#, python-format
+msgid "Overtaking Coasting Mode (OCM)"
+msgstr ""
 
 #: dragonpilot/settings/min-feat.lat.lat-offset.py:8
 #, python-format
@@ -455,6 +538,23 @@ msgid ""
 "information."
 msgstr "詳情請參閱 https://github.com/eFiniLan/openpilot-ext-radar-addon。"
 
+#: dragonpilot/settings/min-feat.lat.lane_turn_desire.py:24
+#, python-format
+msgid "Set the maximum speed for lane turn desires (Default is 20 km/h)."
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.ocm.py:9
+#, python-format
+msgid ""
+"Smoothly coast down to your set speed without engine braking when you exceed "
+"the cruise speed by 20 km/h after overtaking."
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lon.acc.py:31
+#, python-format
+msgid "Sport"
+msgstr ""
+
 #: dragonpilot/settings/openpilot.toggles.py:89
 #, python-format
 msgid "Standard"
@@ -498,9 +598,32 @@ msgstr ""
 "為防止螢幕烙印，在車輛行駛時隱藏速度、最高速度和轉向/DM 圖示。<br>關閉 = 原廠"
 "行為<br>1 公里/時 = 0.6 英里/時"
 
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:8
+#, python-format
+msgid "Traffic Light / Stop Sign Stopping"
+msgstr "紅綠燈／停止標誌自動停車"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:22
+#, python-format
+msgid "Traffic Stop Distance Adjust"
+msgstr "停止距離微調"
+
+#: dragonpilot/settings/min-feat.lat.htd.py:23
+#, python-format
+msgid "Trigger angle"
+msgstr ""
+
 #: dragonpilot/settings/openpilot.developer.py:56
 #, python-format
 msgid "UI Debug Mode"
+msgstr ""
+
+#: dragonpilot/settings/min-feat.lat.htd.py:9
+#, python-format
+msgid ""
+"Unavailable during auto cruise. Automatically pauses lateral control when "
+"the driver applies a large manual steering angle at speeds below 35 km/h, "
+"and smoothly resumes after the steering wheel is centered."
 msgstr ""
 
 #: dragonpilot/settings/min-feat.dev.o3-v2.py:20
@@ -512,6 +635,11 @@ msgstr "使用蜂鳴器進行聲音提示。"
 #, python-format
 msgid "Use External Radar"
 msgstr "使用外部雷達"
+
+#: dragonpilot/settings/min-feat.lat.lane_turn_desire.py:8
+#, python-format
+msgid "Use Lane Turn Desires (LTD)"
+msgstr ""
 
 #: dragonpilot/settings/openpilot.toggles.py:68
 #, python-format
@@ -527,6 +655,18 @@ msgstr ""
 #, python-format
 msgid "Use Stock Longitudinal Control"
 msgstr "使用原廠縱向控制"
+
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:10
+#, python-format
+msgid ""
+"Uses the driving model's own predicted path to detect an upcoming red light "
+"or stop sign and brings the car to a smooth stop, without needing a "
+"dedicated traffic-light recognition model.<br>Ported from the openpilot "
+"carrot (cp) branch."
+msgstr ""
+"利用駕駛模型自己預測的行駛軌跡，偵測前方紅燈或停止標誌，讓車輛自然平順地煞"
+"停，不需要額外的紅綠燈辨識模型。<br>移植自 openpilot carrot (cp) 分支。"
+
 
 #: dragonpilot/settings/min-feat.dev.alert-mode.py:10
 #, python-format
@@ -555,6 +695,11 @@ msgstr ""
 msgid "km/h"
 msgstr "km/h"
 
+#: dragonpilot/settings/min-feat.lon.traffic-stop.py:32
+#, python-format
+msgid "m"
+msgstr "公尺"
+
 #: dragonpilot/settings/min-feat.dev.auto-shutdown.py:14
 #, python-format
 msgid "min"
@@ -580,15 +725,11 @@ msgstr "或使用瀏覽器開啟"
 msgid "scan to access"
 msgstr "掃描以存取"
 
-#: dragonpilot/settings/min-feat.dev.delay-loggerd.py:14
 #: dragonpilot/settings/min-feat.lat.lca.py:29
+#: dragonpilot/settings/min-feat.dev.delay-loggerd.py:14
 #, python-format
 msgid "sec"
 msgstr "秒"
-
-#, python-format
-#~ msgid " km/h"
-#~ msgstr " 公里/時"
 
 #, python-format
 #~ msgid " mins"
@@ -612,20 +753,17 @@ msgstr "秒"
 
 #, python-format
 #~ msgid ""
-#~ "DTSC automatically adjusts the vehicle's predicted speed based on "
-#~ "upcoming road curvature and grip conditions.<br>Originally from the "
-#~ "openpilot TACO branch."
-#~ msgstr ""
-#~ "DTSC 根據前方道路曲率和抓地力條件自動調整車輛預測速度。<br>源自 openpilot "
-#~ "TACO 分支。"
+#~ "Adaptive Coasting Mode (ACM) reduces braking to allow smoother coasting "
+#~ "when appropriate."
+#~ msgstr "自適應滑行模式 (ACM) 在適當情況下減少煞車，實現更平順的滑行。"
 
 #, python-format
 #~ msgid "Dynamic Accel Slew Rate (DASR)"
 #~ msgstr "動態加速變化率 (DASR)"
 
 #, python-format
-#~ msgid "Dynamic Turn Speed Control (DTSC)"
-#~ msgstr "動態轉彎速度控制 (DTSC)"
+#~ msgid "Enable Adaptive Coasting Mode (ACM)"
+#~ msgstr "啟用自適應滑行模式 (ACM)"
 
 #, python-format
 #~ msgid "Enable TSS1 SnG Mod"

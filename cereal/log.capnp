@@ -1167,6 +1167,7 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
     lead1 @2;
     lead2 @3;
     e2e @4;
+    trafficStop @5;  # dp: virtual stop-line obstacle, see selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
   }
 
 
@@ -2553,8 +2554,8 @@ struct Event {
     modelExt @109 :Custom.ModelExt;
     dashyState @110 :Custom.DashyState;
     longitudinalPlanDP @111 :Custom.LongitudinalPlanDP;
-    customReserved5 @112 :Custom.CustomReserved5;
-    customReserved6 @113 :Custom.CustomReserved6;
+    liveGPS @112 :Custom.LiveGPS;
+    tdx @113 :Custom.Tdx;
     customReserved7 @114 :Custom.CustomReserved7;
     customReserved8 @115 :Custom.CustomReserved8;
     customReserved9 @116 :Custom.CustomReserved9;

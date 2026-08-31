@@ -23,7 +23,7 @@ from dragonpilot.selfdrive.controls.lib.apm import APM
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
-ALLOW_THROTTLE_THRESHOLD = 0.5
+ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -101,7 +101,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     if dp_flags & DPFlags.AEM:
       # 已修正：將 sm 拆解並傳入正確的 model_msg, radar_msg 與 v_ego
-      self.aem.update_states(sm['modelV2'], sm['radarState'], sm['carState'].vEgo)
+      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -188,7 +188,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       v_cruise_target = 0.0
 
     # 傳遞 a_min_arr 與 a_max_arr 給修改後的 MPC
-    self.mpc.update(sm['radarState'], v_cruise_target, personality=personality, a_cruise_min_override=a_cruise_min_override, a_min_arr=a_min_dtsc_out, a_max_arr=a_max_dtsc_out)
+    # dp: 紅綠燈/停止標誌虛擬停止線直接餵給 MPC 當障礙物（而非只靠 v_cruise_target
+    # 軟限速），求解出來的煞車曲線比純降速平順。self.traffic_stop.stop_dist_m 由上面
+    # LongitudinalPlannerDP.update_targets() 這一幀已經算好；None 代表目前沒有主動
+    # 停等中，MPC 端會用 disabled sentinel（1000m），不影響一般行駛。
+    self.mpc.update(sm['radarState'], v_cruise_target, personality=personality, a_cruise_min_override=a_cruise_min_override,
+                     a_min_arr=a_min_dtsc_out, a_max_arr=a_max_dtsc_out, traffic_stop_obstacle_m=self.traffic_stop.stop_dist_m)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
