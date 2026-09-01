@@ -40,7 +40,17 @@ NO_STOP_DISTANCE_M = 1000.0                    # "no lead" sentinel distance
 DEFAULT_COMFORT_BRAKE = 2.4                    # m/s^2 baseline for the v_cruise soft-limit formula
 STOPPING_COMFORT_BRAKE_FACTOR = 0.9            # cp multiplies comfort_brake by this while actively braking (STOPPING only)
 
-LEAD_CLOSE_TO_STOP_LINE_M = 2.0                # cancel an active stop if a real lead is this much closer than the stop line
+LEAD_CLOSE_TO_STOP_LINE_M = 4.0                # cancel an active stop if a real lead is this much closer than the stop line
+# TUNED (was 2.0, cp's real default): in the boundary case where a real lead's distance is
+# just outside this margin, the state machine does NOT hand off to normal lead-following, so the
+# MPC ends up targeting the (unbuffered) virtual stop-line obstacle instead of the real lead's
+# own properly-buffered obstacle distance -- see get_stopped_equivalence_factor() in long_mpc.py,
+# which adds ~0 extra buffer for a stationary lead. The final gap to a real lead in that boundary
+# case converges to roughly this margin value, so raising it from 2.0m to 4.0m raises the
+# worst-case final stopped gap from ~2m to ~4m. This does not change the *entry* gate (still
+# blocked by any detected lead, regardless of distance) or make cancellation trigger on distant/
+# irrelevant leads elsewhere in radar range -- it only widens how close a real lead near the
+# stop line needs to be before the module hands off to normal lead-following.
 STOP_DISTANCE_RELATCH_MIN_M = 10.0             # cp: only re-latch actual_stop_distance from the model while still >10m out
 
 STOPPED_SPEED_MS = 0.3                         # "fully stopped" threshold

@@ -158,10 +158,39 @@ class TestTrafficStopController:
     run_frames(controller, model, cs, rs, v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
     assert controller._state == TrafficStopState.STOPPING
 
-    rs_lead = MockRadarState(present=True, dRel=10.0)  # within 2m of the ~15m filtered stop-line estimate
+    rs_lead = MockRadarState(present=True, dRel=10.0)  # far closer than the ~15m filtered stop-line estimate
     result = run_frames(controller, model, cs, rs_lead, v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
     assert controller._state == TrafficStopState.CRUISE
     assert result.stop_dist_m is None
+
+  def test_lead_cancel_margin_is_4m_not_2m(self):
+    """LEAD_CLOSE_TO_STOP_LINE_M was raised from cp's 2.0m to 4.0m so the worst-case final
+    stopped gap to a real lead near the boundary is ~4m instead of ~2m (see conversation: real
+    lead just outside the margin means the MPC targets the unbuffered virtual stop-line obstacle
+    instead of the real lead's own obstacle distance)."""
+    cs = MockCarState()
+
+    # lead 3m beyond the stop-line estimate: must cancel under the new 4.0m margin (would NOT
+    # have cancelled under cp's original 2.0m margin)
+    controller_a = TrafficStopController(params=MockParams(enabled=True))
+    model_a = approaching_red_light_model(model_x_end=20.0)
+    run_frames(controller_a, model_a, cs, MockRadarState(present=False), v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
+    assert controller_a._state == TrafficStopState.STOPPING
+    result_a = run_frames(controller_a, model_a, cs, MockRadarState(present=True, dRel=23.0),
+                           v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
+    assert controller_a._state == TrafficStopState.CRUISE
+    assert result_a.stop_dist_m is None
+
+    # lead 6m beyond the stop-line estimate: still outside even the widened 4.0m margin, module
+    # keeps managing its own stop
+    controller_b = TrafficStopController(params=MockParams(enabled=True))
+    model_b = approaching_red_light_model(model_x_end=20.0)
+    run_frames(controller_b, model_b, cs, MockRadarState(present=False), v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
+    assert controller_b._state == TrafficStopState.STOPPING
+    result_b = run_frames(controller_b, model_b, cs, MockRadarState(present=True, dRel=26.0),
+                           v_ego=10.0, a_ego=0.0, v_cruise=10.0, n=1)
+    assert controller_b._state == TrafficStopState.STOPPING
+    assert result_b.stop_dist_m is not None
 
   def test_reaches_stopped_state_on_first_slow_frame(self):
     """cp transitions STOPPING -> STOPPED the instant v_ego < 0.3 m/s -- no multi-frame hold."""
