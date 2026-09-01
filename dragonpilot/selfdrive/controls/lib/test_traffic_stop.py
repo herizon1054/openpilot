@@ -91,3 +91,54 @@ def test_traffic_stop_obstacle_array_feeds_mpc():
   x_obstacles2 = np.column_stack([cruise_like, active])
   assert np.argmin(x_obstacles2[0]) == 1
   assert np.min(x_obstacles2, axis=1)[0] == pytest.approx(12.3)
+
+
+# --- lead-cancel margin (state machine level, needs the real Params/DT_MDL/V_CRUISE_MAX
+# import chain - skipped automatically without the compiled extension, same as above) ---
+#
+# cp's own carrot_functions.py deliberately uses a distance-threshold cancel condition here
+# (not "any lead cancels") - see lead_cancel_margin_guide.md. An earlier revision of this
+# module briefly "fixed" this into an unconditional cancel, which is NOT what cp does and
+# introduces its own new failure mode (an unrelated nearby vehicle - different lane, outside
+# the path - could cancel an in-progress stop). These tests lock in the correct, restored
+# threshold-based behavior at CANCEL_LEAD_MARGIN_M's boundary.
+def test_lead_cancel_margin_boundary():
+  ts = pytest.importorskip(
+    "dragonpilot.selfdrive.controls.lib.traffic_stop",
+    reason="requires the compiled Params extension")
+  import types
+
+  def model_v2(x, y, v):
+    return types.SimpleNamespace(position=types.SimpleNamespace(x=x, y=y), velocity=types.SimpleNamespace(x=v))
+
+  def car_state():
+    return types.SimpleNamespace(steeringAngleDeg=0.0, gasPressed=False, leftBlinker=False)
+
+  def radar_state(d_rel):
+    return types.SimpleNamespace(leadOne=types.SimpleNamespace(status=True, dRel=d_rel))
+
+  def stopping_ctrl(stop_model_x_rl):
+    ctrl = ts.TrafficStopController()
+    ctrl.is_enabled = True
+    ctrl.state = ts.STOPPING
+    ctrl.stop_model_x_rl = stop_model_x_rl
+    ctrl.stop_model_x_raw = stop_model_x_rl
+    ctrl.actual_stop_distance = 0.0
+    ctrl.reference_speed_kph = 20.0
+    return ctrl
+
+  model_x = [20.0] * 33
+  model_v = [2.0] * 33
+  model_y = [0.0] * 33
+
+  # lead just inside the margin -> must cede control back to normal lead-follow
+  ctrl_in = stopping_ctrl(20.0)
+  ctrl_in.update(model_v2(model_x, model_y, model_v), car_state(), radar_state(20.0 + 3.0), 5.0, -0.5, 15.0)
+  assert ctrl_in.state == ts.CRUISE
+  assert ctrl_in.stop_dist_m is None
+
+  # lead beyond the margin -> module correctly keeps managing its own stop (cp's actual design)
+  ctrl_out = stopping_ctrl(20.0)
+  ctrl_out.update(model_v2(model_x, model_y, model_v), car_state(), radar_state(20.0 + 6.0), 5.0, -0.5, 15.0)
+  assert ctrl_out.state == ts.STOPPING
+  assert ctrl_out.stop_dist_m is not None

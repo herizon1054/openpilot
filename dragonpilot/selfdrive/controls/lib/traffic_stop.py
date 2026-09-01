@@ -70,7 +70,18 @@ GREEN_CONFIRM_FRAMES = round(0.2 / DT_MDL)       # red has no debounce, green ne
 GAS_SUPPRESS_FRAMES = round(10.0 / DT_MDL)       # 10s re-detect suppression after gas override
 
 RECALIBRATE_MIN_DISTANCE_M = 10.0  # only re-lock the dead-reckoning accumulator above this
-CANCEL_LEAD_MARGIN_M = 2.0         # lead closing inside this margin cancels an active stop
+
+# 前車「取消」判斷門檻。cp 原始碼（selfdrive/carrot/carrot_functions.py）這裡固定是
+# 2.0，且刻意跟「進入」判斷（只要有任何前車就阻擋，不比距離）用不同條件——這是 cp
+# 的既有設計，不是本次移植的邊界情況。上一輪我誤把這個不對稱當成本模組自己引入的
+# 安全性缺陷，改成「只要偵測到任何前車就無條件取消」，這其實引入了新的副作用：正在
+# 進行中的停等，會因為雷達範圍內任何跟停止線無關的車（隔壁車道、路徑外）而被整個
+# 取消掉。現在改回維持 cp 原本「距離門檻」判斷的架構，只把門檻值調大——原本 2.0m 太
+# 緊會讓最終跟車距離卡在 2m 附近，調大到 4.0m 讓邊界情況下的最終距離更寬鬆，同時保留
+# 「前車距離要夠接近虛擬停止點才視為同一個相關物體」這個判斷精神。實際最終跟車距離
+# 還會疊加 long_mpc.py 的 get_safe_obstacle_distance()／LEAD_DANGER_FACTOR 這層跟
+# 障礙物來源無關的舒適距離軟性懲罰項，兩層一起作用，需要路測驗證確切數字。
+CANCEL_LEAD_MARGIN_M = 4.0
 
 MEDIAN_WINDOW = 3
 MOVING_AVG_WINDOW = 15
@@ -258,7 +269,11 @@ class TrafficStopController:
     elif self.gas_suppress_frames > 0:
       self.gas_suppress_frames -= 1
 
-    lead_closer_than_stop = lead_present and (d_rel - self.stop_model_x_raw) < CANCEL_LEAD_MARGIN_M
+    # dp 修正歷史：這裡曾經一度改成「只要偵測到任何前車就無條件取消」（lead_present）。
+    # 後來確認 cp 原始碼本來就是用距離門檻判斷取消（CANCEL_LEAD_MARGIN_M，見上方常數
+    # 註解），「無條件取消」並非 cp 設計、且會被雷達範圍內任何不相關的車誤觸發，已經
+    # 改回維持 cp 原本的門檻架構，只調大門檻值。
+    lead_cancels = lead_present and (d_rel - self.stop_model_x_raw) < CANCEL_LEAD_MARGIN_M
 
     if self.state == CRUISE:
       entry_allowed = is_traffic_stop_entry_allowed(steering_angle_deg)
@@ -272,7 +287,7 @@ class TrafficStopController:
     elif self.state == STOPPING:
       if gas_pressed:
         self.state = CRUISE
-      elif lead_closer_than_stop:
+      elif lead_cancels:
         self.state = CRUISE
       elif traffic_state == GREEN:
         self.state = CRUISE
@@ -288,7 +303,7 @@ class TrafficStopController:
     elif self.state == STOPPED:
       if gas_pressed:
         self.state = CRUISE
-      elif lead_closer_than_stop:
+      elif lead_cancels:
         self.state = CRUISE
       else:
         if self.stopped_grace_frames == 0:
