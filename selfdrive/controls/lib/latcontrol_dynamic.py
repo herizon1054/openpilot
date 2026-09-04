@@ -12,9 +12,10 @@ dp: 移植自開發者 Candy0707 對 sunnypilot 的實際修改（已上車驗�
   - dpagel 的 LatControl 系列建構子簽章為 (CP, CI, dt)，沒有 CP_SP（sunnypilot 多了 CarParamsSP）。
   - dpagel 的 LatControl.update() 沒有 calibrated_pose 參數。
 
-已知但刻意保留、與原始 commit 一致的地方（非本次移植引入）：
-  - self.torque_ctrl.reset() / self.angle_ctrl.reset() 呼叫的是 LatControl 基底類別的 reset()，
-    並不會清除 LatControlTorque 內部 self.pid 的積分項；原始 commit 亦是如此寫法。
+已知已依您指示改回、與最初 sunnypilot 原始碼（.rar/zip 快照）一致的地方：
+  - 切回 Torque 時，以及 reset() 時，會額外呼叫 self.torque_ctrl.pid.reset() 清空 PID 積分項。
+    這點與開發者 GitHub commit（547751461052ea2bf39bc438785d6717bc7a6e31，未清積分）不同，
+    是您明確要求比照最初提供的 sunnypilot 原始碼所做的選擇。
 
 已知額外補上、與原始 commit 不同的一處（請見 update_live_torque_params）：
   - 原始 commit 未定義 update_live_torque_params()，而 controlsd.py 在 lateralTuning 為
@@ -56,6 +57,8 @@ class LatControlDynamic(LatControl):
     elif CS.vEgo < 16.0 and self.use_angle and is_safe_to_switch:
       self.use_angle = False
       self.torque_ctrl.reset()  # 確保扭矩控制器狀態乾淨
+      if hasattr(self.torque_ctrl, 'pid'):
+        self.torque_ctrl.pid.reset()  # 徹底清除積分
 
     # 2. Angle 控制器永遠運算 (幾何計算，無風險)
     _, a_steer, a_log = self.angle_ctrl.update(active, CS, VM, params, steer_limited_by_safety, desired_curvature,
@@ -77,3 +80,5 @@ class LatControlDynamic(LatControl):
     super().reset()
     self.angle_ctrl.reset()
     self.torque_ctrl.reset()
+    if hasattr(self.torque_ctrl, 'pid'):
+      self.torque_ctrl.pid.reset()
