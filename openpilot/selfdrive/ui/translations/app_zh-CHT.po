@@ -919,7 +919,7 @@ msgstr "啟用動態實驗模式控制"
 
 #: selfdrive\ui\sunnypilot\layouts\settings\steering.py
 msgid "Enable Human Turn Detection(HTD)"
-msgstr "啟用手動轉彎偵測"
+msgstr "啟用手動轉彎偵測(HTD)"
 
 #: selfdrive\ui\layouts\settings\toggles.py
 msgid "Enable Lane Departure Warnings"
