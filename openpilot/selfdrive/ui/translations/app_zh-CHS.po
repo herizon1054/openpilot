@@ -825,6 +825,10 @@ msgstr "驾驶员摄像头预览"
 msgid "Driver camera unavailable"
 msgstr "驾驶员摄像头不可用"
 
+#: selfdrive\ui\sunnypilot\layouts\settings\steering.py
+msgid "Driver steering angle that triggers HTD (degrees)."
+msgstr "触发 HTD 的驾驶转向角度（度）。"
+
 #: selfdrive\ui\sunnypilot\layouts\settings\trips.py
 msgid "Drives"
 msgstr "行程"
@@ -912,9 +916,17 @@ msgstr "启用自定义调校"
 msgid "Enable Dynamic Experimental Control"
 msgstr "启用动态实验模式控制"
 
+#: selfdrive\ui\sunnypilot\layouts\settings\steering.py
+msgid "Enable Human Turn Detection(HTD)"
+msgstr "启用手动转弯侦测"
+
 #: selfdrive\ui\layouts\settings\toggles.py
 msgid "Enable Lane Departure Warnings"
 msgstr "启用车道偏离警示"
+
+#: selfdrive\ui\sunnypilot\layouts\settings\cruise.py
+msgid "Enable Path Deviation Monitor"
+msgstr "启用路径偏移监控(PDM)"
 
 #: system\ui\widgets\network.py
 msgid "Enable Roaming"
@@ -1286,6 +1298,10 @@ msgstr "高"
 #: system\ui\widgets\network.py
 msgid "Hidden Network"
 msgstr "隐藏网络"
+
+#: selfdrive\ui\sunnypilot\layouts\settings\steering.py
+msgid "HTD Trigger angle"
+msgstr "触发角度"
 
 #: selfdrive\ui\sunnypilot\layouts\settings\trips.py
 msgid "Hours"
@@ -2629,6 +2645,10 @@ msgstr "无法挂载资料分割区。分区可能已损坏。按确认以擦除
 #: selfdrive\ui\sunnypilot\layouts\settings\sunnylink.py
 msgid "Unable to restore the settings, try again later."
 msgstr "无法恢复设置，请稍后重试。"
+
+#: selfdrive\ui\sunnypilot\layouts\settings\steering.py
+msgid "Unavailable during cruise control.Automatically pause steering when the driver applies large manual steering input, then smoothly resume."
+msgstr "巡航控制期间不可用。当驾驶员进行大幅度手动转向时，自动暂停转向，然后平稳恢复。"
 
 #: selfdrive\ui\sunnypilot\layouts\settings\steering_sub_layouts\mads_settings.py
 msgid "Unified Engagement Mode (UEM)"

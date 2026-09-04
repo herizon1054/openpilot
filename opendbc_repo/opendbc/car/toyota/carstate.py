@@ -179,8 +179,13 @@ class CarState(CarStateBase, CarStateExt):
     ret.espDisabled = cp.vl["ESP_CONTROL"]["TC_DISABLED"] != 0
 
     if self.CP.enableBsm:
-      ret.leftBlindspot = (cp.vl["BSM"]["L_ADJACENT"] == 1) or (cp.vl["BSM"]["L_APPROACHING"] == 1)
-      ret.rightBlindspot = (cp.vl["BSM"]["R_ADJACENT"] == 1) or (cp.vl["BSM"]["R_APPROACHING"] == 1)
+      # 嘗試使用 BSM 燈光作為參考 (SECOC 平台的 BSM 訊息無 L_LIGHT/R_LIGHT 訊號，僅 nodsu_pt 有)
+      if self.CP.flags & ToyotaFlags.SECOC:
+        ret.leftBlindspot = (cp.vl["BSM"]["L_ADJACENT"] == 1) or (cp.vl["BSM"]["L_APPROACHING"] == 1)
+        ret.rightBlindspot = (cp.vl["BSM"]["R_ADJACENT"] == 1) or (cp.vl["BSM"]["R_APPROACHING"] == 1)
+      else:
+        ret.leftBlindspot = (cp.vl["BSM"]["L_ADJACENT"] == 1) or (cp.vl["BSM"]["L_APPROACHING"] == 1) or (cp.vl["BSM"]["L_LIGHT"] > 0)
+        ret.rightBlindspot = (cp.vl["BSM"]["R_ADJACENT"] == 1) or (cp.vl["BSM"]["R_APPROACHING"] == 1) or (cp.vl["BSM"]["R_LIGHT"] > 0)
 
     if self.CP.carFingerprint != CAR.TOYOTA_PRIUS_V:
       self.lkas_hud = copy.copy(cp_cam.vl["LKAS_HUD"])

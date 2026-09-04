@@ -35,6 +35,18 @@ class ControlsExt(ModelStateBase):
     self.pm_services_ext = ['carControlSP']
 
   def initialize_lateral_control(self, lac, CI, dt):
+    # --- 攔截並注入 TSS2 動態熱備援控制器 (移除 try-except，錯誤直接報出) ---
+    from opendbc.car.toyota.values import TSS2_CAR
+
+    # 🌟 必須先用 .which() 判斷當前活躍的 Union 是不是 'torque'，避免 Cap'n Proto 底層報錯
+    if self.CP.carFingerprint in TSS2_CAR and self.CP.lateralTuning.which() == 'torque':
+      # 確認是 torque 後，才能安全讀取裡面的參數長度
+      if len(self.CP.lateralTuning.torque.as_builder().to_dict()) > 0:
+        # ⚠️ 請注意：這裡的 import 路徑必須完全正確。如果寫錯，開機就會直接報錯！
+        from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_dynamic import LatControlDynamic
+        return LatControlDynamic(self.CP, self.CP_SP, CI, dt)
+    # ----------------------------------------
+
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
     torque_versions = self.params.get("TorqueControlTune")
     if not enforce_torque_control:

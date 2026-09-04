@@ -17,6 +17,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
+from openpilot.sunnypilot.selfdrive.controls.lib.path_deviation_monitor.path_deviation_monitor import PathDeviationMonitor
+
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
@@ -32,6 +34,7 @@ class LongitudinalPlannerSP:
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
     self.source = LongitudinalPlanSource.cruise
     self.e2e_alerts_helper = E2EAlertsHelper()
+    self.pdm = PathDeviationMonitor(CP, mpc)
 
     self.output_v_target = 0.
     self.output_a_target = 0.
@@ -62,11 +65,14 @@ class LongitudinalPlannerSP:
     self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, self.resolver.speed_limit,
                     self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp)
 
+    self.pdm.update_target(sm, v_ego, a_ego, v_cruise)
+
     targets = {
       LongitudinalPlanSource.cruise: (v_cruise, a_ego),
       LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
       LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
+      LongitudinalPlanSource.pdm: (self.pdm.output_v_target, self.pdm.output_a_target),
     }
 
     self.source = min(targets, key=lambda k: targets[k][0])
@@ -77,6 +83,7 @@ class LongitudinalPlannerSP:
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
+    self.pdm.update(sm)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
@@ -137,5 +144,8 @@ class LongitudinalPlannerSP:
     e2eAlerts = longitudinalPlanSP.e2eAlerts
     e2eAlerts.greenLightAlert = self.e2e_alerts_helper.green_light_alert
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
+
+    # Path Deviation Monitor
+    self.pdm.write_to_msg(longitudinalPlanSP.pathDeviationMonitor)
 
     pm.send('longitudinalPlanSP', plan_sp_send)

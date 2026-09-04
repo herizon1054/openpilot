@@ -204,6 +204,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  pathDeviationMonitor @8 :PathDeviationMonitor;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -300,6 +301,18 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     sccVision @1;
     sccMap @2;
     speedLimitAssist @3;
+    pdm @4;
+  }
+
+  struct PathDeviationMonitor {
+    available @0 :Bool;
+    enable @1 :Bool;
+    action @2 :Bool;
+    braking @3 :Bool;
+    vTarget @4 :Float32;
+    aTarget @5 :Float32;
+    outputVtarget @6 :Float32;
+    outputAtarget @7 :Float32;
   }
 
   struct E2eAlerts {
@@ -496,5 +509,29 @@ struct CustomReserved17 @0xa30662f84033036c {
 struct CustomReserved18 @0xc86a3d38d13eb3ef {
 }
 
-struct CustomReserved19 @0xa4f1eb3323f5f582 {
+struct Tdx @0xa4f1eb3323f5f582 {
+  trafficStatus @0 :TrafficStatus;
+  roadEvent @1 :RoadEvent;
+
+  struct TrafficStatus {
+    sectionId @0 :Text;
+    speed @1 :Int32;
+    nextSectionId @2 :Text;
+    nextSpeed @3 :Int32;
+    status @4 :Status;
+
+    enum Status {
+      unknown @0;
+      freeFlow @1;
+      heavyTraffic @2;
+      severeCongestion @3;
+    }
+  }
+
+  struct RoadEvent {
+    sectionId @0 :Text;
+    description @1 :Text;
+    distance @2 :Float32;
+    isActive @3 :Bool;
+  }
 }

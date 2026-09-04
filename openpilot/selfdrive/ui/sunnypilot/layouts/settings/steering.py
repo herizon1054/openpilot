@@ -81,6 +81,23 @@ class SteeringLayout(Widget):
       description=lambda: tr("Delay before lateral control resumes after the turn signal ends."),
       label_callback=lambda delay: f'{delay} {tr("s")}'
     )
+    # --- 新增 HTD 功能 ---
+    self._htd_enabled = toggle_item_sp(
+      param="htd_enabled",
+      title=lambda: tr("Enable Human Turn Detection(HTD)"),
+      description=lambda: tr("Unavailable during cruise control.Automatically pause steering when the driver applies large manual steering input, then smoothly resume."),
+    )
+
+    self._htd_turn_angle_threshold = option_item_sp(
+      param="htd_turn_angle_threshold",
+      title=lambda: tr("HTD Trigger angle"),
+      description=lambda: tr("Driver steering angle that triggers HTD (degrees)."),
+      min_value=60,
+      max_value=120,
+      value_change_step=5,
+      label_callback=lambda angle: f'{angle} °',
+    )
+    # -------------------
     self._torque_control_toggle = toggle_item_sp(
       param="EnforceTorqueControl",
       title=lambda: tr("Enforce Torque Lateral Control"),
@@ -106,6 +123,9 @@ class SteeringLayout(Widget):
       self._blinker_control_toggle,
       self._blinker_control_options,
       self._blinker_reengage_delay,
+      LineSeparatorSP(40),              # 加入分隔線
+      self._htd_enabled,                # 加入 HTD 開關
+      self._htd_turn_angle_threshold,   # 加入 HTD 角度調整
       LineSeparatorSP(40),
       self._torque_control_toggle,
       self._torque_customization_button,
@@ -143,6 +163,17 @@ class SteeringLayout(Widget):
     self._nnlc_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not enforce_torque_enabled and not jerk_aware_enabled)
     self._torque_control_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not nnlc_enabled)
     self._torque_customization_button.action_item.set_enabled(self._torque_control_toggle.action_item.get_state())
+
+    # --- 更新 HTD UI 狀態 ---
+    htd_is_enabled = self._htd_enabled.action_item.get_state()
+
+    # 只有當 HTD 打開時，才顯示微調角度的設定
+    self._htd_turn_angle_threshold.set_visible(htd_is_enabled)
+
+    # 停車 (offroad) 時才能設定，避免行駛中誤觸
+    self._htd_enabled.action_item.set_enabled(ui_state.is_offroad())
+    self._htd_turn_angle_threshold.action_item.set_enabled(ui_state.is_offroad())
+    # ----------------------
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

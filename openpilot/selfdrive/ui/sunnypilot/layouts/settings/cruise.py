@@ -104,6 +104,11 @@ class CruiseLayout(Widget):
       label_callback=self._get_traffic_stop_distance_adjust_label,
       inline=True)
 
+    self.pdm_toggle = toggle_item_sp(
+      title=tr("Enable Path Deviation Monitor"),
+      description=tr(""),
+      param="PathDeviationMonitor")
+
     items = [
       self.icbm_toggle,
       self.dec_toggle,
@@ -114,6 +119,7 @@ class CruiseLayout(Widget):
       self.custom_acc_long_increment,
       self.traffic_stop_toggle,
       self.traffic_stop_distance_adjust,
+      self.pdm_toggle,
       self.sla_settings_button,
     ]
     return items

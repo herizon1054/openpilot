@@ -203,6 +203,11 @@ procs += [
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 ]
 
+# tdx (Taiwan TDX road data)
+procs += [
+  PythonProcess("tdx", "openpilot.sunnypilot.selfdrive.controls.lib.tdx", only_onroad),
+]
+
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
   procs += [PythonProcess("sunnylink_uploader", "openpilot.sunnypilot.sunnylink.uploader", use_sunnylink_uploader_shim)]
 

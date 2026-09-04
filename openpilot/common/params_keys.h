@@ -139,6 +139,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // --- sunnypilot params --- //
     {"ApiCache_DriveStats", {PERSISTENT, JSON}},
+    // --- htd (Human Turn Detection) ---
+    {"htd_enabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"htd_turn_angle_threshold", {PERSISTENT | BACKUP, INT, "90"}},
+    // --- tdx (Taiwan TDX road data) ---
+    {"TdxFreewayShapes", {PERSISTENT | BACKUP, JSON}},
+    // --- path_deviation_monitor (PDM) ---
+    {"PathDeviationMonitor", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeBsmDelay", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeTimer", {PERSISTENT | BACKUP, INT, "0"}},
     {"BlinkerLateralReengageDelay", {PERSISTENT | BACKUP, INT, "0"}},  // seconds
