@@ -156,6 +156,25 @@ class Controls(ControlsExt):
       actuators.curvature = float(lateral_output)
     else:
       actuators.steeringAngleDeg = float(lateral_output)
+
+    # --- TSS2 動態角度/扭矩熱切換：逐幀動態標示目前實際採用的側向控制型態 ---
+    # self.LaC 若為 LatControlDynamic，會有 use_angle 這個屬性；其他控制器
+    # （LatControlPID/LatControlAngle/LatControlTorque/LatControlCurvature）
+    # 都沒有這個屬性。
+    # 【重要】即使不是 LatControlDynamic，也必須把這個動態欄位設成跟開機時
+    # 固定的 self.CP.steerControlType 一致 —— 否則欄位會停在 capnp 預設值
+    # torque(0)，導致「靜態角度控制」車型（例如開了 ToyotaEnableAngleControl
+    # 的 TSS2 車）在 carcontroller.py 裡被新加的動態判斷誤判成 torque，
+    # 反而讓原本運作正常的 LTA 角度控制失效，是一個真正的回歸風險。
+    if hasattr(self.LaC, 'use_angle'):
+      actuators.steerControlType = (car.CarControl.Actuators.SteerControlType.angle if self.LaC.use_angle
+                                     else car.CarControl.Actuators.SteerControlType.torque)
+    else:
+      actuators.steerControlType = (car.CarControl.Actuators.SteerControlType.angle
+                                     if self.CP.steerControlType == car.CarParams.SteerControlType.angle
+                                     else car.CarControl.Actuators.SteerControlType.torque)
+    # -------------------------------------------------------------------
+
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -226,8 +245,18 @@ class Controls(ControlsExt):
     # trigger the car's stock driver monitoring escalation
     CC.driverMonitoringEscalation = cs.forceDecel
 
+    # --- TSS2 動態角度/扭矩熱切換的防崩潰 log 分支 ---
+    # self.LaC 若為 LatControlDynamic，log 型別要跟著 self.LaC.use_angle 動態決定，
+    # 不能只看開機時就固定的 self.CP.steerControlType / lateralTuning，否則
+    # lac_log 的實際型別（LateralAngleState / LateralTorqueState）跟這裡要塞入的
+    # capnp union 分支不一致時，會直接拋出 KjException 讓 controlsd 整個崩潰。
     lat_tuning = self.CP.lateralTuning.which()
-    if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
+    if hasattr(self.LaC, 'use_angle'):
+      if self.LaC.use_angle:
+        cs.lateralControlState.angleState = lac_log
+      else:
+        cs.lateralControlState.torqueState = lac_log
+    elif self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       cs.lateralControlState.angleState = lac_log
     elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
       cs.lateralControlState.curvatureState = lac_log
@@ -235,6 +264,7 @@ class Controls(ControlsExt):
       cs.lateralControlState.pidState = lac_log
     elif lat_tuning == 'torque':
       cs.lateralControlState.torqueState = lac_log
+    # -------------------------------------------------
 
     self.pm.send('controlsState', dat)
 

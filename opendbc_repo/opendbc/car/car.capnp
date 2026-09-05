@@ -364,6 +364,7 @@ struct CarControl {
 
   struct Actuators {
     # lateral commands, mutually exclusive
+    steerControlType @9 :SteerControlType;
     torque @2: Float32;  # [0.0, 1.0]
     steeringAngleDeg @3: Float32;
     curvature @7: Float32;
@@ -377,6 +378,16 @@ struct CarControl {
     brake @1: Float32; # [0.0, 1.0]
     torqueOutputCan @8: Float32;   # value sent over can to the car
     speed @6: Float32;  # m/s
+
+    # 【新增】用於 TSS2 動態角度/扭矩熱切換：每一幀動態標示當前實際採用哪一種
+    # 側向控制輸出（torque 或 angle），供 carcontroller.py 依此即時決定要送出
+    # LKA(torque) 還是 LTA(angle) CAN 命令。這個欄位與 CarParams.steerControlType
+    # 不同——CarParams 版本是開機時就固定的靜態設定，這個 Actuators 版本是逐幀
+    # 動態值，兩者用途不同，不可混用。
+    enum SteerControlType {
+      torque @0;
+      angle @1;
+    }
 
     enum LongControlState @0xe40f3a917d908282{
       off @0;

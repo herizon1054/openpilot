@@ -56,6 +56,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     GasInterceptorCarController.__init__(self, CP, CP_SP)
     self.CAN = CanBus(CP)
     self.params = CarControllerParams(self.CP)
+    self.steer_control_type = self.CP.steerControlType
     self.last_torque = 0
     self.last_angle = 0
     self.alert_active = False
@@ -96,6 +97,16 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # *** control msgs ***
     can_sends = []
 
+    # --- TSS2 動態角度/扭矩熱切換：讀取每幀動態旗標，決定本幀要用 torque 還是 angle ---
+    # 只對 TSS2 車型生效（LTA 硬體只有 TSS2 才支援），其餘車型維持開機固定的
+    # self.CP.steerControlType，行為與移植前完全一致，不受影響。
+    if self.CP.flags & ToyotaFlags.TSS2:
+      if actuators.steerControlType == structs.CarControl.Actuators.SteerControlType.angle:
+        self.steer_control_type = SteerControlType.angle
+      else:
+        self.steer_control_type = SteerControlType.torque
+    # ---------------------------------------------------------------------------
+
     # *** handle secoc reset counter increase ***
     if self.CP.flags & ToyotaFlags.SECOC.value:
       if CS.secoc_synchronization['RESET_CNT'] != self.secoc_prev_reset_counter:
@@ -120,7 +131,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
       apply_torque = 0
 
     # *** steer angle ***
-    if self.CP.steerControlType == SteerControlType.angle:
+    if self.steer_control_type == SteerControlType.angle:
       # If using LTA control, disable LKA and set steering angle command
       apply_torque = 0
       apply_steer_req = False
@@ -132,6 +143,10 @@ class CarController(CarControllerBase, GasInterceptorCarController):
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
                                                        CC.latActive, self.params.ANGLE_LIMITS)
+    else:
+      # 關鍵：在 Torque 模式下讓 last_angle 持續追蹤實際角度，避免下次切回 LTA
+      # 角度模式的瞬間因為 last_angle 是舊值而發生角度突變/抖動。
+      self.last_angle = CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
 
     self.last_torque = apply_torque
 
@@ -151,7 +166,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
     if self.frame % 2 == 0 and self.CP.flags & ToyotaFlags.TSS2:
-      lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
+      lta_active = lat_active and self.steer_control_type == SteerControlType.angle
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.
       full_torque_condition = (abs(CS.out.steeringTorqueEps) < self.params.STEER_MAX and
@@ -159,7 +174,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
       # TORQUE_WIND_DOWN at 0 ramps down torque at roughly the max down rate of 1500 units/sec
       torque_wind_down = 100 if lta_active and full_torque_condition else 0
-      can_sends.append(toyotacan.create_lta_steer_command(self.packer, self.CP.steerControlType, self.last_angle,
+      can_sends.append(toyotacan.create_lta_steer_command(self.packer, self.steer_control_type, self.last_angle,
                                                           lta_active, self.frame // 2, torque_wind_down, self.CAN.pt))
 
       if self.CP.flags & ToyotaFlags.SECOC.value:
