@@ -97,15 +97,17 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # *** control msgs ***
     can_sends = []
 
-    # --- TSS2 動態角度/扭矩熱切換：讀取每幀動態旗標，決定本幀要用 torque 還是 angle ---
-    # 只對 TSS2 車型生效（LTA 硬體只有 TSS2 才支援），其餘車型維持開機固定的
-    # self.CP.steerControlType，行為與移植前完全一致，不受影響。
-    if self.CP.flags & ToyotaFlags.TSS2:
+    # 【逐字對照 spcandy carcontroller.py】原本這裡曾經改成完全還原（不讀取
+    # actuators.steerControlType），但依你的指示，這裡改回跟 spcandy 逐字一致
+    # 的寫法。注意：這個欄位在 spcandy 自己的 Python 程式碼裡從頭到尾也沒有
+    # 任何地方真正被賦值（已用 grep 對整個 spcandy 原始碼確認過），所以會
+    # 永遠停在 capnp 預設值 torque(0)，這裡的判斷實務上等同無作用──跟
+    # spcandy 「已確認可用」版本的實際行為完全一致，不多不少。
+    if self.CP.carFingerprint in TSS2_CAR:
       if actuators.steerControlType == structs.CarControl.Actuators.SteerControlType.angle:
         self.steer_control_type = SteerControlType.angle
       else:
         self.steer_control_type = SteerControlType.torque
-    # ---------------------------------------------------------------------------
 
     # *** handle secoc reset counter increase ***
     if self.CP.flags & ToyotaFlags.SECOC.value:
@@ -165,7 +167,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     can_sends.append(steer_command)
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
-    if self.frame % 2 == 0 and self.CP.flags & ToyotaFlags.TSS2:
+    if self.frame % 2 == 0 and self.CP.carFingerprint in TSS2_CAR:
       lta_active = lat_active and self.steer_control_type == SteerControlType.angle
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.

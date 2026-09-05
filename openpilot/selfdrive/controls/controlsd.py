@@ -157,15 +157,15 @@ class Controls(ControlsExt):
     else:
       actuators.steeringAngleDeg = float(lateral_output)
 
-    # --- TSS2 動態角度/扭矩熱切換：逐幀動態標示目前實際採用的側向控制型態 ---
-    # self.LaC 若為 LatControlDynamic，會有 use_angle 這個屬性；其他控制器
-    # （LatControlPID/LatControlAngle/LatControlTorque/LatControlCurvature）
-    # 都沒有這個屬性。
-    # 【重要】即使不是 LatControlDynamic，也必須把這個動態欄位設成跟開機時
-    # 固定的 self.CP.steerControlType 一致 —— 否則欄位會停在 capnp 預設值
-    # torque(0)，導致「靜態角度控制」車型（例如開了 ToyotaEnableAngleControl
-    # 的 TSS2 車）在 carcontroller.py 裡被新加的動態判斷誤判成 torque，
-    # 反而讓原本運作正常的 LTA 角度控制失效，是一個真正的回歸風險。
+    # 【依你確認並提供 candy 實際使用中的 opendbc 後補上】
+    # candy 全部 Python 原始碼裡雖然沒有任何地方真正寫入 actuators.steerControlType，
+    # 但 toyota.h 已改成無條件驗證（不再靠 toyota_lta 靜態閘門判斷是否放行），
+    # 這代表要讓 carcontroller.py 真正切換到 LTA，這裡就必須動態寫入這個欄位，
+    # 否則 self.steer_control_type 永遠停在預設值 torque，車輛實際上還是不會
+    # 真正切到角度控制。寫法沿用 spcandy 自己在 publish() 已經用過的
+    # hasattr(self.LaC, 'use_angle') 判斷方式，非 LatControlDynamic 的車型
+    # （含靜態角度控制車型）則明確對齊 self.CP.steerControlType，避免欄位停在
+    # 預設值而被 carcontroller.py 誤判成 torque。
     if hasattr(self.LaC, 'use_angle'):
       actuators.steerControlType = (car.CarControl.Actuators.SteerControlType.angle if self.LaC.use_angle
                                      else car.CarControl.Actuators.SteerControlType.torque)
@@ -173,7 +173,6 @@ class Controls(ControlsExt):
       actuators.steerControlType = (car.CarControl.Actuators.SteerControlType.angle
                                      if self.CP.steerControlType == car.CarParams.SteerControlType.angle
                                      else car.CarControl.Actuators.SteerControlType.torque)
-    # -------------------------------------------------------------------
 
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:

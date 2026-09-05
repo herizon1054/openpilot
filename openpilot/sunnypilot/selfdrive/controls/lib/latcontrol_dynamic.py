@@ -49,6 +49,11 @@ class LatControlDynamic(LatControl):
     _, a_steer, a_log = self.angle_ctrl.update(active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay)
 
     # 3. Torque 控制器永遠運算 (熱備援)
+    # 已改回與 spcandy 完全一致的寫法：torque_is_frozen 只會傳給
+    # LatControlTorque.update() 的 steer_limited_by_safety 參數，內部只用來
+    # 決定 freeze_integrator（只凍結 PID 積分項的累加，不會讓整個輸出停在
+    # 舊值——比例項與前饋項每一幀都還是照當下的誤差重新計算），所以這一段
+    # 跟「高速失去置中」實際上沒有因果關係，是我先前錯誤的推測，已改回原樣。
     torque_is_frozen = True if self.use_angle else steer_limited_by_safety
     t_steer, _, t_log = self.torque_ctrl.update(active, CS, VM, params, torque_is_frozen, desired_curvature, calibrated_pose, curvature_limited, lat_delay)
 
