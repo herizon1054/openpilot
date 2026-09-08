@@ -190,7 +190,24 @@ class CarState(CarStateBase):
         ret.accFaulted = ret.accFaulted or cp.vl["PCM_CRUISE_2"]["LOW_SPEED_LOCKOUT"] == 2
 
     pcm_acc_status = cp.vl["PCM_CRUISE"]["CRUISE_STATE"]
-    ret.cruiseState.standstill = pcm_acc_status == 7
+    # [dp divergence] Upstream commaai/opendbc reports cruiseState.standstill straight from PCM_CRUISE.CRUISE_STATE
+    # for every car. That's correct for a genuine, unmodified PCM: CRUISE_STATE reliably clears out of 7 once the
+    # PCM itself is ready to move. dragonpilot 0.9.9 (back when TOYOTA_RAV4H still carried the now-removed
+    # ToyotaFlags.SNG_WITHOUT_DSU) deliberately skipped this assignment for these cars ("ignore standstill state
+    # in certain vehicles, since pcm allows to restart with just an acceleration request"), leaving
+    # cruiseState.standstill at its default False and letting the planner's own should_stop drive the state
+    # machine instead.
+    # On a Hybrid TSS1 car whose DSU has been physically replaced by an sDSU adapter (ToyotaFlags.SDSU), we've
+    # traced CRUISE_STATE staying latched at 7 even after RELEASE_STANDSTILL is sent. That keeps
+    # selfdrive/controls/lib/longcontrol.py's starting_condition (which requires "not cruise_standstill") from
+    # ever going True, stranding LongCtrlState in `stopping` until the driver taps the accelerator and the PCM
+    # exits standstill on its own. Restore the old skip, scoped only to Hybrid+SDSU so no other Toyota is
+    # affected, and confirm on the road that CRUISE_STATE really does stay at 7 through a stuck resume before
+    # relying on this — this is untested beyond static analysis.
+    if (self.CP.flags & ToyotaFlags.HYBRID.value) and (self.CP.flags & ToyotaFlags.SDSU.value):
+      pass
+    else:
+      ret.cruiseState.standstill = pcm_acc_status == 7
     ret.cruiseState.enabled = bool(cp.vl["PCM_CRUISE"]["CRUISE_ACTIVE"])
     ret.cruiseState.nonAdaptive = pcm_acc_status in (1, 2, 3, 4, 5, 6)
 
