@@ -23,7 +23,13 @@ EXPORT_DIR = os.path.join(LONG_MPC_DIR, "c_generated_code")
 JSON_FILE = os.path.join(LONG_MPC_DIR, "acados_ocp_long.json")
 
 LongitudinalPlanSource = log.LongitudinalPlan.LongitudinalPlanSource
-MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1, LongitudinalPlanSource.cruise)
+MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1, LongitudinalPlanSource.cruise,
+               LongitudinalPlanSource.trafficStop)
+
+# dp: virtual traffic-stop obstacle. When no stop is active this is set far enough
+# away (1000m) that it can never win the np.min() below - same disabled-sentinel
+# convention cp itself uses for its own mode-gated disable path.
+TRAFFIC_STOP_OBSTACLE_DISABLED_M = 1000.0
 
 X_DIM = 3
 U_DIM = 1
@@ -82,6 +88,15 @@ def get_stopped_equivalence_factor(v_lead):
 
 def get_safe_obstacle_distance(v_ego, t_follow):
   return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+
+def build_traffic_stop_obstacle(stop_dist_m, n=N):
+  """dp: turn a single stop-line distance into the constant-distance obstacle
+  array the MPC expects (treated like a lead vehicle parked at that distance,
+  v_lead=0 so get_stopped_equivalence_factor contributes nothing extra).
+  Pure/testable in isolation - no acados dependency.
+  stop_dist_m=None (no active stop) returns the disabled sentinel array."""
+  value = stop_dist_m if stop_dist_m is not None else TRAFFIC_STOP_OBSTACLE_DISABLED_M
+  return np.full(n + 1, value)
 
 def gen_long_model():
   model = AcadosModel()
@@ -266,7 +281,10 @@ class LongitudinalMpc:
     return lead_xv
 
   # 加入 a_min_arr 與 a_max_arr 參數，並由傳入的 personality 直接覆蓋控制權
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, a_cruise_min_override=None, a_min_arr=None, a_max_arr=None):
+  # dp: 加入 traffic_stop_obstacle_m，讓紅綠燈/停止標誌虛擬停止線直接參與 MPC 求解
+  # （而不只是像先前那樣單純調降 v_cruise），求出來的煞車曲線才會平順
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, a_cruise_min_override=None,
+             a_min_arr=None, a_max_arr=None, traffic_stop_obstacle_m=None):
     v_ego = self.x0[1]
     
     t_follow = get_T_FOLLOW(personality)
@@ -285,8 +303,9 @@ class LongitudinalMpc:
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+    traffic_stop_obstacle = build_traffic_stop_obstacle(traffic_stop_obstacle_m)
 
-    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
+    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle, traffic_stop_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
 
     self.yref[:,:] = 0.0

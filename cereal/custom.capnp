@@ -50,6 +50,7 @@ struct LongitudinalPlanDP @0x80ae746ee2596b11 {
   enum LongitudinalPlanSource {
     cruise @0;
     dtsc @1;
+    trafficStop @2;
   }
   enum AccelerationPersonality {
     sport @0;

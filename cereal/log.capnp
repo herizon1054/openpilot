@@ -1167,6 +1167,7 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
     lead1 @2;
     lead2 @3;
     e2e @4;
+    trafficStop @5;  # dp: virtual stop-line obstacle, see selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
   }
 
 
