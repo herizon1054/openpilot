@@ -204,7 +204,13 @@ class CarState(CarStateBase):
     # exits standstill on its own. Restore the old skip, scoped only to Hybrid+SDSU so no other Toyota is
     # affected, and confirm on the road that CRUISE_STATE really does stay at 7 through a stuck resume before
     # relying on this — this is untested beyond static analysis.
-    if (self.CP.flags & ToyotaFlags.HYBRID.value) and (self.CP.flags & ToyotaFlags.SDSU.value):
+    # [2nd pair of eyes, GPT] added an explicit CAR.TOYOTA_RAV4H check alongside the flags as belt-and-suspenders:
+    # under this fork's current interface.py, RAV4H can only reach openpilotLongitudinalControl=True via the
+    # sdsu_active path (dsu_bypass is hardcoded off, RAV4H is neither TSS2 nor RADAR_ACC), so HYBRID+SDSU should
+    # already imply "this is the RAV4H we're targeting" — but pinning the candidate too costs nothing and makes
+    # the scope obvious to the next reader without having to re-derive that from interface.py.
+    if (self.CP.carFingerprint == CAR.TOYOTA_RAV4H and
+        (self.CP.flags & ToyotaFlags.HYBRID.value) and (self.CP.flags & ToyotaFlags.SDSU.value)):
       pass
     else:
       ret.cruiseState.standstill = pcm_acc_status == 7
