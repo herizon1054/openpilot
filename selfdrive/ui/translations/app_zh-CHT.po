@@ -2017,3 +2017,51 @@ msgid ""
 msgstr ""
 "微調車輛相對於偵測到的停止線的停車位置。正值停更遠，負值停更近。<br>這是疊加"
 "在固定的相機到車頭保桿修正值之上，建議從小數值開始並依自己的裝機情況調整。"
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:30
+#, python-format
+msgid "%"
+msgstr "%"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:8
+#, python-format
+msgid "Lane Centering (Beta)"
+msgstr "車道置中（Beta）"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:9
+#, python-format
+msgid ""
+"Experimentally bias the model's desired curvature toward the detected lane "
+"center. Requires two confident lane lines and stays subject to the normal "
+"curvature and jerk limits. Ported from StarPilot."
+msgstr ""
+"實驗性功能：讓模型的目標曲率向偵測到的車道中心偏移。需要兩側車道線都達到"
+"一定的信心程度，且仍受一般曲率與加加速度（jerk）限制約束。移植自 "
+"StarPilot。"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:20
+#, python-format
+msgid "Lane Centering E2E Override"
+msgstr "車道置中 E2E 覆蓋程度"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:21
+#, python-format
+msgid ""
+"How strongly a confident end-to-end model path can override lane centering "
+"when it deliberately departs the lane center. 100% gives the model full "
+"authority; 0% disables the override."
+msgstr ""
+"端到端模型路徑在有信心刻意偏離車道中心時，可以覆蓋車道置中修正的程度。"
+"100% 代表由模型完全主導；0% 代表停用此覆蓋機制。"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:37
+#, python-format
+msgid "Pause Lane Centering on Turn Signal"
+msgstr "打方向燈時暫停車道置中"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:38
+#, python-format
+msgid ""
+"Fade the lane-centering correction out while a turn signal is active so it "
+"does not fight a lane change or turn."
+msgstr ""
+"方向燈作動時淡出車道置中修正，避免與變換車道或轉彎動作互相干擾。"
