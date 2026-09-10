@@ -2017,6 +2017,7 @@ msgid ""
 msgstr ""
 "微調車輛相對於偵測到的停止線的停車位置。正值停更遠，負值停更近。<br>這是疊加"
 "在固定的相機到車頭保桿修正值之上，建議從小數值開始並依自己的裝機情況調整。"
+
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:30
 #, python-format
 msgid "%"
@@ -2024,8 +2025,8 @@ msgstr "%"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:8
 #, python-format
-msgid "Lane Centering (Beta)"
-msgstr "車道置中（Beta）"
+msgid "Lane Centering Assist (Beta)"
+msgstr "車道線置中輔助(Beta)"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:9
 #, python-format
@@ -2041,10 +2042,9 @@ msgstr ""
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:20
 #, python-format
 msgid "Lane Centering E2E Override"
-msgstr "車道置中 E2E 覆蓋程度"
+msgstr "車道線置中輔助 E2E 覆蓋程度"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:21
-#, python-format
 msgid ""
 "How strongly a confident end-to-end model path can override lane centering "
 "when it deliberately departs the lane center. 100% gives the model full "
@@ -2056,7 +2056,7 @@ msgstr ""
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:37
 #, python-format
 msgid "Pause Lane Centering on Turn Signal"
-msgstr "打方向燈時暫停車道置中"
+msgstr "打方向燈時暫停車道線置中輔助"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:38
 #, python-format
