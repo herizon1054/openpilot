@@ -23,6 +23,9 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 # 導入 DP 的 HTD (人工轉向偵測) 模組
 from dragonpilot.selfdrive.controls.lib.human_turn_detection import HumanTurnDetection, HTDState
+# dp: 車道置中 (Lane Centering)，移植自 StarPilot，核心演算法見 lane_centering.py，
+# dp_ 參數讀取與啟用邏輯見 dp_lane_centering.py
+from dragonpilot.selfdrive.controls.lib.dp_lane_centering import DpLaneCentering
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -77,6 +80,9 @@ class Controls:
     # 初始化 HTD
     self.htd = HumanTurnDetection()
     self.htd_state = HTDState.INACTIVE
+
+    # dp: 初始化車道置中控制器
+    self.dp_lane_centering = DpLaneCentering()
 
   def update(self):
     self.sm.update(15)
@@ -154,6 +160,7 @@ class Controls:
 
     if not CC.latActive:
       self.LaC.reset()
+      self.dp_lane_centering.reset()  # dp: 橫向控制關閉時一併重置車道置中的濾波狀態
     if not CC.longActive:
       self.LoC.reset()
 
@@ -167,6 +174,14 @@ class Controls:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+
+    # dp: 車道置中修正 - 在 clip_curvature 之前疊加，因此仍會受到既有的 jerk/加速度限制約束
+    new_desired_curvature = self.dp_lane_centering.update(
+      new_desired_curvature, model_v2, CS.vEgo, CC.latActive,
+      bool(self.sm.all_checks(['modelV2'])),
+      bool(CS.leftBlinker or CS.rightBlinker),
+      bool(CS.steeringPressed))
+
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
