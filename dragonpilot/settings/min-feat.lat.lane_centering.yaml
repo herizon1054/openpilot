@@ -1,0 +1,33 @@
+settings:
+  - key: dp_lane_centering
+    type: toggle_item
+    title: "車道置中 (Beta)"
+    description: "實驗性功能：讓模型的目標曲率向偵測到的車道中心偏移。需要兩側車道線都達到一定的信心程度，且仍受一般曲率與加加速度（jerk）限制約束。<br>移植自 StarPilot。"
+    category: "Lateral"
+    flags: PERSISTENT
+    param_type: BOOL
+    default: "0"
+
+  - key: dp_lane_centering_e2e_authority
+    type: spin_button_item
+    title: "車道置中 E2E 覆蓋程度"
+    description: "端到端模型路徑在有信心刻意偏離車道中心時，可以覆蓋車道置中修正的程度。100% 代表由模型完全主導；0% 代表停用此覆蓋機制。"
+    category: "Lateral"
+    flags: PERSISTENT
+    param_type: INT
+    default: "75"
+    min_val: 0
+    max_val: 100
+    step: 5
+    suffix: "%"
+    depends_on: "dp_lane_centering == 1"
+
+  - key: dp_lane_centering_pause_on_signal
+    type: toggle_item
+    title: "打方向燈時暫停車道置中"
+    description: "方向燈作動時淡出車道置中修正，避免與變換車道或轉彎動作互相干擾。"
+    category: "Lateral"
+    flags: PERSISTENT
+    param_type: BOOL
+    default: "1"
+    depends_on: "dp_lane_centering == 1"

@@ -45,8 +45,8 @@ def test_defaults_when_unset():
   assert dp_lc.enabled is False
   # 車道內置中偏移量是純代碼內常數（見 _LANE_CENTER_OFFSET），不從 params 讀取，固定為 0
   assert dp_lc._offset == 0.0
-  # e2e authority 預設 80%
-  assert dp_lc._e2e_authority == 0.8
+  # e2e authority 預設 75%
+  assert dp_lc._e2e_authority == 0.75
   # 沒被使用者寫入過時，pause-on-signal 的預設值是「開」
   assert dp_lc._pause_on_signal is True
 
