@@ -1,7 +1,7 @@
 settings:
   - key: dp_lane_centering
     type: toggle_item
-    title: "車道線置中輔助(Beta)"
+    title: "車道線置中輔助(LCA)"
     description: "實驗性功能：讓模型的目標曲率向偵測到的車道中心偏移。需要兩側車道線都達到一定的信心程度，且仍受一般曲率與加加速度（jerk）限制約束。<br>移植自 StarPilot。"
     category: "Lateral"
     flags: PERSISTENT

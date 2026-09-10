@@ -738,8 +738,8 @@ msgstr "%"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:8
 #, python-format
-msgid "Lane Centering Assist (Beta)"
-msgstr "車道線置中輔助(Beta)"
+msgid "Lane Centering Assist (LCA)"
+msgstr "車道線置中輔助(LCA)"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:9
 #, python-format
