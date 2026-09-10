@@ -5,7 +5,7 @@ ITEMS = [
     "section": "Lateral",
     "key": "dp_lane_centering",
     "type": "toggle_item",
-    "title": lambda: tr("Lane Centering (Beta)"),
+    "title": lambda: tr("Lane Centering Assist (Beta)"),
     "description": lambda: tr("Experimentally bias the model's desired curvature toward the detected lane "
                               "center. Requires two confident lane lines and stays subject to the normal "
                               "curvature and jerk limits. Ported from StarPilot."),
