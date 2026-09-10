@@ -15,7 +15,12 @@ class _FakeParams:
     self._values = dict(values or {})
 
   def get_bool(self, key, block=False):
-    return bool(self._values.get(key, False))
+    val = self._values.get(key, False)
+    if isinstance(val, bool):
+      return val
+    if isinstance(val, str):
+      return val in ("1", "true", "True")
+    return bool(val)
 
   def get(self, key, block=False, return_default=False):
     return self._values.get(key)
@@ -35,7 +40,7 @@ def _dp_lc(values=None):
   dp_lc.enabled = False
   dp_lc._offset = 0.0
   dp_lc._e2e_authority = 1.0
-  dp_lc._pause_on_signal = True
+  dp_lc._pause_on_signal = False
   dp_lc._read_params(force=True)
   return dp_lc
 
@@ -47,8 +52,8 @@ def test_defaults_when_unset():
   assert dp_lc._offset == 0.0
   # e2e authority 預設 75%
   assert dp_lc._e2e_authority == 0.75
-  # 沒被使用者寫入過時，pause-on-signal 的預設值是「開」
-  assert dp_lc._pause_on_signal is True
+  # 打方向燈暫停車道置中輔助，預設關閉
+  assert dp_lc._pause_on_signal is False
 
 
 def test_offset_is_a_code_constant_and_ignores_params():
@@ -69,9 +74,9 @@ def test_e2e_authority_percent_is_scaled_and_clamped():
   assert dp_lc._e2e_authority == 0.0
 
 
-def test_pause_on_signal_can_be_explicitly_disabled():
-  dp_lc = _dp_lc({"dp_lane_centering_pause_on_signal": "0"})
-  assert dp_lc._pause_on_signal is False
+def test_pause_on_signal_can_be_explicitly_enabled():
+  dp_lc = _dp_lc({"dp_lane_centering_pause_on_signal": "1"})
+  assert dp_lc._pause_on_signal is True
 
 
 def test_disabled_update_returns_model_curvature_unchanged():

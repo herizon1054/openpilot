@@ -39,7 +39,7 @@ ITEMS = [
                               "does not fight a lane change or turn."),
     "flags": "PERSISTENT",
     "param_type": "BOOL",
-    "default": "1",
+    "default": "0",
     "depends_on": "dp_lane_centering == 1",
   },
 ]

@@ -16,6 +16,7 @@ openpilot.selfdrive.controls.lib.lane_centering.LaneCenteringController），
   dp_lane_centering_e2e_authority   INT    端到端模型路徑可覆蓋車道置中的
                                             程度，單位 %（0~100）
   dp_lane_centering_pause_on_signal BOOL   打方向燈時是否淡出車道置中修正
+                                            （預設關閉）
 
 車道內置中偏移量（原本規劃的 dp_lane_centering_offset）改為
 「純代碼內設定」，不開放使用者從 UI 調整：寫死在下方的
@@ -34,7 +35,6 @@ PARAM_REFRESH_SEC = 2.0
 _LANE_CENTER_OFFSET = 0.0
 
 _DEFAULT_E2E_AUTHORITY_PCT = 75
-_DEFAULT_PAUSE_ON_SIGNAL = True
 
 
 class DpLaneCentering:
@@ -46,7 +46,7 @@ class DpLaneCentering:
     self.enabled = False
     self._offset = _LANE_CENTER_OFFSET
     self._e2e_authority = _DEFAULT_E2E_AUTHORITY_PCT / 100.0
-    self._pause_on_signal = _DEFAULT_PAUSE_ON_SIGNAL
+    self._pause_on_signal = False
 
     self._read_params(force=True)
 
@@ -68,10 +68,9 @@ class DpLaneCentering:
     self._offset = _LANE_CENTER_OFFSET
     e2e_authority_pct = self._get_int("dp_lane_centering_e2e_authority", _DEFAULT_E2E_AUTHORITY_PCT)
     self._e2e_authority = max(0.0, min(100.0, e2e_authority_pct)) / 100.0
-    # 這個參數預設為「開」，所以跟其他預設為關的布林開關不同，get_bool()
-    # 在還沒被使用者寫入前一律回傳 False，必須另外處理未設定時的預設值
-    raw_pause = self._params.get("dp_lane_centering_pause_on_signal")
-    self._pause_on_signal = _DEFAULT_PAUSE_ON_SIGNAL if raw_pause is None else bool(int(raw_pause))
+    # 預設關閉，跟 dp_lane_centering 一樣是「預設為關」的布林開關，
+    # 未設定時 get_bool() 本來就回傳 False，不需要額外處理預設值
+    self._pause_on_signal = self._params.get_bool("dp_lane_centering_pause_on_signal")
 
   def reset(self) -> None:
     self._controller.reset()
