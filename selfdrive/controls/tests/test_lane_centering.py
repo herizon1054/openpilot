@@ -35,16 +35,16 @@ def _model(left=-1.8, right=1.8, model_y=0.0, lane_prob=0.9, lane_std=0.1, path_
 
 
 def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, active=True, valid=True, speed=_V_EGO,
-            pause_on_signal=False, turn_signal_active=False):
-  return controller.update(0.0, model, speed, enabled, offset, authority, active, valid,
+            pause_on_signal=False, turn_signal_active=False, curvature=0.0):
+  return controller.update(curvature, model, speed, enabled, offset, authority, active, valid,
                            pause_on_signal, turn_signal_active)
 
 
-def _converge(model, *, offset=0.0, authority=1.0, speed=_V_EGO):
+def _converge(model, *, offset=0.0, authority=1.0, speed=_V_EGO, curvature=0.0):
   controller = LaneCenteringController()
   output = 0.0
   for _ in range(300):
-    output = _update(controller, model, offset=offset, authority=authority, speed=speed)
+    output = _update(controller, model, offset=offset, authority=authority, speed=speed, curvature=curvature)
   return controller, output
 
 
@@ -213,27 +213,32 @@ def test_e2e_confidence_weight_ramps_smoothly_instead_of_cliff():
   assert no_confidence == pytest.approx(lane_only, rel=1e-6)
 
 
-def test_e2e_speed_weight_ramps_smoothly_with_vehicle_speed():
+def test_e2e_speed_ramp_now_trusts_model_more_at_low_speed():
+  # 車速融合方向刻意反過來：0 km/h 端點視為覆蓋上限 100%（低速信任模型），
+  # 60 km/h 端點才是 UI 設定值（e2e_authority），兩者之間線性內插。
+  # 直接呼叫 _raw_correction（不經過平滑/增益/避讓），因為修正量的絕對值
+  # 本身會隨車速改變的 lookahead 而放大縮小（既有效果，跟這次改的東西
+  # 無關），比較「authority=0 跟 authority=1 的相對折抵比例」才不會被這個
+  # 混雜效果干擾。
   model = _model(left=-1.9, right=1.9, model_y=0.20, path_std=0.1)
 
-  # 剛超過 _MIN_V_EGO（15 km/h），仍遠低於 60 km/h 的滿分車速門檻，
-  # e2e 折抵應該只有一小部分生效（同一車速下比較 authority=0 vs 1，
-  # 才不會被「lookahead 隨車速改變」這個既有的、跟本次修改無關的效果干擾）
-  low_speed = 15.0 / 3.6 + 0.1
-  _, lane_only_low = _converge(model, authority=0.0, speed=low_speed)
-  _, low_speed_e2e = _converge(model, authority=1.0, speed=low_speed)
-  assert abs(lane_only_low) > abs(low_speed_e2e) > 0.0
-  low_speed_offload_ratio = 1.0 - abs(low_speed_e2e) / abs(lane_only_low)
+  low_speed = 15.0 / 3.6 + 0.1  # 略高於 _MIN_V_EGO，接近 0 km/h 這個端點
+  high_speed = 60.0 / 3.6 + 1.0  # 60 km/h（含）以上，覆蓋上限就是 e2e_authority
 
-  # 60 km/h（含）以上：車速權重滿分
-  high_speed = 60.0 / 3.6 + 1.0
-  _, lane_only_high = _converge(model, authority=0.0, speed=high_speed)
-  _, high_speed_e2e = _converge(model, authority=1.0, speed=high_speed)
-  assert abs(lane_only_high) > abs(high_speed_e2e) > 0.0
-  high_speed_offload_ratio = 1.0 - abs(high_speed_e2e) / abs(lane_only_high)
+  _, low_a0 = LaneCenteringController._raw_correction(model, low_speed, 0.0, 0.0)
+  _, low_a1 = LaneCenteringController._raw_correction(model, low_speed, 0.0, 1.0)
+  _, high_a0 = LaneCenteringController._raw_correction(model, high_speed, 0.0, 0.0)
+  _, high_a1 = LaneCenteringController._raw_correction(model, high_speed, 0.0, 1.0)
 
-  # 車速越快，e2e 折抵掉的比例越高，是單調遞增、沒有斷崖的平滑變化
-  assert 0.0 < low_speed_offload_ratio < high_speed_offload_ratio < 1.0
+  low_relative_offload = 1.0 - low_a1 / low_a0    # authority=1 比 authority=0 多折抵掉的比例
+  high_relative_offload = 1.0 - high_a1 / high_a0
+
+  # 低速端：因為覆蓋上限已經被低速端點拉到接近 100%，authority 設 0 還是 1
+  # 只能在剩下的一小段範圍裡起作用，相對折抵比例應該很小
+  assert 0.0 <= low_relative_offload < 0.10
+  # 高速端：覆蓋上限就是 UI 設定值，authority 從 0 到 1 應該有明顯得多的
+  # 相對折抵比例差異
+  assert low_relative_offload < high_relative_offload
 
 
 def test_avoidance_does_not_falsely_suppress_cold_start():
@@ -272,7 +277,7 @@ def test_sudden_swap_is_suppressed_more_than_gradual_smoothing_alone():
     finally:
       lc_module._AVOIDANCE_JUMP_SPAN = original
 
-  # 正常門檻：突然反向的修正量會被避讓機制壓低
+  # 正常門檻：突然反向的修正量會被避讓機制壓低（曲率全程維持 0，不像真轉彎）
   with_avoidance = _switch_and_settle(lc_module._AVOIDANCE_JUMP_SPAN)
   # 門檻放到超大，等於避讓機制永遠不觸發，只剩下原本就有的 _SMOOTH_TAU 平滑，當對照組
   without_avoidance = _switch_and_settle(1e6)
@@ -295,3 +300,31 @@ def test_persistent_deviation_eventually_overrides_avoidance_suppression():
 
   _, steady_b = _converge(model_b, authority=0.0)
   assert output == pytest.approx(steady_b, rel=0.05)
+
+
+def test_real_turn_is_not_misjudged_as_avoidance():
+  # 車道線對調（造成修正量瞬間反向）同時搭配 model_curvature 也大幅變化
+  # （模擬道路真的在轉彎），車道置中不應該被避讓機制壓低。單一幀的差異會
+  # 被既有的 _SMOOTH_TAU 濾波蓋掉，所以要像避讓測試一樣多跑幾幀才看得出差異
+  model_a = _model(left=-1.5, right=2.1)
+  model_b = _model(left=-2.1, right=1.5)
+
+  turning = LaneCenteringController()
+  for _ in range(300):
+    _update(turning, model_a, authority=0.0, curvature=0.02)
+  turning_output = 0.0
+  for _ in range(40):
+    turning_output = _update(turning, model_b, authority=0.0, curvature=0.05)
+  turning_correction = turning_output - 0.05
+
+  avoiding = LaneCenteringController()
+  for _ in range(300):
+    _update(avoiding, model_a, authority=0.0, curvature=0.02)
+  avoiding_output = 0.0
+  for _ in range(40):
+    avoiding_output = _update(avoiding, model_b, authority=0.0, curvature=0.02)
+  avoiding_correction = avoiding_output - 0.02
+
+  # 曲率也跟著大幅變化（像真轉彎）的那組，修正量應該幾乎不受避讓機制影響；
+  # 曲率完全沒變（像避讓）的那組，修正量應該被明顯壓低
+  assert abs(turning_correction) > abs(avoiding_correction)
