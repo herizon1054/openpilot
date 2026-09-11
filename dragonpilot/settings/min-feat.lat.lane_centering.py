@@ -18,9 +18,12 @@ ITEMS = [
     "key": "dp_lane_centering_e2e_authority",
     "type": "spin_button_item",
     "title": lambda: tr("Lane Centering E2E Override"),
-    "description": lambda: tr("How strongly a confident end-to-end model path can override lane centering "
-                              "when it deliberately departs the lane center. 100% gives the model full "
-                              "authority; 0% disables the override."),
+    "description": lambda: tr("A ceiling on how much a confident end-to-end model path can override lane "
+                              "centering. The actual amount also scales continuously with the model path's "
+                              "confidence, vehicle speed, and how far it departs the lane center, so all "
+                              "three need to be favorable to reach this ceiling. 100% = model can fully "
+                              "override once those conditions are met; 0% = override is always disabled "
+                              "regardless of the other conditions."),
     "flags": "PERSISTENT",
     "param_type": "INT",
     "default": "75",

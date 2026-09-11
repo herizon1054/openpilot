@@ -731,7 +731,7 @@ msgstr "掃描以存取"
 msgid "sec"
 msgstr "秒"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:30
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:33
 #, python-format
 msgid "%"
 msgstr "%"
@@ -759,19 +759,24 @@ msgstr "車道線置中輔助 E2E 覆蓋程度"
 
 #: dragonpilot/settings/min-feat.lat.lane_centering.py:21
 msgid ""
-"How strongly a confident end-to-end model path can override lane centering "
-"when it deliberately departs the lane center. 100% gives the model full "
-"authority; 0% disables the override."
+"A ceiling on how much a confident end-to-end model path can override lane "
+"centering. The actual amount also scales continuously with the model "
+"path's confidence, vehicle speed, and how far it departs the lane center, "
+"so all three need to be favorable to reach this ceiling. 100% = model can "
+"fully override once those conditions are met; 0% = override is always "
+"disabled regardless of the other conditions."
 msgstr ""
-"端到端模型路徑在有信心刻意偏離車道中心時，可以覆蓋車道置中修正的程度。"
-"100% 代表由模型完全主導；0% 代表停用此覆蓋機制。"
+"這是模型路徑可以覆蓋車道置中的「上限」，實際生效程度還會依模型路徑的"
+"信心程度、車速、偏移幅度連續調整，三者都達到最佳時才會用滿這個上限。"
+"100% 代表這些條件都達標時由模型完全主導；0% 代表無論其他條件為何，"
+"覆蓋機制永遠停用。"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:37
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:40
 #, python-format
 msgid "Pause Lane Centering on Turn Signal"
 msgstr "打方向燈時暫停車道線置中輔助"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:38
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:41
 #, python-format
 msgid ""
 "Fade the lane-centering correction out while a turn signal is active so it "

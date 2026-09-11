@@ -40,11 +40,11 @@ def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, activ
                            pause_on_signal, turn_signal_active)
 
 
-def _converge(model, *, offset=0.0, authority=1.0):
+def _converge(model, *, offset=0.0, authority=1.0, speed=_V_EGO):
   controller = LaneCenteringController()
   output = 0.0
   for _ in range(300):
-    output = _update(controller, model, offset=offset, authority=authority)
+    output = _update(controller, model, offset=offset, authority=authority, speed=speed)
   return controller, output
 
 
@@ -54,7 +54,7 @@ def _converge(model, *, offset=0.0, authority=1.0):
     {"enabled": False},
     {"active": False},
     {"valid": False},
-    {"speed": 4.9},
+    {"speed": 4.0},  # < _MIN_V_EGO (15 km/h ≈ 4.1667 m/s)
   ],
 )
 def test_hard_gates_are_noop(kwargs):
@@ -180,3 +180,118 @@ def test_correction_is_smoothed_and_capped():
   _, steady = _converge(model, authority=0.0)
   assert 0.0 < first < steady
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
+
+
+# --- 以下對應與 cp 的三個刻意分歧（見 lane_centering.py 檔頭說明） ---
+
+def test_min_v_ego_is_15kph_not_18kph():
+  model = _model(left=-1.5, right=2.1)
+  just_below = 15.0 / 3.6 - 0.05  # 略低於新門檻
+  just_above = 15.0 / 3.6 + 0.05  # 略高於新門檻，且仍低於舊的 18 km/h 門檻
+  assert _update(LaneCenteringController(), model, speed=just_below) == 0.0
+  assert _update(LaneCenteringController(), model, speed=just_above) != 0.0
+
+
+def test_e2e_confidence_weight_ramps_smoothly_instead_of_cliff():
+  model = _model(left=-1.0, right=2.6, model_y=0.0)
+
+  # path_std 在 ramp start (0.25) 以下：信心權重滿分，效果等同舊版「門檻內」
+  model.position = _path(0.0, y_std=0.2)
+  _, full_confidence = _converge(model, authority=1.0)
+  assert abs(full_confidence) < 1e-9
+
+  # path_std 在 ramp start (0.25) 與 max (0.35) 中間：應該是介於「完全折抵」
+  # 與「完全不折抵」之間的部分值，而不是兩個極端之一
+  model.position = _path(0.0, y_std=0.30)
+  _, mid_confidence = _converge(model, authority=1.0)
+  _, lane_only = _converge(model, authority=0.0)
+  assert 0.0 < mid_confidence < lane_only
+
+  # path_std 超過 max (0.35)：信心權重為 0，等同舊版「門檻外」，e2e 完全不折抵
+  model.position = _path(0.0, y_std=0.6)
+  _, no_confidence = _converge(model, authority=1.0)
+  assert no_confidence == pytest.approx(lane_only, rel=1e-6)
+
+
+def test_e2e_speed_weight_ramps_smoothly_with_vehicle_speed():
+  model = _model(left=-1.9, right=1.9, model_y=0.20, path_std=0.1)
+
+  # 剛超過 _MIN_V_EGO（15 km/h），仍遠低於 60 km/h 的滿分車速門檻，
+  # e2e 折抵應該只有一小部分生效（同一車速下比較 authority=0 vs 1，
+  # 才不會被「lookahead 隨車速改變」這個既有的、跟本次修改無關的效果干擾）
+  low_speed = 15.0 / 3.6 + 0.1
+  _, lane_only_low = _converge(model, authority=0.0, speed=low_speed)
+  _, low_speed_e2e = _converge(model, authority=1.0, speed=low_speed)
+  assert abs(lane_only_low) > abs(low_speed_e2e) > 0.0
+  low_speed_offload_ratio = 1.0 - abs(low_speed_e2e) / abs(lane_only_low)
+
+  # 60 km/h（含）以上：車速權重滿分
+  high_speed = 60.0 / 3.6 + 1.0
+  _, lane_only_high = _converge(model, authority=0.0, speed=high_speed)
+  _, high_speed_e2e = _converge(model, authority=1.0, speed=high_speed)
+  assert abs(lane_only_high) > abs(high_speed_e2e) > 0.0
+  high_speed_offload_ratio = 1.0 - abs(high_speed_e2e) / abs(lane_only_high)
+
+  # 車速越快，e2e 折抵掉的比例越高，是單調遞增、沒有斷崖的平滑變化
+  assert 0.0 < low_speed_offload_ratio < high_speed_offload_ratio < 1.0
+
+
+def test_avoidance_does_not_falsely_suppress_cold_start():
+  # reset 之後（含全新 controller）的第一次呼叫，應該直接把當下修正量當成
+  # 基準值，不能被誤判成「突然」而被壓低——否則車道置中每次剛啟用都會慢半拍
+  model = _model(left=-1.5, right=2.1)
+  controller = LaneCenteringController()
+  first_with_avoidance = _update(controller, model, authority=0.0)
+
+  reference = LaneCenteringController()
+  reference._raw_correction_ema = 10.0  # 故意塞一個跟真實值差很多的基準值
+  first_with_stale_ema = _update(reference, model, authority=0.0)
+
+  # 冷啟動（基準值為 None）不應該被壓低，應該跟「基準值剛好等於當下值」一樣
+  assert first_with_avoidance != 0.0
+  assert first_with_stale_ema == 0.0 or abs(first_with_stale_ema) < abs(first_with_avoidance)
+
+
+def test_sudden_swap_is_suppressed_more_than_gradual_smoothing_alone():
+  import openpilot.selfdrive.controls.lib.lane_centering as lc_module
+
+  model_a = _model(left=-1.5, right=2.1)
+  model_b = _model(left=-2.1, right=1.5)  # 車道線左右對調，修正方向瞬間反過來
+
+  def _switch_and_settle(jump_span):
+    original = lc_module._AVOIDANCE_JUMP_SPAN
+    lc_module._AVOIDANCE_JUMP_SPAN = jump_span
+    try:
+      controller = LaneCenteringController()
+      for _ in range(300):
+        _update(controller, model_a, authority=0.0)
+      output = 0.0
+      for _ in range(40):
+        output = _update(controller, model_b, authority=0.0)
+      return output
+    finally:
+      lc_module._AVOIDANCE_JUMP_SPAN = original
+
+  # 正常門檻：突然反向的修正量會被避讓機制壓低
+  with_avoidance = _switch_and_settle(lc_module._AVOIDANCE_JUMP_SPAN)
+  # 門檻放到超大，等於避讓機制永遠不觸發，只剩下原本就有的 _SMOOTH_TAU 平滑，當對照組
+  without_avoidance = _switch_and_settle(1e6)
+
+  assert abs(with_avoidance) < abs(without_avoidance)
+
+
+def test_persistent_deviation_eventually_overrides_avoidance_suppression():
+  model_a = _model(left=-1.5, right=2.1)
+  model_b = _model(left=-2.1, right=1.5)
+
+  controller = LaneCenteringController()
+  for _ in range(300):
+    _update(controller, model_a, authority=0.0)
+  # 切換後跑夠久（遠超過 _AVOIDANCE_EMA_TAU），代表這是持續存在的長期偏移，
+  # 而不是短暫避讓，車道置中應該恢復介入、逐漸修正回新的車道線位置
+  output = 0.0
+  for _ in range(1500):
+    output = _update(controller, model_b, authority=0.0)
+
+  _, steady_b = _converge(model_b, authority=0.0)
+  assert output == pytest.approx(steady_b, rel=0.05)

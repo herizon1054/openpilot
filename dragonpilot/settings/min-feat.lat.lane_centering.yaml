@@ -11,7 +11,7 @@ settings:
   - key: dp_lane_centering_e2e_authority
     type: spin_button_item
     title: "車道線置中輔助 E2E 覆蓋程度"
-    description: "端到端模型路徑在有信心刻意偏離車道中心時，可以覆蓋車道置中修正的程度。100% 代表由模型完全主導；0% 代表停用此覆蓋機制。"
+    description: "這是模型路徑可以覆蓋車道置中的「上限」，實際生效程度還會依模型路徑的信心程度、車速、偏移幅度連續調整，三者都達到最佳時才會用滿這個上限。100% 代表這些條件都達標時由模型完全主導；0% 代表無論其他條件為何，覆蓋機制永遠停用。"
     category: "Lateral"
     flags: PERSISTENT
     param_type: INT
