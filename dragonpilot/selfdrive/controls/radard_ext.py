@@ -49,10 +49,13 @@ MODEL_TAU_SUSTAINED = 0.5           # 視覺確認急煞持續
 MODEL_TAU_SPURIOUS = 3.0            # 視覺預測即將加速
 
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
+# dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
+# 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
 _LEAD_STATE_CACHE = {
-    0: {'track': None, 'absent': 0},
-    1: {'track': None, 'absent': 0}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None}
 }
+MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
 
 def get_model_lead_tau(lead_msg, lead_prob: float) -> float | None:
@@ -207,10 +210,20 @@ def get_lead_ext(
     else:
       cache['track'] = None
       cache['absent'] = 0
+      cache['last_aLeadK'] = None  # lead 真正消失，重置參考基準，避免下一個新目標被錯誤地拿舊值做限制
 
   lead_dict = {'status': False}
   if selected_track is not None:
     lead_dict = selected_track.get_RadarState(lead_prob)
+
+    # dp: 不管是「凍結續命中」還是「剛恢復匹配、瞬間跳到最新卡曼值」，
+    # 都對 aLeadK 做變化率限制，避免瞬間跳動被誤判成前車突然減速（幽靈煞車）。
+    # 只限制 aLeadK，dRel/yRel/vRel 不受影響，維持插隊偵測所需的位置即時性。
+    if cache['last_aLeadK'] is not None:
+      raw_aLeadK = lead_dict['aLeadK']
+      delta = np.clip(raw_aLeadK - cache['last_aLeadK'], -MAX_ALEADK_DELTA_PER_FRAME, MAX_ALEADK_DELTA_PER_FRAME)
+      lead_dict['aLeadK'] = cache['last_aLeadK'] + delta
+    cache['last_aLeadK'] = lead_dict['aLeadK']
 
     # 視覺加速度雙重驗證阻尼
     model_tau = get_model_lead_tau(lead_msg, lead_prob)
@@ -225,6 +238,8 @@ def get_lead_ext(
 
   elif (selected_track is None) and ready and (lead_prob > current_prob_thres):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+    _LEAD_STATE_CACHE[lead_idx]['last_aLeadK'] = None  # 純視覺後備路徑不經過雷達物件，重置參考基準
+
 
   # 原廠底線救援
   if low_speed_override:
