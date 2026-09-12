@@ -221,9 +221,9 @@ def get_lead_ext(
     # 只限制 aLeadK，dRel/yRel/vRel 不受影響，維持插隊偵測所需的位置即時性。
     if cache['last_aLeadK'] is not None:
       raw_aLeadK = lead_dict['aLeadK']
-      delta = np.clip(raw_aLeadK - cache['last_aLeadK'], -MAX_ALEADK_DELTA_PER_FRAME, MAX_ALEADK_DELTA_PER_FRAME)
-      lead_dict['aLeadK'] = cache['last_aLeadK'] + delta
-    cache['last_aLeadK'] = lead_dict['aLeadK']
+      delta = float(np.clip(raw_aLeadK - cache['last_aLeadK'], -MAX_ALEADK_DELTA_PER_FRAME, MAX_ALEADK_DELTA_PER_FRAME))
+      lead_dict['aLeadK'] = float(cache['last_aLeadK'] + delta)
+    cache['last_aLeadK'] = float(lead_dict['aLeadK'])
 
     # 視覺加速度雙重驗證阻尼
     model_tau = get_model_lead_tau(lead_msg, lead_prob)
