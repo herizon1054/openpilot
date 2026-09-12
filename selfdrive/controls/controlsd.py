@@ -175,9 +175,20 @@ class Controls:
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
 
+    # dp: 判斷這一幀是不是由 Angle(LTA) 主控——不論是原生 angle 車型
+    # （self.CP.steerControlType 是 angle）還是 LatControlDynamic 熱切換
+    # 到 angle（self.LaC.use_angle），車道置中都應該暫停：LCA 目前的曲率
+    # 修正量是針對 Torque 控制調校的，疊加在 Angle 控制上容易互相打架，
+    # 出現方向盤忽左忽右的小角度修正（實測回報：時速 100 時角度控制期間
+    # 方向盤在 0/-1/0/2 度之間反覆跳動）
+    if hasattr(self.LaC, 'use_angle'):
+      angle_control_active = bool(self.LaC.use_angle)
+    else:
+      angle_control_active = self.CP.steerControlType == car.CarParams.SteerControlType.angle
+
     # dp: 車道置中修正 - 在 clip_curvature 之前疊加，因此仍會受到既有的 jerk/加速度限制約束
     new_desired_curvature = self.dp_lane_centering.update(
-      new_desired_curvature, model_v2, CS.vEgo, CC.latActive,
+      new_desired_curvature, model_v2, CS.vEgo, CC.latActive and not angle_control_active,
       bool(self.sm.all_checks(['modelV2'])),
       bool(CS.leftBlinker or CS.rightBlinker),
       bool(CS.steeringPressed))

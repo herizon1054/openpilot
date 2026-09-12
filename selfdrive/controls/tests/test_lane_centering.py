@@ -302,10 +302,11 @@ def test_persistent_deviation_eventually_overrides_avoidance_suppression():
   assert output == pytest.approx(steady_b, rel=0.05)
 
 
-def test_real_turn_is_not_misjudged_as_avoidance():
-  # 車道線對調（造成修正量瞬間反向）同時搭配 model_curvature 也大幅變化
-  # （模擬道路真的在轉彎），車道置中不應該被避讓機制壓低。單一幀的差異會
-  # 被既有的 _SMOOTH_TAU 濾波蓋掉，所以要像避讓測試一樣多跑幾幀才看得出差異
+def test_curvature_no_longer_exempts_avoidance_suppression():
+  # 這是「真轉彎排除避讓機制」實驗撤銷後的回歸測試：確認不管
+  # model_curvature 是否也跟著大幅變化，避讓機制的行為都一樣（只看修正量
+  # 本身的跳動），不會因為曲率也在動就豁免——這正是撤銷的原因：彎道時
+  # 曲率幾乎必然在動，這個豁免會讓避讓機制在彎道全程失去雜訊抑制效果
   model_a = _model(left=-1.5, right=2.1)
   model_b = _model(left=-2.1, right=1.5)
 
@@ -325,6 +326,5 @@ def test_real_turn_is_not_misjudged_as_avoidance():
     avoiding_output = _update(avoiding, model_b, authority=0.0, curvature=0.02)
   avoiding_correction = avoiding_output - 0.02
 
-  # 曲率也跟著大幅變化（像真轉彎）的那組，修正量應該幾乎不受避讓機制影響；
-  # 曲率完全沒變（像避讓）的那組，修正量應該被明顯壓低
-  assert abs(turning_correction) > abs(avoiding_correction)
+  # 曲率有沒有跟著變化，不應該再影響避讓機制的壓低程度
+  assert turning_correction == pytest.approx(avoiding_correction, abs=1e-6)

@@ -31,19 +31,24 @@
 #      注意這兩個端點目前刻意選得很近（UI 預設 75% 時只有 100%~75% 的
 #      25 個百分點振幅），所以車速對覆蓋程度的影響本來就不會很大，這是端點
 #      選擇的必然結果，不是線性內插算錯。
-#   4. 新增「突發偏移＝模型正在避讓」判斷：同時追蹤修正量與 model_curvature
-#      各自的慢速基準值（`_AVOIDANCE_EMA_TAU` 秒的一階低通），如果修正量
-#      突然跟基準值差距很大（`_AVOIDANCE_JUMP_SPAN`）、但 model_curvature
-#      本身沒有跟著明顯變化（`_TURN_CURVATURE_JUMP_SPAN`），視為模型路徑
-#      「突然」偏移（例如避讓其他車輛），車道置中會平滑地讓出（不硬拉回
-#      車道中心）；如果 model_curvature 也跟著明顯變化，代表是道路本身真的
-#      在轉彎，不會被誤判成避讓、車道置中修正照常介入。如果偏移持續存在
-#      夠久，基準值會逐漸追上，車道置中也會恢復正常介入（代表這其實是需要
-#      修正的長期偏移，而不是短暫避讓）。跟第 2、3 點一樣是連續權重，不是
-#      「偵測到就整個關掉幾秒」的開關式判斷。`_TURN_CURVATURE_JUMP_SPAN`
-#      （0.006）是參考內政部《市區道路及附屬工程設計規範》平曲線最小半徑
-#      公式（Rmin = Vd²/(127×(emax+fs))）換算出的台灣市區道路典型轉彎曲率
-#      下限抓的，細節見移植文件。
+#   4. 新增「突發偏移＝模型正在避讓」判斷：追蹤修正量的慢速基準值
+#      （`_AVOIDANCE_EMA_TAU` 秒的一階低通），如果當下修正量跟基準值差距
+#      超過 `_AVOIDANCE_JUMP_SPAN`，視為模型路徑「突然」偏移（例如避讓其他
+#      車輛），車道置中會平滑地讓出（不硬拉回車道中心）；如果這個偏移持續
+#      存在夠久，基準值會逐漸追上，車道置中才會恢復正常介入（代表這其實是
+#      需要修正的長期偏移，而不是短暫避讓）。跟第 2、3 點一樣是連續權重，
+#      不是「偵測到就整個關掉幾秒」的開關式判斷。
+#      【已撤銷的實驗，留紀錄】曾經加過第二層判斷，額外參考
+#      `model_curvature` 有沒有明顯變化來排除「這其實是真轉彎，不是避讓」
+#      （新增過 `_TURN_CURVATURE_JUMP_SPAN` 常數）。實測發現彎道時（即使是
+#      很輕微的彎道）幾乎必然觸發「曲率也在動」，導致這個排除機制在彎道
+#      全程幾乎永遠成立，等於彎道時避讓機制原本該有的雜訊抑制完全失效——
+#      車道線/模型路徑的橫向估計雜訊在彎道會被 lookahead 平方放大（見演算法
+#      概述），原本被避讓機制濾掉的雜訊在彎道時直接透出，變成方向盤持續
+#      小幅擺動（實測回報：直線輕微，彎道像喝醉）。已確認拿掉這個排除機制
+#      後只留 model_curvature 無關的單純避讓判斷；如果之後真的需要恢復
+#      「真轉彎不該被避讓機制誤傷」這個功能，要用不同的判斷方式（不能只看
+#      「曲率有沒有變化」，因為彎道中曲率本來就會持續變化）。
 #
 # 除了以上四處，其餘邏輯（車道線信心門檻、置中死區、平滑濾波時間常數、
 # 增益、方向燈/變換車道暫停等）仍與 StarPilot 原始碼一致，未做修改。
@@ -85,10 +90,10 @@ _MIN_CENTER_TO_LINE = 1.1
 _MAX_RAW_CORRECTION = 0.004
 _MAX_GAIN = 0.30
 _VISUAL_CORRECTION_EPSILON = 1e-6
-_SMOOTH_TAU = 0.4
+_SMOOTH_TAU = 0.6
 _SIGNAL_RELEASE_TAU = 0.20
 _CONFIDENCE_RELEASE_TAU = 0.20
-_CENTER_ERROR_DEADBAND = 0.08
+_CENTER_ERROR_DEADBAND = 0.15
 
 _E2E_MAX_PATH_STD = 0.35
 _E2E_CONFIDENCE_RAMP_START = 0.25  # path_std 在這之下，信心權重視為滿分 1.0
@@ -98,37 +103,24 @@ _E2E_SPEED_RAMP_START_MS = 0.0 * _KPH_TO_MS   # 0 km/h：覆蓋上限視為 100%
 _E2E_SPEED_RAMP_END_MS = 60.0 * _KPH_TO_MS    # 60 km/h：覆蓋上限視為 UI 設定值（e2e_authority）
 
 # 「突發偏移＝模型正在避讓」判斷用的常數。
-# _AVOIDANCE_EMA_TAU：修正量／model_curvature 慢速基準值的一階低通時間
-# 常數，用來區分「突然」跟「長期」偏移；偏移若在這個時間尺度內持續存在，
-# 基準值會逐漸追上，車道置中才會恢復正常介入。
+# _AVOIDANCE_EMA_TAU：修正量慢速基準值的一階低通時間常數，用來區分「突然」
+# 跟「長期」偏移；偏移若在這個時間尺度內持續存在，基準值會逐漸追上，
+# 車道置中才會恢復正常介入。
 # _AVOIDANCE_JUMP_SPAN：修正量跟基準值的差距達到這個量級時，視為完全是
 # 突發避讓；中間平滑爬升，不是門檻式開關。單位跟 _MAX_RAW_CORRECTION 一樣
 # 是曲率，量級刻意抓得跟 _MAX_RAW_CORRECTION 接近。
-# _TURN_CURVATURE_JUMP_SPAN：model_curvature 跟自己基準值的差距達到這個
-# 量級時，視為道路本身真的在轉彎（不是避讓造成的橫向微調），車道置中修正
-# 照常介入、不受避讓機制影響。數值參考內政部《市區道路及附屬工程設計規範》
-# 平曲線最小半徑公式 Rmin = Vd²/(127×(emax+fs)) 換算：台灣快速道路等級最
-# 平緩的彎道（設計速率 80 km/h，emax=8%，fs≈0.14）換算半徑約 218m、曲率約
-# 0.0046；市區次要道路（50 km/h）約 90m、曲率約 0.011；服務道路路口轉彎
-# （30 km/h）約 34m、曲率約 0.029。0.006 介於「快速道路最平緩彎道」與
-# 「_MAX_RAW_CORRECTION」之間，確保連最平緩的彎道都能正確識別成真轉彎，
-# 同時明顯大於避讓造成的橫向微調曲率貢獻；這是用法規最小值（下限）推算，
-# 實際路測體感彎道曲率可能更小，建議之後用行車 log 再校準。
 _AVOIDANCE_EMA_TAU = 2.0
 _AVOIDANCE_JUMP_SPAN = 0.003
-_TURN_CURVATURE_JUMP_SPAN = 0.006
 
 
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
     self._raw_correction_ema = None    # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
-    self._model_curvature_ema = None   # 同上，用來判斷「道路本身是否也在轉彎」
 
   def reset(self) -> None:
     self._correction = 0.0
     self._raw_correction_ema = None
-    self._model_curvature_ema = None
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
              pause_on_signal=False, turn_signal_active=False, driver_override=False) -> float:
@@ -177,27 +169,22 @@ class LaneCenteringController:
       return model_curvature + self._correction
 
     # 避讓偵測：把這一幀的修正量拿去跟自己的慢速基準值比較，差距越大代表
-    # 「越突然」，車道置中就越讓出；同時也看 model_curvature 有沒有跟著明顯
-    # 變化——如果曲率也在動，代表道路本身真的在轉彎，不是避讓造成的橫向
-    # 微調，就不該被壓低。基準值都用同一顆 smooth_value 慢慢追上目前值，
+    # 「越突然」，車道置中就越讓出。基準值用 smooth_value 慢慢追上目前值，
     # 所以只要偏移撐得夠久（久到基準值追上來），權重就會回到 1.0，恢復正常
     # 介入。第一次呼叫（reset 之後）直接把基準值設成當下值，避免從 0 開始
     # 的冷啟動被誤判成「突然」。
+    #
+    # 這裡刻意不再額外參考 model_curvature 來排除「真轉彎」（見檔頭第 4 點
+    # 的完整說明）：實測發現彎道時只要一有曲率變化，這個排除機制幾乎永遠
+    # 判定成立，等於彎道全程都失去避讓機制原本該提供的雜訊抑制，反而讓
+    # 彎道時的車道線/模型路徑估計雜訊（在彎道會被 lookahead 平方放大）
+    # 直接透出，造成方向盤持續小幅擺動。移除後彎道時修正量會比較保守（
+    # 更容易被判定成短暫偏移而壓低），這是刻意接受的取捨。
     if self._raw_correction_ema is None:
       self._raw_correction_ema = raw_correction
     deviation = raw_correction - self._raw_correction_ema
-    raw_jump_weight = float(np.clip(1.0 - abs(deviation) / _AVOIDANCE_JUMP_SPAN, 0.0, 1.0))
+    avoidance_weight = float(np.clip(1.0 - abs(deviation) / _AVOIDANCE_JUMP_SPAN, 0.0, 1.0))
     self._raw_correction_ema = float(smooth_value(raw_correction, self._raw_correction_ema, _AVOIDANCE_EMA_TAU, dt=DT_CTRL))
-
-    if self._model_curvature_ema is None:
-      self._model_curvature_ema = model_curvature
-    curvature_jump = model_curvature - self._model_curvature_ema
-    turn_consistency = float(np.clip(abs(curvature_jump) / _TURN_CURVATURE_JUMP_SPAN, 0.0, 1.0))
-    self._model_curvature_ema = float(smooth_value(model_curvature, self._model_curvature_ema, _AVOIDANCE_EMA_TAU, dt=DT_CTRL))
-
-    # 「誤差沒突然跳」或「曲率也跟著明顯在動（像真轉彎）」兩者只要有一個
-    # 成立，就不壓低；只有「誤差突然跳、但曲率幾乎沒變」才判定是避讓
-    avoidance_weight = max(raw_jump_weight, turn_consistency)
     raw_correction *= avoidance_weight
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
