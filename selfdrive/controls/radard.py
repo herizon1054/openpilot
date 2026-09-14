@@ -208,6 +208,11 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
+    # dp: 判斷是否正在轉彎（角度或角速度超過門檻），供 radard_ext 的信心度累積邏輯
+    # 使用——轉彎時保留「必須真實量測」的保護（避免誤判旁側車道目標切入本車道），
+    # 直行/巡航時放行（避免正常雷達漏拍拖慢插隊反應）。
+    is_turning = abs(sm['carState'].steeringAngleDeg) >= 15.0 or abs(sm['carState'].steeringRateDeg) >= 10.0
+
     ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
 
     # *** remove missing points from meta data ***
@@ -248,8 +253,8 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, low_speed_override=False)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, low_speed_override=True)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

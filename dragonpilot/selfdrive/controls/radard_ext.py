@@ -48,19 +48,14 @@ MODEL_TAU_BRAKE_A = -0.5            # 啟動驗證的最低急煞門檻 (m/s²)
 MODEL_TAU_SUSTAINED = 0.5           # 視覺確認急煞持續
 MODEL_TAU_SPURIOUS = 3.0            # 視覺預測即將加速
 
-# 全域快取：僅儲存上一幀鎖定目標的「識別碼(trackId)」，不快取物件本身。
-# 注意：絕對不可快取 Track 物件參考！一旦該 trackId 被 RadarD.update() 從
-# self.tracks 中移除（雷達硬體真的失去該點），舊物件就不會再被 .update()
-# 更新，dRel/vRel/aLeadK 會被凍結在消失前的最後一刻。若之後續命邏輯繼續
-# 回傳這顆「冰封」的殭屍物件長達 SELECT_HOLDOVER_FRAMES 幀，等於餵給縱向控制
-# 一組過期的相對速度/加速度，正是先前 Prius C 上 ACC 高速來回加減速（振盪）
-# 的根因。修正後每一幀都用 trackId 向當下的 tracks dict 重新查詢，確保拿到
-# 的永遠是「這一幀」雷達實際更新過的即時物件；只有當 trackId 真的從
-# tracks 消失（雷達硬體真正斷流）才允許續命倒數，續命期間也是每幀重新取值。
+# 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
+# dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
+# 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
 _LEAD_STATE_CACHE = {
-    0: {'track_id': None, 'absent': 0},
-    1: {'track_id': None, 'absent': 0}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None}
 }
+MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
 
 def get_model_lead_tau(lead_msg, lead_prob: float) -> float | None:
@@ -134,12 +129,15 @@ class TrackDP(Track):
 
     return current_ema
 
-  def process_track_logic(self, lead_idx: int, lead_msg: capnp._DynamicStructReader, v_ego: float, lead_prob: float):
+  def process_track_logic(self, lead_idx: int, lead_msg: capnp._DynamicStructReader, v_ego: float, lead_prob: float, is_turning: bool = False):
     offset_vision_dist = lead_msg.x[0] - RADAR_TO_CAMERA
     vision_y = -lead_msg.y[0]
     vision_v = lead_msg.v[0]
 
-    is_invalid = not self.measured or abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
+    # dp: 「必須真實量測」這道門檻改成只在轉彎時生效——
+    # 轉彎時保留保護，避免旁側車道目標因外推值誤判成切入本車道；
+    # 直行/巡航時放行，避免正常雷達漏拍拖慢插隊車輛的信心度累積、反應變慢半拍。
+    is_invalid = (is_turning and not self.measured) or abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
     
     fuzzy_score = 0.0
     if not is_invalid:
@@ -174,17 +172,20 @@ def get_lead_ext(
   lead_msg: capnp._DynamicStructReader,
   model_v_ego: float,
   lead_prob: float,
+  is_turning: bool = False,
   low_speed_override: bool = True,
 ) -> dict[str, Any]:
   """
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
+  新增 is_turning：由 radard.py 依方向盤角度/角速度判斷是否正在轉彎，
+  轉出去給 process_track_logic 決定是否要求「必須真實量測」。
   """
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
 
   if ready:
     for track in tracks.values():
-      track.process_track_logic(lead_idx, lead_msg, v_ego, lead_prob)
+      track.process_track_logic(lead_idx, lead_msg, v_ego, lead_prob, is_turning)
 
   valid_tracks = {k: v for k, v in tracks.items() if not v.is_out_of_lane and v.ema_confidence[lead_idx] > 0.0}
 
@@ -197,29 +198,32 @@ def get_lead_ext(
   if len(valid_tracks) > 0 and ready and lead_prob > current_prob_thres:
     selected_track = match_vision_to_track(v_ego, lead_msg, valid_tracks)
 
-  # 狀態機記憶：雷達硬體斷流修補
-  # 修正：只快取 trackId，續命時一律用 trackId 向本幀的 tracks dict 重新取值，
-  # 絕不回傳凍結在舊幀的殭屍物件。若 trackId 已不在 tracks 裡（雷達真的斷流），
-  # 代表沒有任何即時資料可續命，立即清除快取，不做無意義的凍結延續。
+  # 狀態機記憶：還原 Candy 版的殭屍物件強制續命邏輯 (直接快取物件)
   cache = _LEAD_STATE_CACHE[lead_idx]
   if selected_track is not None:
-    cache['track_id'] = selected_track.identifier
+    cache['track'] = selected_track
     cache['absent'] = 0
-  elif cache['track_id'] is not None and cache['track_id'] in tracks:
+  elif cache['track'] is not None:
     cache['absent'] += 1
     if cache['absent'] <= SELECT_HOLDOVER_FRAMES:
-      selected_track = tracks[cache['track_id']]  # 重新查詢，取得本幀已更新的即時物件
+      selected_track = cache['track']  # 強制回傳上一刻的凍結物件，維持鎖定
     else:
-      cache['track_id'] = None
+      cache['track'] = None
       cache['absent'] = 0
-  else:
-    # trackId 已從雷達硬體消失（不只是這幀視覺比對失敗），沒有續命的意義
-    cache['track_id'] = None
-    cache['absent'] = 0
+      cache['last_aLeadK'] = None  # lead 真正消失，重置參考基準，避免下一個新目標被錯誤地拿舊值做限制
 
   lead_dict = {'status': False}
   if selected_track is not None:
     lead_dict = selected_track.get_RadarState(lead_prob)
+
+    # dp: 不管是「凍結續命中」還是「剛恢復匹配、瞬間跳到最新卡曼值」，
+    # 都對 aLeadK 做變化率限制，避免瞬間跳動被誤判成前車突然減速（幽靈煞車）。
+    # 只限制 aLeadK，dRel/yRel/vRel 不受影響，維持插隊偵測所需的位置即時性。
+    if cache['last_aLeadK'] is not None:
+      raw_aLeadK = lead_dict['aLeadK']
+      delta = float(np.clip(raw_aLeadK - cache['last_aLeadK'], -MAX_ALEADK_DELTA_PER_FRAME, MAX_ALEADK_DELTA_PER_FRAME))
+      lead_dict['aLeadK'] = float(cache['last_aLeadK'] + delta)
+    cache['last_aLeadK'] = float(lead_dict['aLeadK'])
 
     # 視覺加速度雙重驗證阻尼
     model_tau = get_model_lead_tau(lead_msg, lead_prob)
@@ -234,6 +238,8 @@ def get_lead_ext(
 
   elif (selected_track is None) and ready and (lead_prob > current_prob_thres):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+    _LEAD_STATE_CACHE[lead_idx]['last_aLeadK'] = None  # 純視覺後備路徑不經過雷達物件，重置參考基準
+
 
   # 原廠底線救援
   if low_speed_override:
