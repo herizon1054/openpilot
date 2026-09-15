@@ -22,6 +22,18 @@ openpilot.selfdrive.controls.lib.lane_centering.LaneCenteringController），
 「純代碼內設定」，不開放使用者從 UI 調整：寫死在下方的
 `_LANE_CENTER_OFFSET` 常數，目前固定為 0.0（不偏移，置中目標點就是車道
 正中央）。若之後要調整，直接改這個常數即可，不需要碰 UI/params。
+
+【修正紀錄】原本 `dp_lane_centering` 開關被關閉時，`update()` 直接
+`return model_curvature`，完全不會呼叫 `self._controller.reset()`，
+導致核心控制器的內部狀態（`_correction`／`_raw_correction_ema`）停留在
+停用前的舊值。下次重新啟用的第一幀會沿用這些舊狀態，可能產生跟停用
+期間路況無關的過渡修正量、誤判成避讓而錯誤壓低修正量。現在用
+`_was_enabled` 旗標偵測「啟用→停用」下降緣，只在真正切換的那一幀呼叫
+一次 `self._controller.reset()`，讓重新啟用永遠走乾淨的狀態路徑。
+（這個修法原本是在 dplcc 上發現並修正的；dptest 這邊的 `lane_centering.py`
+沒有 dplcc 後續加的「重新啟用觀察期」，所以不受那部分影響，但
+`_correction`／`_raw_correction_ema` 這兩個狀態污染的問題邏輯上完全
+相同，一併套用修正。）
 """
 import time
 
@@ -47,6 +59,7 @@ class DpLaneCentering:
     self._offset = _LANE_CENTER_OFFSET
     self._e2e_authority = _DEFAULT_E2E_AUTHORITY_PCT / 100.0
     self._pause_on_signal = False
+    self._was_enabled = False  # 追蹤上一次 update() 呼叫時 self.enabled 的狀態，見下方 reset 說明
 
     self._read_params(force=True)
 
@@ -80,8 +93,16 @@ class DpLaneCentering:
     self._read_params()
 
     if not self.enabled:
+      # 開關「啟用→停用」的下降緣：重置核心控制器狀態（_correction／
+      # _raw_correction_ema），避免下次重新啟用時沿用停用前、可能是很久
+      # 以前且路況完全無關的舊狀態，誤判成避讓而錯誤壓低修正量。用旗標
+      # 邊緣觸發，只在真正切換的那一幀呼叫一次，停用期間不會每幀重複呼叫。
+      if self._was_enabled:
+        self._controller.reset()
+      self._was_enabled = False
       return model_curvature
 
+    self._was_enabled = True
     return self._controller.update(
       model_curvature,
       model_v2,
