@@ -47,6 +47,11 @@ class DpLaneCentering:
     self._offset = _LANE_CENTER_OFFSET
     self._e2e_authority = _DEFAULT_E2E_AUTHORITY_PCT / 100.0
     self._pause_on_signal = False
+    # 追蹤「上一次呼叫 update() 時 self.enabled 的狀態」，只用來偵測「使用者從設定頁
+    # 把 dp_lane_centering 關掉」這個下降緣（enabled: True -> False），跟 controlsd.py
+    # 在 latActive 變 False 時呼叫的 reset() 是兩條獨立的觸發路徑，互不影響（見 update()
+    # 內的說明）。
+    self._was_enabled = False
 
     self._read_params(force=True)
 
@@ -80,8 +85,29 @@ class DpLaneCentering:
     self._read_params()
 
     if not self.enabled:
+      # dp: 剛從「啟用」切換為「停用」的那一幀，把核心演算法的內部狀態重置乾淨。
+      # 這裡回傳 model_curvature 本身不受影響（停用時本來就不會去讀
+      # self._controller 的任何狀態），純粹是為了「下次重新啟用」時不要沿用這次
+      # 停用前的殘留狀態：
+      #   - self._correction：若不重置，重新啟用後 smooth_value() 會拿這個殘留值
+      #     當起點去平滑逼近新的目標值，而不是從 0 開始，等於重新啟用瞬間會有一段
+      #     跟停用前修正量相關、但跟停用期間路況完全無關的過渡量。
+      #   - self._raw_correction_ema（避讓判斷的慢速基準值）：若不重置，重新啟用後
+      #     第一幀會拿「停用前、可能是很久以前、很不同路況下」的舊基準值去跟當下的
+      #     raw_correction 比較，容易被誤判成「突發避讓」而錯誤地把修正量壓低，直到
+      #     基準值花時間追上來為止。
+      #   - self._distance_since_reactivation：若不重置，這個值在停用期間仍會是
+      #     停用前累積的舊值（很可能已經 >= _REACTIVATION_OBSERVE_DISTANCE），導致
+      #     重新啟用時直接跳過第 6 點說明的「重新啟用觀察期」保護——而這個保護機制
+      #     原本要防的就是「剛恢復啟用、車道線關聯還沒穩定」這個情境，跟這裡的
+      #     使用場景（使用者手動切換開關）完全吻合，不重置等於讓保護機制形同虛設。
+      # 只在下降緣觸發一次（而非停用期間每幀都呼叫），避免停用期間不必要的重複呼叫。
+      if self._was_enabled:
+        self._controller.reset()
+      self._was_enabled = False
       return model_curvature
 
+    self._was_enabled = True
     return self._controller.update(
       model_curvature,
       model_v2,
