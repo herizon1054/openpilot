@@ -8,7 +8,7 @@
 #
 # =====================================================================
 # 【與 cp 的刻意分歧，請注意】
-# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下七處
+# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下六處
 # 是後續依實際路測回饋（方向盤在車道置中/模型路徑混合的邊界附近會有
 # 「一直修正、忽左忽右」的抖動）刻意修改過的地方，之後若要跟 StarPilot
 # 上游重新比對/移植，請特別注意這幾處已經不是逐字一致：
@@ -99,29 +99,17 @@
 #      另外設了 `_REACTIVATION_OBSERVE_MIN_SEC`（0.3 秒）當時間下限，避免
 #      極高速時換算出來的觀察期短到失去意義。**這組數值目前沒有實測數據
 #      校準，是依據法規標線間距推算出來的合理估計值，需要實際路測驗證。**
-#   7. **高速修正量補償**：起因是實際回報「車速 60 以上遇到連續轉彎，
-#      車道置中感覺來不及反應」。排查後發現 `raw_correction` 本身跟
-#      `1/lookahead²` 成反比，車速越快 `lookahead` 越大，同樣的車道內
-#      橫向誤差換算出來的曲率修正量會明顯變小（60→100 km/h，換算下來
-#      只剩約 36%）——這也用真實 log 驗證過：100 km/h 左右的路段，實測
-#      修正量長期只有 `_MAX_RAW_CORRECTION` 上限的 5% 左右，從未逼近過。
-#      修法：車速超過 `_SPEED_COMP_REFERENCE_LOOKAHEAD`（60 km/h）時，
-#      用 `(lookahead / 參考值) ** _SPEED_COMP_EXPONENT` 補償放大
-#      `raw_correction`，60 km/h 以下完全不受影響；`_SPEED_COMP_EXPONENT`
-#      原本用「保守補償」0.5（100 km/h 時放大約 1.29 倍），後續依需求
-#      調高到 **0.7**（100 km/h 時放大約 1.44 倍，比完全抵銷用的指數 2
-#      溫和很多），並設 `_SPEED_COMP_MAX`（2.0 倍）當上限。
-#      **指數不用完全抵銷（2）的理由**：曲率造成的側向加速度
-#      `a_lat = v² × κ` 本身就已經跟車速平方成正比，如果把 `raw_correction`
-#      完全抵銷掉 `lookahead²` 的縮減，會讓兩個都跟車速平方相關的效應
-#      疊加，高速時方向盤的實際側向力道感受會比曲率數字看起來的放大
-#      幅度更誇張；`clip_curvature()` 下游還是會用車速對應的 ISO 側向
-#      加速度/加加速度限制把關，不會超出安全極限，但指數越低、體感上的
-#      變化越溫和。**這組數值同樣沒有連續轉彎的真實 log 驗證過，需要
-#      實際路測確認補償力道夠不夠、會不會太強。**
 #
-# 除了以上七處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
+# 除了以上六處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
 # StarPilot 原始碼一致，未做修改。
+# 【已移除的實驗，留紀錄】曾經加過第 7 點「高速修正量補償」（車速超過
+# 60 km/h 時用 `(lookahead/參考值) ** _SPEED_COMP_EXPONENT` 補償放大
+# `raw_correction`，起因是實際回報「車速 60 以上遇到連續轉彎，車道置中
+# 感覺來不及反應」），依需求已經拿掉，恢復成單純的 `2*error/lookahead²`。
+# 這個補償從頭到尾都沒有連續轉彎的真實 log 驗證過是否真的有效，拿掉後
+# 「連續轉彎反應可能跟不上」這個症狀依然是已知限制、尚未解決（見已知
+# 限制章節；懷疑主要根因其實是避讓機制的 `_AVOIDANCE_EMA_TAU` 跟連續
+# 轉彎節奏對不上，不是這裡的車速-修正量反比關係，該方向也還沒動手）。
 # dplcc 專屬的 dp_ 參數讀取、啟用條件等 glue 邏輯，請見：
 #   dragonpilot/selfdrive/controls/lib/dp_lane_centering.py
 # =====================================================================
@@ -141,8 +129,6 @@
 #       模型正在避讓車輛，平滑讓出、不與模型拉扯；如果偏移持續存在夠久，
 #       才會被視為需要修正的長期偏移，車道置中會逐漸恢復介入
 #     - 變換車道 (laneChangeState != off) 或方向燈閃爍時可暫停/淡出介入
-#     - 車速超過 60 km/h 時，補償因前視距離變大而縮小的修正量（保守補償，
-#       60 km/h 以下不受影響）
 from cereal import log
 import numpy as np
 
@@ -197,21 +183,6 @@ _AVOIDANCE_JUMP_SPAN = 0.003
 # 短到失去意義；兩者取較大的那個（換算成距離後取 max）。
 _REACTIVATION_OBSERVE_DISTANCE = 10.0
 _REACTIVATION_OBSERVE_MIN_SEC = 0.3
-
-# 高速修正量補償（見檔頭第 7 點）。raw_correction 本身跟 1/lookahead² 成反比，
-# 車速越快、lookahead 越大，同樣的車道內橫向誤差換算出來的曲率修正量越小；
-# 這裡只在車速超過參考基準（60 km/h）時才補償放大，60 km/h 以下完全不受
-# 影響。指數 0.5（保守補償）：100 km/h 時放大約 1.29 倍，只抵銷一部分縮減，
-# 避免跟曲率造成的側向力道本身也跟車速平方成正比的效應疊加過頭。
-_SPEED_COMP_REFERENCE_LOOKAHEAD = 60.0 * _KPH_TO_MS  # 16.67 m/s
-_SPEED_COMP_EXPONENT = 0.7
-_SPEED_COMP_MAX = 2.0  # 放大上限，避免車速逼近 lookahead 上限（35 m/s）時補償過頭
-
-
-def _speed_compensation(lookahead: float) -> float:
-  if lookahead <= _SPEED_COMP_REFERENCE_LOOKAHEAD:
-    return 1.0
-  return float(np.clip((lookahead / _SPEED_COMP_REFERENCE_LOOKAHEAD) ** _SPEED_COMP_EXPONENT, 1.0, _SPEED_COMP_MAX))
 
 
 class LaneCenteringController:
@@ -390,7 +361,7 @@ class LaneCenteringController:
       except (AttributeError, TypeError, ValueError):
         pass
 
-      return True, float(2.0 * error / lookahead ** 2 * _speed_compensation(lookahead))
+      return True, float(2.0 * error / lookahead ** 2)
     except (AttributeError, IndexError, TypeError, ValueError):
       return False, 0.0
 
