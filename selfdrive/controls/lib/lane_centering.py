@@ -8,7 +8,7 @@
 #
 # =====================================================================
 # 【與 cp 的刻意分歧，請注意】
-# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下三處
+# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下七處
 # 是後續依實際路測回饋（方向盤在車道置中/模型路徑混合的邊界附近會有
 # 「一直修正、忽左忽右」的抖動）刻意修改過的地方，之後若要跟 StarPilot
 # 上游重新比對/移植，請特別注意這幾處已經不是逐字一致：
@@ -49,9 +49,79 @@
 #      後只留 model_curvature 無關的單純避讓判斷；如果之後真的需要恢復
 #      「真轉彎不該被避讓機制誤傷」這個功能，要用不同的判斷方式（不能只看
 #      「曲率有沒有變化」，因為彎道中曲率本來就會持續變化）。
+#   5. `_CENTER_ERROR_DEADBAND`：從 0.08 逐步加大到 **0.15**（中間試過
+#      0.10，實測仍不夠、方向盤還會輕微左右搖擺，最後定案 0.15 才真正
+#      穩定）。實測驗證：拿掉第 4 點的 model_curvature 排除機制後，彎道
+#      的「像喝醉」現象大幅改善，但還沒完全消失，加大死區之後方向盤在
+#      彎道不再左右拉扯——代表「已知限制」章節提到的根因 A（車道線/模型
+#      路徑橫向估計雜訊在彎道被 lookahead 平方放大）確實存在，死區加大
+#      是直接針對它的濾波。
+#      【後續用真實 log 驗證，並回退 _SMOOTH_TAU】拿實際行車 log 分析發現，
+#      「車道正中央」跟「模型自己選擇的路徑」之間的橫向誤差，中位數落在
+#      0.09~0.18m 之間，且大部分是緩慢漂移（1 秒內滾動平均可變化 ±0.3m
+#      以上），不是逐幀雜訊（逐幀抖動標準差只有約 0.01m）——這代表死區
+#      加大到 0.15，效果是讓車道置中不再糾正「模型自己系統性選擇的
+#      路線」，只處理明顯更大的偏移，這正是解決搖擺問題所需要的取捨，
+#      跟實際路測「0.10 不夠、0.15 才穩定」的回饋一致。用同一份 log 做
+#      A/B 比較（原始 StarPilot 邏輯 vs 修改版，e2e_authority 固定同一個
+#      值排除干擾）並逐項拆解常數後確認：**拉扯問題幾乎全部是死區這一項
+#      造成**（單獨把死區退回 0.08、其餘不動，就能還原掉平均修正量九成
+#      以上的差距）；`_SMOOTH_TAU` 從 0.4 加大到 0.6 這件事，對抗晃動的
+#      實際貢獻小到可以忽略。同時，`_SMOOTH_TAU` 加大有明確代價：它會讓
+#      「持續、穩定介入」時修正量從目前值爬升到目標值的速度變慢，在
+#      變換車道剛結束、車子確實需要修正的情境下，容易讓人感覺「置中變
+#      遲鈍、好像消失了」（見「已知限制」章節「重新啟用瞬間方向盤自行
+#      偏移」的討論）。**權衡「晃動抑制的貢獻幾乎為零」跟「拖慢真正需要
+#      出力時的反應速度」這兩點後，已把 `_SMOOTH_TAU` 退回原值 0.4**，
+#      死區維持在 0.15（死區才是真正解決晃動問題的關鍵）。
+#      **【已修正的錯誤診斷】**：曾經以為時速 80 過彎「反應變慢」是死區／
+#      `_SMOOTH_TAU` 加大的副作用，後來確認那次測試其實是
+#      `dp_lane_centering_e2e_authority` 還設 75%、模型混合比例較高造成的，
+#      跟死區／`_SMOOTH_TAU` 無關（詳見移植文件第 8 節的更正說明）。
+#   6. **重新啟用觀察期**：起因是兩次實際回報——(a) 手動開啟 LCA 開始巡航
+#      後方向盤自己偏出車道線；(b) 直線切入左側車道、變換車道剛結束
+#      （`laneChangeState` 從非 off 變回 off）後車輛偏向左側，像失去置中。
+#      兩次的共通點都是「LCA 剛從暫停/重置狀態變回啟用」的那一瞬間：
+#      重新啟用第一幀的冷啟動保護（見第 4 點）會直接把當下算出來的修正量
+#      當成基準值、不做任何驗證，但這一幀車道線關聯很可能還沒穩定下來
+#      （尤其變換車道剛結束時），等於把一個還沒穩定的錯誤值直接當成事實
+#      去修正方向盤，而且後續的避讓機制也抓不到這個問題（因為錯誤值本身
+#      就是基準值，永遠不會跟自己有差距）。
+#      修法：重新啟用後，要求先累積一段行駛距離（`_REACTIVATION_OBSERVE_
+#      DISTANCE` = 10 公尺）才真正讓修正量生效，這段觀察期內只持續追蹤
+#      避讓機制的基準值、不讓 `self._correction` 往任何目標值爬升（維持在
+#      0）。這 10 公尺的依據是台灣《道路交通標誌標線號誌設置規則》第 181
+#      條：車道分向線／車道線為虛線，線段 4 公尺、間距 6 公尺，一個完整
+#      「線段+間距」循環是 10 公尺，抓一個完整循環確保至少看過一次完整的
+#      虛線樣式。用距離而非固定秒數當門檻，因為車道線本身是依實際路面
+#      距離劃設的，車速越快、跑完同一段觀察距離的時間自然越短，這比固定
+#      秒數更貼近「模型需要看到多少實際路面才能重新建立信心」的物理意義；
+#      另外設了 `_REACTIVATION_OBSERVE_MIN_SEC`（0.3 秒）當時間下限，避免
+#      極高速時換算出來的觀察期短到失去意義。**這組數值目前沒有實測數據
+#      校準，是依據法規標線間距推算出來的合理估計值，需要實際路測驗證。**
+#   7. **高速修正量補償**：起因是實際回報「車速 60 以上遇到連續轉彎，
+#      車道置中感覺來不及反應」。排查後發現 `raw_correction` 本身跟
+#      `1/lookahead²` 成反比，車速越快 `lookahead` 越大，同樣的車道內
+#      橫向誤差換算出來的曲率修正量會明顯變小（60→100 km/h，換算下來
+#      只剩約 36%）——這也用真實 log 驗證過：100 km/h 左右的路段，實測
+#      修正量長期只有 `_MAX_RAW_CORRECTION` 上限的 5% 左右，從未逼近過。
+#      修法：車速超過 `_SPEED_COMP_REFERENCE_LOOKAHEAD`（60 km/h）時，
+#      用 `(lookahead / 參考值) ** _SPEED_COMP_EXPONENT` 補償放大
+#      `raw_correction`，60 km/h 以下完全不受影響；`_SPEED_COMP_EXPONENT`
+#      原本用「保守補償」0.5（100 km/h 時放大約 1.29 倍），後續依需求
+#      調高到 **0.7**（100 km/h 時放大約 1.44 倍，比完全抵銷用的指數 2
+#      溫和很多），並設 `_SPEED_COMP_MAX`（2.0 倍）當上限。
+#      **指數不用完全抵銷（2）的理由**：曲率造成的側向加速度
+#      `a_lat = v² × κ` 本身就已經跟車速平方成正比，如果把 `raw_correction`
+#      完全抵銷掉 `lookahead²` 的縮減，會讓兩個都跟車速平方相關的效應
+#      疊加，高速時方向盤的實際側向力道感受會比曲率數字看起來的放大
+#      幅度更誇張；`clip_curvature()` 下游還是會用車速對應的 ISO 側向
+#      加速度/加加速度限制把關，不會超出安全極限，但指數越低、體感上的
+#      變化越溫和。**這組數值同樣沒有連續轉彎的真實 log 驗證過，需要
+#      實際路測確認補償力道夠不夠、會不會太強。**
 #
-# 除了以上四處，其餘邏輯（車道線信心門檻、置中死區、平滑濾波時間常數、
-# 增益、方向燈/變換車道暫停等）仍與 StarPilot 原始碼一致，未做修改。
+# 除了以上七處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
+# StarPilot 原始碼一致，未做修改。
 # dplcc 專屬的 dp_ 參數讀取、啟用條件等 glue 邏輯，請見：
 #   dragonpilot/selfdrive/controls/lib/dp_lane_centering.py
 # =====================================================================
@@ -71,6 +141,8 @@
 #       模型正在避讓車輛，平滑讓出、不與模型拉扯；如果偏移持續存在夠久，
 #       才會被視為需要修正的長期偏移，車道置中會逐漸恢復介入
 #     - 變換車道 (laneChangeState != off) 或方向燈閃爍時可暫停/淡出介入
+#     - 車速超過 60 km/h 時，補償因前視距離變大而縮小的修正量（保守補償，
+#       60 km/h 以下不受影響）
 from cereal import log
 import numpy as np
 
@@ -90,10 +162,10 @@ _MIN_CENTER_TO_LINE = 1.1
 _MAX_RAW_CORRECTION = 0.004
 _MAX_GAIN = 0.30
 _VISUAL_CORRECTION_EPSILON = 1e-6
-_SMOOTH_TAU = 0.4
+_SMOOTH_TAU = 0.4  # 退回原值：用真實 log 做 A/B/拆解分析後確認，拉扯問題幾乎全部是死區造成的，_SMOOTH_TAU 加大對抗晃動的貢獻可忽略不計，但會拖慢「該出力時」的反應速度（見檔頭第 5 點）
 _SIGNAL_RELEASE_TAU = 0.20
 _CONFIDENCE_RELEASE_TAU = 0.20
-_CENTER_ERROR_DEADBAND = 0.15
+_CENTER_ERROR_DEADBAND = 0.15  # 實測調整：0.08 會殘留左右拉扯，0.10 仍不夠，加大到 0.15 才真正穩定（見檔頭第 5 點）
 
 _E2E_MAX_PATH_STD = 0.35
 _E2E_CONFIDENCE_RAMP_START = 0.25  # path_std 在這之下，信心權重視為滿分 1.0
@@ -112,15 +184,46 @@ _E2E_SPEED_RAMP_END_MS = 60.0 * _KPH_TO_MS    # 60 km/h：覆蓋上限視為 UI 
 _AVOIDANCE_EMA_TAU = 2.0
 _AVOIDANCE_JUMP_SPAN = 0.003
 
+# 重新啟用觀察期用的常數（見 update() 內的說明與檔頭第 6 點）。
+# 用「行駛距離」而不是固定秒數當門檻，理由：車道線本身是依實際路面距離
+# 劃設的，車速越快，跑完同一段觀察距離所花的時間自然越短，這比固定秒數
+# 更貼近「模型需要看到多少實際路面才能重新建立信心」這件事的物理意義。
+# _REACTIVATION_OBSERVE_DISTANCE：參考台灣《道路交通標誌標線號誌設置
+# 規則》第 181 條，車道分向線／車道線為虛線，線段 4 公尺、間距 6 公尺，
+# 一個完整「線段+間距」循環是 10 公尺——抓一個完整循環的長度，確保重新
+# 啟用後至少看過一次完整的虛線樣式，不會只看到半截線段就誤判。
+# _REACTIVATION_OBSERVE_MIN_SEC：距離門檻換算成時間在極高速時會變得很短
+# （例如 120 km/h 換算約 0.3 秒），保留這個時間下限，避免高速時觀察期
+# 短到失去意義；兩者取較大的那個（換算成距離後取 max）。
+_REACTIVATION_OBSERVE_DISTANCE = 10.0
+_REACTIVATION_OBSERVE_MIN_SEC = 0.3
+
+# 高速修正量補償（見檔頭第 7 點）。raw_correction 本身跟 1/lookahead² 成反比，
+# 車速越快、lookahead 越大，同樣的車道內橫向誤差換算出來的曲率修正量越小；
+# 這裡只在車速超過參考基準（60 km/h）時才補償放大，60 km/h 以下完全不受
+# 影響。指數 0.5（保守補償）：100 km/h 時放大約 1.29 倍，只抵銷一部分縮減，
+# 避免跟曲率造成的側向力道本身也跟車速平方成正比的效應疊加過頭。
+_SPEED_COMP_REFERENCE_LOOKAHEAD = 60.0 * _KPH_TO_MS  # 16.67 m/s
+_SPEED_COMP_EXPONENT = 0.7
+_SPEED_COMP_MAX = 2.0  # 放大上限，避免車速逼近 lookahead 上限（35 m/s）時補償過頭
+
+
+def _speed_compensation(lookahead: float) -> float:
+  if lookahead <= _SPEED_COMP_REFERENCE_LOOKAHEAD:
+    return 1.0
+  return float(np.clip((lookahead / _SPEED_COMP_REFERENCE_LOOKAHEAD) ** _SPEED_COMP_EXPONENT, 1.0, _SPEED_COMP_MAX))
+
 
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
-    self._raw_correction_ema = None    # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
+    self._raw_correction_ema = None          # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
+    self._distance_since_reactivation = None  # None 代表「還在暫停/剛重置」；重新啟用後開始累積行駛距離，見第 6 點觀察期說明
 
   def reset(self) -> None:
     self._correction = 0.0
     self._raw_correction_ema = None
+    self._distance_since_reactivation = None
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
              pause_on_signal=False, turn_signal_active=False, driver_override=False) -> float:
@@ -186,6 +289,18 @@ class LaneCenteringController:
     avoidance_weight = float(np.clip(1.0 - abs(deviation) / _AVOIDANCE_JUMP_SPAN, 0.0, 1.0))
     self._raw_correction_ema = float(smooth_value(raw_correction, self._raw_correction_ema, _AVOIDANCE_EMA_TAU, dt=DT_CTRL))
     raw_correction *= avoidance_weight
+
+    # 重新啟用觀察期：剛從暫停/重置狀態恢復的頭一段距離，車道線關聯很可能
+    # 還沒穩定（例如變換車道剛結束），只累積基準值、不讓修正量真的生效，
+    # 避免把還沒穩定下來的錯誤值直接當成事實去修正方向盤。見第 6 點說明。
+    if self._distance_since_reactivation is None:
+      self._distance_since_reactivation = 0.0
+    else:
+      self._distance_since_reactivation += v_ego * DT_CTRL
+    required_distance = max(_REACTIVATION_OBSERVE_DISTANCE, _REACTIVATION_OBSERVE_MIN_SEC * v_ego)
+    if self._distance_since_reactivation < required_distance:
+      self._correction = float(smooth_value(0.0, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
+      return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
     self._correction = float(smooth_value(target, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
@@ -275,7 +390,7 @@ class LaneCenteringController:
       except (AttributeError, TypeError, ValueError):
         pass
 
-      return True, float(2.0 * error / lookahead ** 2)
+      return True, float(2.0 * error / lookahead ** 2 * _speed_compensation(lookahead))
     except (AttributeError, IndexError, TypeError, ValueError):
       return False, 0.0
 

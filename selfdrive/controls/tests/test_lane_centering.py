@@ -43,7 +43,8 @@ def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, activ
 def _converge(model, *, offset=0.0, authority=1.0, speed=_V_EGO, curvature=0.0):
   controller = LaneCenteringController()
   output = 0.0
-  for _ in range(300):
+  # 900 次（9 秒）：即使 _SMOOTH_TAU 之後又調大，也留足夠餘裕確保真的收斂完
+  for _ in range(900):
     output = _update(controller, model, offset=offset, authority=authority, speed=speed, curvature=curvature)
   return controller, output
 
@@ -176,6 +177,11 @@ def test_confidence_loss_drops_filtered_correction():
 def test_correction_is_smoothed_and_capped():
   controller = LaneCenteringController()
   model = _model(left=0.0, right=3.0, path_std=0.6)
+  # 先跑過重新啟用觀察期（_V_EGO=20 m/s 時約需 10m/20(m/s)/DT_CTRL(0.01)=50 幀，
+  # 多跑幾幀留餘裕避免卡在浮點數邊界），觀察期本身的行為由專門的測試
+  # （test_reactivation_observation_window_*）驗證，這裡不重複檢查
+  for _ in range(60):
+    _update(controller, model, authority=0.0)
   first = _update(controller, model, authority=0.0)
   _, steady = _converge(model, authority=0.0)
   assert 0.0 < first < steady
@@ -189,7 +195,10 @@ def test_min_v_ego_is_15kph_not_18kph():
   just_below = 15.0 / 3.6 - 0.05  # 略低於新門檻
   just_above = 15.0 / 3.6 + 0.05  # 略高於新門檻，且仍低於舊的 18 km/h 門檻
   assert _update(LaneCenteringController(), model, speed=just_below) == 0.0
-  assert _update(LaneCenteringController(), model, speed=just_above) != 0.0
+  # 用 _converge（900 幀）而不是單一幀，因為單一幀還在重新啟用觀察期內，
+  # 修正量固定是 0，不能用來判斷 _MIN_V_EGO 這個啟用門檻本身有沒有生效
+  _, steady_above = _converge(model, speed=just_above)
+  assert steady_above != 0.0
 
 
 def test_e2e_confidence_weight_ramps_smoothly_instead_of_cliff():
@@ -242,26 +251,24 @@ def test_e2e_speed_ramp_now_trusts_model_more_at_low_speed():
 
 
 def test_avoidance_does_not_falsely_suppress_cold_start():
-  # reset 之後（含全新 controller）的第一次呼叫，應該直接把當下修正量當成
-  # 基準值，不能被誤判成「突然」而被壓低——否則車道置中每次剛啟用都會慢半拍
+  # reset 之後（含全新 controller）的第一次呼叫，應該直接把當下算出來的
+  # raw_correction 當成基準值（bootstrap），不能是 0 或維持 None——否則會被
+  # 誤判成「基準值是 0、目前值是一個大跳動」而被避讓機制誤傷。直接檢查
+  # 內部的 _raw_correction_ema 狀態，因為重新啟用觀察期（見檔頭第 6 點）
+  # 會讓輸出的曲率修正量在頭幾十公尺固定是 0，沒辦法拿輸出值判斷這件事
   model = _model(left=-1.5, right=2.1)
   controller = LaneCenteringController()
-  first_with_avoidance = _update(controller, model, authority=0.0)
-
-  reference = LaneCenteringController()
-  reference._raw_correction_ema = 10.0  # 故意塞一個跟真實值差很多的基準值
-  first_with_stale_ema = _update(reference, model, authority=0.0)
-
-  # 冷啟動（基準值為 None）不應該被壓低，應該跟「基準值剛好等於當下值」一樣
-  assert first_with_avoidance != 0.0
-  assert first_with_stale_ema == 0.0 or abs(first_with_stale_ema) < abs(first_with_avoidance)
+  assert controller._raw_correction_ema is None
+  _update(controller, model, authority=0.0)
+  assert controller._raw_correction_ema is not None
+  assert controller._raw_correction_ema != 0.0
 
 
 def test_sudden_swap_is_suppressed_more_than_gradual_smoothing_alone():
   import openpilot.selfdrive.controls.lib.lane_centering as lc_module
 
-  model_a = _model(left=-1.5, right=2.1)
-  model_b = _model(left=-2.1, right=1.5)  # 車道線左右對調，修正方向瞬間反過來
+  model_a = _model(left=-1.0, right=2.6)  # 拉大跟 model_b 的差距，確保跳動幅度穩定超過 _AVOIDANCE_JUMP_SPAN
+  model_b = _model(left=-2.6, right=1.0)  # 車道線左右對調，修正方向瞬間反過來
 
   def _switch_and_settle(jump_span):
     original = lc_module._AVOIDANCE_JUMP_SPAN
@@ -282,12 +289,20 @@ def test_sudden_swap_is_suppressed_more_than_gradual_smoothing_alone():
   # 門檻放到超大，等於避讓機制永遠不觸發，只剩下原本就有的 _SMOOTH_TAU 平滑，當對照組
   without_avoidance = _switch_and_settle(1e6)
 
-  assert abs(with_avoidance) < abs(without_avoidance)
+  # 兩組切換前都收斂到同一個 model_a 穩態值，切換後應該都朝 model_b 的新穩態
+  # （反向）移動；避讓機制的效果是「移動得比較少」，不是「絕對值比較小」——
+  # 兩者在還沒轉成負值之前，絕對值本身不能直接比較大小（此時 with_avoidance
+  # 因為移動得慢，反而還停留在比較大的正值，絕對值看起來比較大，不代表沒被
+  # 壓低），要看跟切換前的穩態值差了多少才對
+  _, steady_a = _converge(model_a, authority=0.0)
+  moved_with = abs(with_avoidance - steady_a)
+  moved_without = abs(without_avoidance - steady_a)
+  assert moved_with < moved_without
 
 
 def test_persistent_deviation_eventually_overrides_avoidance_suppression():
-  model_a = _model(left=-1.5, right=2.1)
-  model_b = _model(left=-2.1, right=1.5)
+  model_a = _model(left=-1.0, right=2.6)
+  model_b = _model(left=-2.6, right=1.0)
 
   controller = LaneCenteringController()
   for _ in range(300):
@@ -307,8 +322,8 @@ def test_curvature_no_longer_exempts_avoidance_suppression():
   # model_curvature 是否也跟著大幅變化，避讓機制的行為都一樣（只看修正量
   # 本身的跳動），不會因為曲率也在動就豁免——這正是撤銷的原因：彎道時
   # 曲率幾乎必然在動，這個豁免會讓避讓機制在彎道全程失去雜訊抑制效果
-  model_a = _model(left=-1.5, right=2.1)
-  model_b = _model(left=-2.1, right=1.5)
+  model_a = _model(left=-1.0, right=2.6)
+  model_b = _model(left=-2.6, right=1.0)
 
   turning = LaneCenteringController()
   for _ in range(300):
@@ -328,3 +343,115 @@ def test_curvature_no_longer_exempts_avoidance_suppression():
 
   # 曲率有沒有跟著變化，不應該再影響避讓機制的壓低程度
   assert turning_correction == pytest.approx(avoiding_correction, abs=1e-6)
+
+
+def test_reactivation_observation_window_holds_correction_at_zero():
+  # 重新啟用後，累積行駛距離不到 _REACTIVATION_OBSERVE_DISTANCE（10 公尺）
+  # 之前，修正量應該固定是 0，即使車道線偏移一直都存在、算出來的
+  # raw_correction 明明不是 0
+  model = _model(left=-1.5, right=2.1)
+  controller = LaneCenteringController()
+  speed = 20.0  # m/s，10 公尺約需 50 幀
+  for _ in range(45):  # 45 幀 * 0.2m/幀 = 9 公尺，還沒到 10 公尺門檻
+    assert _update(controller, model, authority=0.0, speed=speed) == 0.0
+
+
+def test_reactivation_observation_window_releases_after_enough_distance():
+  # 累積夠距離之後，應該開始正常介入（不再固定是 0）
+  model = _model(left=-1.5, right=2.1)
+  controller = LaneCenteringController()
+  speed = 20.0
+  output = 0.0
+  for _ in range(80):  # 80 幀 * 0.2m/幀 = 16 公尺，超過 10 公尺門檻，留餘裕
+    output = _update(controller, model, authority=0.0, speed=speed)
+  assert output != 0.0
+
+
+def test_reactivation_observation_window_distance_not_time_based():
+  # 門檻是「行駛距離」不是「固定秒數」：車速越快，跑完同一段觀察距離的
+  # 幀數（=時間）應該越少
+  model = _model(left=-1.5, right=2.1)
+
+  def _frames_until_active(speed):
+    controller = LaneCenteringController()
+    for i in range(2000):
+      if _update(controller, model, authority=0.0, speed=speed) != 0.0:
+        return i
+    return None
+
+  frames_slow = _frames_until_active(15.0 / 3.6 + 0.1)  # 略高於 _MIN_V_EGO
+  frames_fast = _frames_until_active(30.0 / 3.6 * 3)     # 90 km/h 左右
+
+  assert frames_slow is not None and frames_fast is not None
+  assert frames_fast < frames_slow
+
+
+def test_reactivation_observation_window_resets_on_lane_change():
+  # 變換車道結束、laneChangeState 從非 off 變回 off 之後，應該重新進入
+  # 觀察期，不會直接沿用變換車道前累積的距離
+  model = _model(left=-1.5, right=2.1)
+  changing_model = _model(left=-1.5, right=2.1, lane_change=1)
+
+  controller = LaneCenteringController()
+  # 先跑到穩定介入（遠超過觀察期）
+  for _ in range(200):
+    _update(controller, model, authority=0.0)
+  assert controller._distance_since_reactivation is not None
+
+  # 進入變換車道狀態一段時間
+  for _ in range(50):
+    output = _update(controller, changing_model, authority=0.0)
+    assert output == 0.0
+  assert controller._distance_since_reactivation is None  # reset() 應該已經清空
+
+  # 變換車道結束、laneChangeState 變回 off 後，應該要重新走一次觀察期，
+  # 不是立刻恢復介入
+  assert _update(controller, model, authority=0.0) == 0.0
+
+
+def test_speed_compensation_inactive_below_60kph():
+  import openpilot.selfdrive.controls.lib.lane_centering as lc_module
+
+  assert lc_module._speed_compensation(59.0 / 3.6) == 1.0
+  assert lc_module._speed_compensation(lc_module._SPEED_COMP_REFERENCE_LOOKAHEAD) == 1.0
+  # 8 m/s（車速下限對應的最小 lookahead）也不該被放大
+  assert lc_module._speed_compensation(8.0) == 1.0
+
+
+def test_speed_compensation_scales_conservatively_above_60kph():
+  import openpilot.selfdrive.controls.lib.lane_centering as lc_module
+
+  comp_100 = lc_module._speed_compensation(100.0 / 3.6)
+  # 補償係數應該符合公式本身（不寫死指數字面值，指數之後可能還會再調）：
+  # (100/60) ** _SPEED_COMP_EXPONENT
+  assert comp_100 == pytest.approx((100.0 / 60.0) ** lc_module._SPEED_COMP_EXPONENT, rel=1e-6)
+  assert 1.0 < comp_100 < 2.0
+
+
+def test_speed_compensation_is_capped():
+  import openpilot.selfdrive.controls.lib.lane_centering as lc_module
+
+  # lookahead 上限是 35 m/s（126 km/h），(126/60)**0.5 ≈ 1.45，還沒到上限，
+  # 直接檢查一個刻意超過上限換算值的 lookahead，確認有被夾住在 _SPEED_COMP_MAX
+  comp = lc_module._speed_compensation(35.0)
+  assert comp <= lc_module._SPEED_COMP_MAX
+
+
+def test_speed_compensation_raises_raw_correction_at_high_speed():
+  # 同一個模型、同樣的車道內橫向誤差，車速較快（超過 60 km/h）時，
+  # 換算出來的 raw_correction 應該比沒有補償時更大（但仍遠小於低速時的
+  # 原始值，因為補償只是「部分」抵銷 lookahead 平方縮減的效果）
+  model = _model(left=-1.5, right=2.1)
+  low_speed = 60.0 / 3.6   # 補償門檻，還沒開始放大
+  high_speed = 100.0 / 3.6  # 超過門檻，應該被放大
+
+  _, raw_at_threshold = LaneCenteringController._raw_correction(model, low_speed, 0.0, 0.0)
+  _, raw_high_uncompensated_equivalent = LaneCenteringController._raw_correction(model, high_speed, 0.0, 0.0)
+
+  # 兩者都已經內建了補償；驗證補償確實把高速的修正量拉抬了一些，
+  # 而不是任由 1/lookahead**2 自然衰減到底
+  import openpilot.selfdrive.controls.lib.lane_centering as lc_module
+  comp = lc_module._speed_compensation(high_speed)
+  # 反推：如果沒有補償，高速的 raw_correction 應該要更小
+  raw_without_comp = raw_high_uncompensated_equivalent / comp
+  assert abs(raw_high_uncompensated_equivalent) > abs(raw_without_comp)

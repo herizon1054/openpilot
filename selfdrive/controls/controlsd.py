@@ -175,20 +175,22 @@ class Controls:
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
 
-    # dp: 判斷這一幀是不是由 Angle(LTA) 主控——不論是原生 angle 車型
-    # （self.CP.steerControlType 是 angle）還是 LatControlDynamic 熱切換
-    # 到 angle（self.LaC.use_angle），車道置中都應該暫停：LCA 目前的曲率
-    # 修正量是針對 Torque 控制調校的，疊加在 Angle 控制上容易互相打架，
-    # 出現方向盤忽左忽右的小角度修正（實測回報：時速 100 時角度控制期間
-    # 方向盤在 0/-1/0/2 度之間反覆跳動）
-    if hasattr(self.LaC, 'use_angle'):
-      angle_control_active = bool(self.LaC.use_angle)
-    else:
-      angle_control_active = self.CP.steerControlType == car.CarParams.SteerControlType.angle
+    # dp: 【已停用，留紀錄】原本這裡會判斷是不是由 Angle(LTA) 主控
+    # （原生 angle 車型看 self.CP.steerControlType，LatControlDynamic
+    # 熱切換車型看 self.LaC.use_angle），是的話透過 lat_active 強制暫停
+    # LCA。起因是實測回報「時速 100 角度控制期間方向盤在 0/-1/0/2 度之間
+    # 反覆跳動」，懷疑 LCA 的曲率修正是針對 Torque 控制調校的，疊加在
+    # Angle 控制上會互相干擾。
+    # 依需求改為 LCA 在 Angle 主控時也正常運作，不再暫停。
+    # **注意**：這只是拿掉暫停，並沒有真正解決「LCA 修正量對 Angle 控制
+    # 是否適用」這個根本問題本身——如果上面那個舊症狀（Angle 期間方向盤
+    # 小角度反覆跳動）重新出現，這就是最先要回頭懷疑的地方。若之後需要
+    # 恢復暫停，可以參考版本歷史復原下面這段判斷式，重新接回
+    # `CC.latActive and not angle_control_active`。
 
     # dp: 車道置中修正 - 在 clip_curvature 之前疊加，因此仍會受到既有的 jerk/加速度限制約束
     new_desired_curvature = self.dp_lane_centering.update(
-      new_desired_curvature, model_v2, CS.vEgo, CC.latActive and not angle_control_active,
+      new_desired_curvature, model_v2, CS.vEgo, CC.latActive,
       bool(self.sm.all_checks(['modelV2'])),
       bool(CS.leftBlinker or CS.rightBlinker),
       bool(CS.steeringPressed))
