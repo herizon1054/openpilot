@@ -8,7 +8,7 @@
 #
 # =====================================================================
 # 【與 cp 的刻意分歧，請注意】
-# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下六處
+# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下五處
 # 是後續依實際路測回饋（方向盤在車道置中/模型路徑混合的邊界附近會有
 # 「一直修正、忽左忽右」的抖動）刻意修改過的地方，之後若要跟 StarPilot
 # 上游重新比對/移植，請特別注意這幾處已經不是逐字一致：
@@ -78,31 +78,14 @@
 #      `_SMOOTH_TAU` 加大的副作用，後來確認那次測試其實是
 #      `dp_lane_centering_e2e_authority` 還設 75%、模型混合比例較高造成的，
 #      跟死區／`_SMOOTH_TAU` 無關（詳見移植文件第 8 節的更正說明）。
-#   6. **重新啟用觀察期**：起因是兩次實際回報——(a) 手動開啟 LCA 開始巡航
-#      後方向盤自己偏出車道線；(b) 直線切入左側車道、變換車道剛結束
-#      （`laneChangeState` 從非 off 變回 off）後車輛偏向左側，像失去置中。
-#      兩次的共通點都是「LCA 剛從暫停/重置狀態變回啟用」的那一瞬間：
-#      重新啟用第一幀的冷啟動保護（見第 4 點）會直接把當下算出來的修正量
-#      當成基準值、不做任何驗證，但這一幀車道線關聯很可能還沒穩定下來
-#      （尤其變換車道剛結束時），等於把一個還沒穩定的錯誤值直接當成事實
-#      去修正方向盤，而且後續的避讓機制也抓不到這個問題（因為錯誤值本身
-#      就是基準值，永遠不會跟自己有差距）。
-#      修法：重新啟用後，要求先累積一段行駛距離（`_REACTIVATION_OBSERVE_
-#      DISTANCE` = 10 公尺）才真正讓修正量生效，這段觀察期內只持續追蹤
-#      避讓機制的基準值、不讓 `self._correction` 往任何目標值爬升（維持在
-#      0）。這 10 公尺的依據是台灣《道路交通標誌標線號誌設置規則》第 181
-#      條：車道分向線／車道線為虛線，線段 4 公尺、間距 6 公尺，一個完整
-#      「線段+間距」循環是 10 公尺，抓一個完整循環確保至少看過一次完整的
-#      虛線樣式。用距離而非固定秒數當門檻，因為車道線本身是依實際路面
-#      距離劃設的，車速越快、跑完同一段觀察距離的時間自然越短，這比固定
-#      秒數更貼近「模型需要看到多少實際路面才能重新建立信心」的物理意義；
-#      另外設了 `_REACTIVATION_OBSERVE_MIN_SEC`（0.3 秒）當時間下限，避免
-#      極高速時換算出來的觀察期短到失去意義。**這組數值目前沒有實測數據
-#      校準，是依據法規標線間距推算出來的合理估計值，需要實際路測驗證。**
 #
-# 除了以上六處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
+# 除了以上五處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
 # StarPilot 原始碼一致，未做修改。
-# dplcc 專屬的 dp_ 參數讀取、啟用條件等 glue 邏輯，請見：
+# 【dptest 移植時的差異】dplcc 那邊後續還有第 6 點「重新啟用觀察期」跟
+# 第 7 點「高速修正量補償」，依需求**這次移植到 dptest 不加入這兩項**，
+# 詳細內容跟撤銷理由請見 dplcc 自己的 `lane_centering.py`／
+# `lane_centering_port.md`，這裡不重複。
+# dp_ 參數讀取、啟用條件等 glue 邏輯，請見：
 #   dragonpilot/selfdrive/controls/lib/dp_lane_centering.py
 # =====================================================================
 #
@@ -162,31 +145,15 @@ _E2E_SPEED_RAMP_END_MS = 60.0 * _KPH_TO_MS    # 60 km/h：覆蓋上限視為 UI 
 _AVOIDANCE_EMA_TAU = 2.0
 _AVOIDANCE_JUMP_SPAN = 0.003
 
-# 重新啟用觀察期用的常數（見 update() 內的說明與檔頭第 6 點）。
-# 用「行駛距離」而不是固定秒數當門檻，理由：車道線本身是依實際路面距離
-# 劃設的，車速越快，跑完同一段觀察距離所花的時間自然越短，這比固定秒數
-# 更貼近「模型需要看到多少實際路面才能重新建立信心」這件事的物理意義。
-# _REACTIVATION_OBSERVE_DISTANCE：參考台灣《道路交通標誌標線號誌設置
-# 規則》第 181 條，車道分向線／車道線為虛線，線段 4 公尺、間距 6 公尺，
-# 一個完整「線段+間距」循環是 10 公尺——抓一個完整循環的長度，確保重新
-# 啟用後至少看過一次完整的虛線樣式，不會只看到半截線段就誤判。
-# _REACTIVATION_OBSERVE_MIN_SEC：距離門檻換算成時間在極高速時會變得很短
-# （例如 120 km/h 換算約 0.3 秒），保留這個時間下限，避免高速時觀察期
-# 短到失去意義；兩者取較大的那個（換算成距離後取 max）。
-_REACTIVATION_OBSERVE_DISTANCE = 10.0
-_REACTIVATION_OBSERVE_MIN_SEC = 0.3
-
 
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
-    self._raw_correction_ema = None          # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
-    self._distance_since_reactivation = None  # None 代表「還在暫停/剛重置」；重新啟用後開始累積行駛距離，見第 6 點觀察期說明
+    self._raw_correction_ema = None    # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
 
   def reset(self) -> None:
     self._correction = 0.0
     self._raw_correction_ema = None
-    self._distance_since_reactivation = None
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
              pause_on_signal=False, turn_signal_active=False, driver_override=False) -> float:
@@ -252,18 +219,6 @@ class LaneCenteringController:
     avoidance_weight = float(np.clip(1.0 - abs(deviation) / _AVOIDANCE_JUMP_SPAN, 0.0, 1.0))
     self._raw_correction_ema = float(smooth_value(raw_correction, self._raw_correction_ema, _AVOIDANCE_EMA_TAU, dt=DT_CTRL))
     raw_correction *= avoidance_weight
-
-    # 重新啟用觀察期：剛從暫停/重置狀態恢復的頭一段距離，車道線關聯很可能
-    # 還沒穩定（例如變換車道剛結束），只累積基準值、不讓修正量真的生效，
-    # 避免把還沒穩定下來的錯誤值直接當成事實去修正方向盤。見第 6 點說明。
-    if self._distance_since_reactivation is None:
-      self._distance_since_reactivation = 0.0
-    else:
-      self._distance_since_reactivation += v_ego * DT_CTRL
-    required_distance = max(_REACTIVATION_OBSERVE_DISTANCE, _REACTIVATION_OBSERVE_MIN_SEC * v_ego)
-    if self._distance_since_reactivation < required_distance:
-      self._correction = float(smooth_value(0.0, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
-      return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
     self._correction = float(smooth_value(target, self._correction, _SMOOTH_TAU, dt=DT_CTRL))

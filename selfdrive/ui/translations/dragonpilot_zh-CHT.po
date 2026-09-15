@@ -731,7 +731,7 @@ msgstr "掃描以存取"
 msgid "sec"
 msgstr "秒"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:33
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:30
 #, python-format
 msgid "%"
 msgstr "%"
@@ -771,12 +771,12 @@ msgstr ""
 "100% 代表這些條件都達標時由模型完全主導；0% 代表無論其他條件為何，"
 "覆蓋機制永遠停用。"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:40
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:37
 #, python-format
 msgid "Pause Lane Centering on Turn Signal"
 msgstr "打方向燈時暫停車道線置中輔助"
 
-#: dragonpilot/settings/min-feat.lat.lane_centering.py:41
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:38
 #, python-format
 msgid ""
 "Fade the lane-centering correction out while a turn signal is active so it "
