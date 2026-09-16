@@ -67,7 +67,12 @@ class DesireHelper:
         blindspot_right=(carstate.rightBlindspot or right_edge_detected),
         left_blinker=carstate.leftBlinker,
         right_blinker=carstate.rightBlinker,
-        v_ego=v_ego
+        v_ego=v_ego,
+        # dp fork divergence：LTD 現在也需要跟 LCA 一樣的方向盤出力確認，
+        # 再加上實際轉角門檻，見 lane_turn_desire.py 的 LaneTurnState 狀態機。
+        steering_pressed=carstate.steeringPressed,
+        steering_torque=carstate.steeringTorque,
+        steering_angle_deg=carstate.steeringAngleDeg,
     )
     lane_turn_desire = self.lane_turn_controller.get_turn_desire()
 
