@@ -32,6 +32,22 @@ class _FakeParams:
     self._values[key] = val
 
 
+class _FakeController:
+  """記錄 reset()／update() 被呼叫的次數，用來驗證下降緣觸發的邊界行為，
+  不需要真的算車道置中邏輯。"""
+  def __init__(self):
+    self.reset_count = 0
+    self.update_count = 0
+
+  def reset(self):
+    self.reset_count += 1
+
+  def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
+             pause_on_signal=False, turn_signal_active=False, driver_override=False):
+    self.update_count += 1
+    return model_curvature + 1.0  # 隨便回傳一個跟輸入不同的值，方便測試分辨有沒有真的呼叫到這裡
+
+
 def _dp_lc(values=None):
   dp_lc = DpLaneCentering.__new__(DpLaneCentering)
   dp_lc._params = _FakeParams(values)
@@ -41,6 +57,7 @@ def _dp_lc(values=None):
   dp_lc._offset = 0.0
   dp_lc._e2e_authority = 1.0
   dp_lc._pause_on_signal = False
+  dp_lc._was_enabled = False
   dp_lc._read_params(force=True)
   return dp_lc
 
@@ -82,3 +99,46 @@ def test_pause_on_signal_can_be_explicitly_enabled():
 def test_disabled_update_returns_model_curvature_unchanged():
   dp_lc = _dp_lc({"dp_lane_centering": False})
   assert dp_lc.update(0.05, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True) == 0.05
+
+
+def test_controller_reset_only_on_enabled_to_disabled_edge():
+  # 對應 dp_lane_centering_reset_fix_說明.md 第 5 節的驗證序列：
+  # reset() 應該只在「啟用→停用」的下降緣被呼叫一次，不會在持續停用期間
+  # 每幀重複呼叫，也不會在從未啟用過就關閉、或重新啟用時被多按一次。
+  dp_lc = _dp_lc({"dp_lane_centering": False})
+  fake = _FakeController()
+  dp_lc._controller = fake
+
+  # 從未啟用時關閉 → 不需要 reset（控制器本來就是乾淨的）
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 0
+  assert fake.update_count == 0
+
+  # 啟用 → 正常呼叫 update()，不觸發 reset
+  dp_lc.enabled = True
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 0
+  assert fake.update_count == 1
+
+  # 持續啟用一幀 → 一樣不觸發 reset
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 0
+  assert fake.update_count == 2
+
+  # 停用（下降緣）→ 剛好觸發一次 reset，輸出立即變回 model_curvature
+  dp_lc.enabled = False
+  out = dp_lc.update(0.42, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 1
+  assert fake.update_count == 2
+  assert out == 0.42
+
+  # 持續停用兩幀 → 不會重複呼叫 reset
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 1
+
+  # 重新啟用 → 不會多按一次 reset，正常恢復呼叫 update()
+  dp_lc.enabled = True
+  dp_lc.update(0.0, model_v2=None, v_ego=20.0, lat_active=True, model_valid=True)
+  assert fake.reset_count == 1
+  assert fake.update_count == 3
