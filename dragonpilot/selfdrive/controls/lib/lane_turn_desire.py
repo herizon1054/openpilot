@@ -12,7 +12,7 @@ LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
 
 # dp fork divergence：除了方向盤出力，還要求方向盤實際轉角超過這個門檻
 # （跟 steeringTorque 同一套正負號慣例：正=向左，負=向右）才算確認。
-STEERING_ANGLE_CONFIRM_DEG = 10.0
+STEERING_ANGLE_CONFIRM_DEG = 20.0
 
 
 class LaneTurnState(IntEnum):
