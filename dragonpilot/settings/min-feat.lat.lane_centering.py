@@ -26,7 +26,7 @@ ITEMS = [
                               "regardless of the other conditions."),
     "flags": "PERSISTENT",
     "param_type": "INT",
-    "default": "75",
+    "default": "80",
     "min_val": 0,
     "max_val": 100,
     "step": 5,
