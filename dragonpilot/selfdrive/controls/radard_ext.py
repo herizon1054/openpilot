@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.radard import (
 
 # 3. 引入 cloudlog 用於記錄我們自訂的提早鎖定事件
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.realtime import DT_MDL
 
 # ==============================================================================
 # 提早鎖定 (Early Lock) 擴充模組參數設定
@@ -56,6 +57,15 @@ VEL_SANE_FALLBACK_SPEED = 3.0       # 原廠門檻：接近速度 (v_ego + vRel)
 VEL_SANE_CONFIRM_FRAMES = 3         # 需連續幾幀都符合才真正啟用寬鬆備援
 VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全比照原廠「視為合理」的語意
 
+# dp: 持續性救援 —— 目標連續被判定為有效（valid_streak_frames，容忍續命寬限期內
+# 的短暫失效，不因單幀漏拍就中斷）超過此秒數，即使信心度（ema_confidence）因為
+# 幾何比對品質普通、一直停在初始值附近沒有爬高，也視為已經有足夠證據證明是
+# 真實物體，門檻比照信心度已經爬滿的效果放寬，不再要求視覺信心度額外證明。
+# 鎖定緊急情境：秒數設短，讓真正持續、穩定被追蹤的危險目標能盡快被救援納入。
+PERSISTENCE_RESCUE_SEC = 1.5
+PERSISTENCE_RESCUE_FRAMES = int(PERSISTENCE_RESCUE_SEC / DT_MDL)
+PERSISTENCE_RESCUE_MAX_ANGLE = 15.0  # 方向盤角度需在 ±此值以內才啟用，避免彎道時的路徑幾何變化誤觸發
+
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
 # 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
@@ -90,6 +100,7 @@ class TrackDP(Track):
     self.holdover_frames = {0: 0, 1: 0}
     self.is_out_of_lane = False
     self.closing_speed_streak = {0: 0, 1: 0}   # dp: 連續幾幀符合「正在快速接近」
+    self.valid_streak_frames = {0: 0, 1: 0}    # dp: 連續被判定為有效（含續命寬限期）的幀數
 
   def _check_closing_speed_fallback(self, lead_idx: int, v_ego: float) -> bool:
     # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件，但要求連續 N 幀都成立
@@ -172,12 +183,14 @@ class TrackDP(Track):
     if is_invalid:
       if self.holdover_frames[lead_idx] > 0:
         self.holdover_frames[lead_idx] -= 1
-        return
+        return   # 續命寬限期內的短暫失效，視為連續的一部分，不中斷 valid_streak_frames
       else:
         self.ema_confidence[lead_idx] = ALPHA_DOWN * 0.0 + (1 - ALPHA_DOWN) * self.ema_confidence[lead_idx]
+        self.valid_streak_frames[lead_idx] = 0   # 寬限期已用盡，真正失效，連續紀錄歸零
         return
 
     self.holdover_frames[lead_idx] = RELEASE_FRAMES
+    self.valid_streak_frames[lead_idx] += 1
 
     final_alpha_up = self._calculate_threat_multipliers(v_ego)
     target_ema = fuzzy_score
@@ -197,12 +210,16 @@ def get_lead_ext(
   model_v_ego: float,
   lead_prob: float,
   is_turning: bool = False,
+  steering_angle_deg: float = 0.0,
   low_speed_override: bool = True,
 ) -> dict[str, Any]:
   """
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
   新增 is_turning：由 radard.py 依方向盤角度/角速度判斷是否正在轉彎，
   轉出去給 process_track_logic 決定是否要求「必須真實量測」。
+  新增 steering_angle_deg：方向盤實際角度，用於限制「持續性救援」只在方向盤
+  接近打直（避免彎道時路徑幾何本身變化，誤把彎道中的旁側車道目標當作持續有效）
+  的情況下才啟用。
   """
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
@@ -216,7 +233,23 @@ def get_lead_ext(
   if len(valid_tracks) > 0:
     max_ema_confidence = max(track.ema_confidence[lead_idx] for track in valid_tracks.values())
 
-  current_prob_thres = float(np.interp(max_ema_confidence, EMA_VAL_RANGE, PROB_THRES_RANGE))
+  # dp: 持續性救援——任一 valid track 已經持續出現超過 PERSISTENCE_RESCUE_SEC 秒，
+  # 即使信心度仍停在低點，門檻計算改用 EMA_VAL_RANGE 的最高值代入，效果等同信心度
+  # 已經爬滿，換算出來的視覺門檻會落在 PROB_THRES_RANGE 最寬鬆的一端。
+  is_persistent = (abs(steering_angle_deg) < PERSISTENCE_RESCUE_MAX_ANGLE and
+                   any(track.valid_streak_frames[lead_idx] >= PERSISTENCE_RESCUE_FRAMES for track in valid_tracks.values()))
+  confidence_for_thres = EMA_VAL_RANGE[1] if is_persistent else max_ema_confidence
+
+  current_prob_thres = float(np.interp(confidence_for_thres, EMA_VAL_RANGE, PROB_THRES_RANGE))
+
+  if is_persistent:
+    normal_thres = float(np.interp(max_ema_confidence, EMA_VAL_RANGE, PROB_THRES_RANGE))
+    if normal_thres > current_prob_thres and normal_thres >= lead_prob > current_prob_thres:
+      cloudlog.debug(
+        f"[RadarD_Persistence_DP] 持續性救援啟用！目標 {lead_idx} | "
+        f"信心度: {max_ema_confidence:.2f} | 相機機率: {lead_prob:.2f} "
+        f"(原門檻: {normal_thres:.2f} → 救援後: {current_prob_thres:.2f})"
+      )
 
   selected_track = None
   if len(valid_tracks) > 0 and ready and lead_prob > current_prob_thres:
