@@ -183,7 +183,7 @@ def test_correction_is_smoothed_and_capped():
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
 
 
-# --- 以下對應與 cp 的三個刻意分歧（見 lane_centering.py 檔頭說明） ---
+# --- 以下對應與 cp 的五個刻意分歧（見 lane_centering.py 檔頭說明） ---
 
 def test_min_v_ego_is_15kph_not_18kph():
   model = _model(left=-1.5, right=2.1)
