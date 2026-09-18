@@ -177,26 +177,19 @@ def test_confidence_loss_drops_filtered_correction():
 def test_correction_is_smoothed_and_capped():
   controller = LaneCenteringController()
   model = _model(left=0.0, right=3.0, path_std=0.6)
-  # 先跑過重新啟用觀察期（_V_EGO=20 m/s 時約需 10m/20(m/s)/DT_CTRL(0.01)=50 幀，
-  # 多跑幾幀留餘裕避免卡在浮點數邊界），觀察期本身的行為由專門的測試
-  # （test_reactivation_observation_window_*）驗證，這裡不重複檢查
-  for _ in range(60):
-    _update(controller, model, authority=0.0)
   first = _update(controller, model, authority=0.0)
   _, steady = _converge(model, authority=0.0)
   assert 0.0 < first < steady
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
 
 
-# --- 以下對應與 cp 的三個刻意分歧（見 lane_centering.py 檔頭說明） ---
+# --- 以下對應與 cp 的五個刻意分歧（見 lane_centering.py 檔頭說明） ---
 
 def test_min_v_ego_is_15kph_not_18kph():
   model = _model(left=-1.5, right=2.1)
   just_below = 15.0 / 3.6 - 0.05  # 略低於新門檻
   just_above = 15.0 / 3.6 + 0.05  # 略高於新門檻，且仍低於舊的 18 km/h 門檻
   assert _update(LaneCenteringController(), model, speed=just_below) == 0.0
-  # 用 _converge（900 幀）而不是單一幀，因為單一幀還在重新啟用觀察期內，
-  # 修正量固定是 0，不能用來判斷 _MIN_V_EGO 這個啟用門檻本身有沒有生效
   _, steady_above = _converge(model, speed=just_above)
   assert steady_above != 0.0
 
@@ -231,7 +224,7 @@ def test_e2e_speed_ramp_now_trusts_model_more_at_low_speed():
   # 混雜效果干擾。
   model = _model(left=-1.9, right=1.9, model_y=0.20, path_std=0.1)
 
-  low_speed = 15.0 / 3.6 + 0.1  # 略高於 _MIN_V_EGO，接近 0 km/h 這個端點
+  low_speed = 15.0 / 3.6 + 0.1  # 低速代表值（沿用原本 _MIN_V_EGO 門檻的車速量級）
   high_speed = 60.0 / 3.6 + 1.0  # 60 km/h（含）以上，覆蓋上限就是 e2e_authority
 
   _, low_a0 = LaneCenteringController._raw_correction(model, low_speed, 0.0, 0.0)
@@ -253,9 +246,7 @@ def test_e2e_speed_ramp_now_trusts_model_more_at_low_speed():
 def test_avoidance_does_not_falsely_suppress_cold_start():
   # reset 之後（含全新 controller）的第一次呼叫，應該直接把當下算出來的
   # raw_correction 當成基準值（bootstrap），不能是 0 或維持 None——否則會被
-  # 誤判成「基準值是 0、目前值是一個大跳動」而被避讓機制誤傷。直接檢查
-  # 內部的 _raw_correction_ema 狀態，因為重新啟用觀察期（見檔頭第 6 點）
-  # 會讓輸出的曲率修正量在頭幾十公尺固定是 0，沒辦法拿輸出值判斷這件事
+  # 誤判成「基準值是 0、目前值是一個大跳動」而被避讓機制誤傷。
   model = _model(left=-1.5, right=2.1)
   controller = LaneCenteringController()
   assert controller._raw_correction_ema is None
@@ -344,66 +335,3 @@ def test_curvature_no_longer_exempts_avoidance_suppression():
   # 曲率有沒有跟著變化，不應該再影響避讓機制的壓低程度
   assert turning_correction == pytest.approx(avoiding_correction, abs=1e-6)
 
-
-def test_reactivation_observation_window_holds_correction_at_zero():
-  # 重新啟用後，累積行駛距離不到 _REACTIVATION_OBSERVE_DISTANCE（10 公尺）
-  # 之前，修正量應該固定是 0，即使車道線偏移一直都存在、算出來的
-  # raw_correction 明明不是 0
-  model = _model(left=-1.5, right=2.1)
-  controller = LaneCenteringController()
-  speed = 20.0  # m/s，10 公尺約需 50 幀
-  for _ in range(45):  # 45 幀 * 0.2m/幀 = 9 公尺，還沒到 10 公尺門檻
-    assert _update(controller, model, authority=0.0, speed=speed) == 0.0
-
-
-def test_reactivation_observation_window_releases_after_enough_distance():
-  # 累積夠距離之後，應該開始正常介入（不再固定是 0）
-  model = _model(left=-1.5, right=2.1)
-  controller = LaneCenteringController()
-  speed = 20.0
-  output = 0.0
-  for _ in range(80):  # 80 幀 * 0.2m/幀 = 16 公尺，超過 10 公尺門檻，留餘裕
-    output = _update(controller, model, authority=0.0, speed=speed)
-  assert output != 0.0
-
-
-def test_reactivation_observation_window_distance_not_time_based():
-  # 門檻是「行駛距離」不是「固定秒數」：車速越快，跑完同一段觀察距離的
-  # 幀數（=時間）應該越少
-  model = _model(left=-1.5, right=2.1)
-
-  def _frames_until_active(speed):
-    controller = LaneCenteringController()
-    for i in range(2000):
-      if _update(controller, model, authority=0.0, speed=speed) != 0.0:
-        return i
-    return None
-
-  frames_slow = _frames_until_active(15.0 / 3.6 + 0.1)  # 略高於 _MIN_V_EGO
-  frames_fast = _frames_until_active(30.0 / 3.6 * 3)     # 90 km/h 左右
-
-  assert frames_slow is not None and frames_fast is not None
-  assert frames_fast < frames_slow
-
-
-def test_reactivation_observation_window_resets_on_lane_change():
-  # 變換車道結束、laneChangeState 從非 off 變回 off 之後，應該重新進入
-  # 觀察期，不會直接沿用變換車道前累積的距離
-  model = _model(left=-1.5, right=2.1)
-  changing_model = _model(left=-1.5, right=2.1, lane_change=1)
-
-  controller = LaneCenteringController()
-  # 先跑到穩定介入（遠超過觀察期）
-  for _ in range(200):
-    _update(controller, model, authority=0.0)
-  assert controller._distance_since_reactivation is not None
-
-  # 進入變換車道狀態一段時間
-  for _ in range(50):
-    output = _update(controller, changing_model, authority=0.0)
-    assert output == 0.0
-  assert controller._distance_since_reactivation is None  # reset() 應該已經清空
-
-  # 變換車道結束、laneChangeState 變回 off 後，應該要重新走一次觀察期，
-  # 不是立刻恢復介入
-  assert _update(controller, model, authority=0.0) == 0.0

@@ -25,13 +25,14 @@ openpilot.selfdrive.controls.lib.lane_centering.LaneCenteringController），
 
 【修正紀錄】原本 `dp_lane_centering` 開關被關閉時，`update()` 直接
 `return model_curvature`，完全不會呼叫 `self._controller.reset()`，
-導致核心控制器的內部狀態（`_correction`／`_raw_correction_ema`／
-`_distance_since_reactivation`）停留在停用前的舊值。下次重新啟用的
-第一幀會沿用這些舊狀態，可能產生跟停用期間路況無關的過渡修正量、
-誤判成避讓而錯誤壓低修正量，甚至讓「重新啟用觀察期」保護機制因為
-`_distance_since_reactivation` 早就超過門檻而被直接跳過。現在用
+導致核心控制器的內部狀態（`_correction`／`_raw_correction_ema`）停留在
+停用前的舊值。下次重新啟用的第一幀會沿用這些舊狀態，可能產生跟停用
+期間路況無關的過渡修正量、誤判成避讓而錯誤壓低修正量。現在用
 `_was_enabled` 旗標偵測「啟用→停用」下降緣，只在真正切換的那一幀呼叫
 一次 `self._controller.reset()`，讓重新啟用永遠走乾淨的狀態路徑。
+（這個修法當初提出時，`lane_centering.py` 還有「重新啟用觀察期」這個
+機制，`_distance_since_reactivation` 也是受影響的狀態之一；該機制後續
+已經整個移除，這裡的說明同步更新，不再提及已經不存在的狀態變數。）
 """
 import time
 
@@ -92,10 +93,9 @@ class DpLaneCentering:
 
     if not self.enabled:
       # 開關「啟用→停用」的下降緣：重置核心控制器狀態（_correction／
-      # _raw_correction_ema／_distance_since_reactivation），避免下次
-      # 重新啟用時沿用停用前、可能是很久以前且路況完全無關的舊狀態，
-      # 誤判成避讓或跳過重新啟用觀察期。用旗標邊緣觸發，只在真正切換
-      # 的那一幀呼叫一次，停用期間不會每幀重複呼叫。
+      # _raw_correction_ema），避免下次重新啟用時沿用停用前、可能是很久
+      # 以前且路況完全無關的舊狀態，誤判成避讓而錯誤壓低修正量。用旗標
+      # 邊緣觸發，只在真正切換的那一幀呼叫一次，停用期間不會每幀重複呼叫。
       if self._was_enabled:
         self._controller.reset()
       self._was_enabled = False
