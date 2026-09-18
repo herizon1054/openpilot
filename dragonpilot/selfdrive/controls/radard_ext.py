@@ -25,6 +25,16 @@ LANE_WIDTH_FALLBACK = 1.5           # 預測車道基準單側半寬 (m)
 LANE_HYSTERESIS_MARGIN = 0.5        # 邊界外的遲滯容錯預度 (m)
 FUZZY_BOUNDS = [0.5, 1.5]           # 物理誤差 (m 或 m/s): 0.5 以內給滿分 1.0，大於 1.5 總分歸零
 
+# dp: 距離誤差容許範圍隨車距等比例放大，比照原廠 match_vision_to_track() 的
+# dist_sane = abs(...) < max(offset_vision_dist * 0.25, 5.0) 精神設計。
+# 近距離（換算後容許值仍小於 FUZZY_BOUNDS[1] 時）維持原本嚴格標準不變；
+# 車距越遠，容許誤差等比例放大，避免遠距離場景（例如高速長距離跟車）用
+# 近距離等級的嚴格標準，導致模糊分數失真歸零、雷達融合路徑整個進不去。
+# 只套用在距離（err_d），橫向（err_y）/速度（err_v）維持原本固定值不變，
+# 對應原廠 dist_sane 是唯一隨距離縮放的檢查、vel_sane 用固定值的既有區分。
+DIST_SANE_RATIO = 0.25              # 沿用原廠比例：容許誤差 = 車距的 25%
+DIST_SANE_MAX_RANGE = 100.0          # 動態放寬的上限車距 (m)，超過 100m 的部分不再繼續放寬，維持嚴格
+
 ALPHA_BASE = 0.2                    # 常規上升學習率
 ALPHA_DOWN = 0.1                    # 常規下降與短路過濾時的衰減學習率
 
@@ -47,6 +57,14 @@ MODEL_TAU_MIN_PROB = 0.5            # 啟動驗證的最低視覺機率
 MODEL_TAU_BRAKE_A = -0.5            # 啟動驗證的最低急煞門檻 (m/s²)
 MODEL_TAU_SUSTAINED = 0.5           # 視覺確認急煞持續
 MODEL_TAU_SPURIOUS = 3.0            # 視覺預測即將加速
+
+# dp: 比照原廠 match_vision_to_track() 的 vel_sane 擇一寬鬆備援：
+#   vel_sane = (誤差 < 10) OR (v_ego + vRel > 3)
+# 「正在明顯接近」時，就算速度誤差略大也視為合理，不讓 score_v 把總分拉到 0。
+# 要求連續多幀都符合「正在接近」才啟用，避免單幀雷達雜訊造成的速度突然跳動誤觸發。
+VEL_SANE_FALLBACK_SPEED = 3.0       # 原廠門檻：接近速度 (v_ego + vRel) 超過此值視為明顯接近
+VEL_SANE_CONFIRM_FRAMES = 3         # 需連續幾幀都符合才真正啟用寬鬆備援
+VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全比照原廠「視為合理」的語意
 
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
@@ -81,6 +99,17 @@ class TrackDP(Track):
     self.ema_confidence = {0: 0.4, 1: 0.4}
     self.holdover_frames = {0: 0, 1: 0}
     self.is_out_of_lane = False
+    self.closing_speed_streak = {0: 0, 1: 0}   # dp: 連續幾幀符合「正在快速接近」
+
+  def _check_closing_speed_fallback(self, lead_idx: int, v_ego: float) -> bool:
+    # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件，但要求連續 N 幀都成立
+    # 才真正啟用寬鬆備援，避免單幀雷達雜訊造成的速度瞬間跳動誤觸發。
+    is_closing_fast = (v_ego + self.vRel) > VEL_SANE_FALLBACK_SPEED
+    if is_closing_fast:
+      self.closing_speed_streak[lead_idx] = min(self.closing_speed_streak[lead_idx] + 1, VEL_SANE_CONFIRM_FRAMES)
+    else:
+      self.closing_speed_streak[lead_idx] = 0
+    return self.closing_speed_streak[lead_idx] >= VEL_SANE_CONFIRM_FRAMES
 
   def _check_spatial_boundaries(self, vision_y: float) -> bool:
     left_bound = vision_y + LANE_WIDTH_FALLBACK
@@ -96,14 +125,30 @@ class TrackDP(Track):
 
     return not self.is_out_of_lane
 
-  def _calculate_fuzzy_score(self, offset_vision_dist: float, vision_y: float, vision_v: float, v_ego: float) -> float:
+  def _get_distance_scaled_bounds(self, offset_vision_dist: float) -> list[float]:
+    # 動態放寬的車距先封頂在 DIST_SANE_MAX_RANGE（100m），超過的部分不繼續放寬——
+    # 避免極端遠距離（例如誤配對到更遠處另一台車）時容許值失控變得過鬆，維持嚴格。
+    capped_dist = min(offset_vision_dist, DIST_SANE_MAX_RANGE)
+    # 歸零點：（封頂後）車距的 25%，跟 FUZZY_BOUNDS[1] 取較大值，近距離不會比現在更寬鬆
+    upper = max(FUZZY_BOUNDS[1], capped_dist * DIST_SANE_RATIO)
+    # 滿分點：維持跟 FUZZY_BOUNDS 一樣「歸零點的 1/3」這個曲線形狀，只是等比例放大
+    lower = upper * (FUZZY_BOUNDS[0] / FUZZY_BOUNDS[1])
+    return [lower, upper]
+
+  def _calculate_fuzzy_score(self, offset_vision_dist: float, vision_y: float, vision_v: float, v_ego: float, lead_idx: int) -> float:
     err_d = abs(self.dRel - offset_vision_dist)
     err_y = abs(self.yRel - vision_y)
     err_v = abs((self.vRel + v_ego) - vision_v)
 
-    score_d = float(np.interp(err_d, FUZZY_BOUNDS, [1.0, 0.0]))
+    distance_bounds = self._get_distance_scaled_bounds(offset_vision_dist)
+    score_d = float(np.interp(err_d, distance_bounds, [1.0, 0.0]))
     score_y = float(np.interp(err_y, FUZZY_BOUNDS, [1.0, 0.0]))
     score_v = float(np.interp(err_v, FUZZY_BOUNDS, [1.0, 0.0]))
+
+    # dp: 比照原廠 vel_sane 的擇一寬鬆備援——連續多幀確認正在快速接近時，
+    # 即使速度誤差略大，也不讓 score_v 把總分拉到 0。
+    if self._check_closing_speed_fallback(lead_idx, v_ego):
+      score_v = max(score_v, VEL_SANE_FALLBACK_SCORE)
 
     return score_d * score_y * score_v
 
@@ -142,7 +187,7 @@ class TrackDP(Track):
     fuzzy_score = 0.0
     if not is_invalid:
       is_valid_spatial = self._check_spatial_boundaries(vision_y)
-      fuzzy_score = self._calculate_fuzzy_score(offset_vision_dist, vision_y, vision_v, v_ego)
+      fuzzy_score = self._calculate_fuzzy_score(offset_vision_dist, vision_y, vision_v, v_ego, lead_idx)
       is_invalid = not is_valid_spatial or fuzzy_score == 0.0
 
     if is_invalid:
