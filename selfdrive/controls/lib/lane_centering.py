@@ -142,7 +142,7 @@ _E2E_SPEED_RAMP_END_MS = 60.0 * _KPH_TO_MS    # 60 km/h：覆蓋上限視為 UI 
 # _AVOIDANCE_JUMP_SPAN：修正量跟基準值的差距達到這個量級時，視為完全是
 # 突發避讓；中間平滑爬升，不是門檻式開關。單位跟 _MAX_RAW_CORRECTION 一樣
 # 是曲率，量級刻意抓得跟 _MAX_RAW_CORRECTION 接近。
-_AVOIDANCE_EMA_TAU = 2.0
+_AVOIDANCE_EMA_TAU = 0.5
 _AVOIDANCE_JUMP_SPAN = 0.003
 
 
