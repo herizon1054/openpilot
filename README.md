@@ -1,3 +1,9 @@
+修改項目 限阿提斯跟cc使用 
+方向盤動態角度   低速使用扭力控制  高速使用角度控制
+加入車道線置中模式
+修改實驗模式加速意願  目前已修改類似一般模式
+
+
 ![](dragonpilot/selfdrive/assets/dragonpilot.png)
 
 [Read this in English](README_EN.md)
