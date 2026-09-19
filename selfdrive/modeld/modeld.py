@@ -34,6 +34,7 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
+LONG_SMOOTH_SECONDS_ACCEL_UP = 0.2  # 僅在模型想「加速」時使用（desired_accel > 前一輸出值），縮短平滑時間常數以降低滯後；減速/煞車方向不受影響，仍用 LONG_SMOOTH_SECONDS
 MIN_LAT_CONTROL_SPEED = 0.3
 
 
@@ -45,7 +46,11 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                      plan[:,Plan.ACCELERATION][:,0],
                                                      ModelConstants.T_IDXS,
                                                      action_t=long_action_t)
-    desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
+    # dp: 加速方向不對稱平滑 —— 只有當模型這一幀想要的加速度比上一次輸出的還高（想加速）時，
+    # 才用較短的 LONG_SMOOTH_SECONDS_ACCEL_UP，讓 e2e 的加速意願更快反映出來；
+    # 想減速/煞車（desired_accel <= 前一輸出值）時，維持原本 LONG_SMOOTH_SECONDS 不變，不影響煞車平順度。
+    long_smooth_tau = LONG_SMOOTH_SECONDS_ACCEL_UP if desired_accel > prev_action.desiredAcceleration else LONG_SMOOTH_SECONDS
+    desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, long_smooth_tau)
 
     desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
                                                 plan[:,Plan.ORIENTATION_RATE][:,2],
