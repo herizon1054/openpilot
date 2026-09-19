@@ -24,7 +24,7 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.2   # mode=='blended'(e2e) 使用，調低以提升加速意願
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.1   # mode=='blended'(e2e) 使用，調低以提升加速意願
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
