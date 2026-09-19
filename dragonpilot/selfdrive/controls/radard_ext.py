@@ -58,20 +58,39 @@ VEL_SANE_CONFIRM_FRAMES = 3         # 需連續幾幀都符合才真正啟用寬
 VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全比照原廠「視為合理」的語意
 
 # dp: 持續性救援 —— 目標連續被判定為有效（valid_streak_frames，容忍續命寬限期內
-# 的短暫失效，不因單幀漏拍就中斷）超過此秒數，即使信心度（ema_confidence）因為
-# 幾何比對品質普通、一直停在初始值附近沒有爬高，也視為已經有足夠證據證明是
-# 真實物體，門檻比照信心度已經爬滿的效果放寬，不再要求視覺信心度額外證明。
-# 鎖定緊急情境：秒數設短，讓真正持續、穩定被追蹤的危險目標能盡快被救援納入。
-PERSISTENCE_RESCUE_SEC = 1.5
-PERSISTENCE_RESCUE_FRAMES = int(PERSISTENCE_RESCUE_SEC / DT_MDL)
-PERSISTENCE_RESCUE_MAX_ANGLE = 15.0  # 方向盤角度需在 ±此值以內才啟用，避免彎道時的路徑幾何變化誤觸發
+# 的短暫失效，不因單幀漏拍就中斷），即使信心度（ema_confidence）因為幾何比對品質
+# 普通、一直停在初始值附近沒有爬高，持續時間本身也視為證據，門檻依持續時間分級放寬
+# （見下方兩段式門檻）。以下四個條件先框定啟用範圍：
+PERSISTENCE_RESCUE_MAX_ANGLE = 10.0  # 方向盤角度需在 ±此值以內才啟用，避免彎道時的路徑幾何變化誤觸發
+PERSISTENCE_RESCUE_MAX_DIST_CAP = 100.0  # 最長偵測距離上限 (m)，車速達到/超過對應值後不再繼續放大
+PERSISTENCE_RESCUE_DIST_PER_KMH = 1.0    # 每 1 km/h 車速對應 1 公尺偵測距離（車速 10km/h→10m，100km/h→100m 封頂）
+PERSISTENCE_RESCUE_MAX_YREL = 1.0    # 車道中心左右各 1 公尺，超出此範圍視為非本車道目標，不啟用救援
+
+# dp: 兩段式持續性救援 —— 雷達持續偵測（valid_streak_frames）越久，容許的視覺信心度
+# 門檻越寬鬆，分兩級漸進，不是一次到位：
+#   持續 1.0 秒 → 門檻最多放寬到 0.4
+#   持續 2.0 秒 → 門檻最多放寬到 0.3（PROB_THRES_RANGE 裡最寬鬆的一端）
+PERSISTENCE_RESCUE_TIER1_SEC = 1.0
+PERSISTENCE_RESCUE_TIER1_FRAMES = int(PERSISTENCE_RESCUE_TIER1_SEC / DT_MDL)
+PERSISTENCE_RESCUE_TIER1_PROB_THRES = 0.4
+
+PERSISTENCE_RESCUE_TIER2_SEC = 2.0
+PERSISTENCE_RESCUE_TIER2_FRAMES = int(PERSISTENCE_RESCUE_TIER2_SEC / DT_MDL)
+PERSISTENCE_RESCUE_TIER2_PROB_THRES = 0.3
+
+# dp: 視覺機率不用跟雷達秒數掛勾——雷達的持續時間本身就是「這是真實物體」的證據，
+# 視覺只需要短暫確認幾幀，排除單幀雜訊尖峰即可，不需要也撐滿跟雷達一樣長的時間
+# （硬性要求視覺也要長時間可靠，會跟「視覺本來就不可靠、靠雷達補強」的設計初衷矛盾）。
+PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES = 3
 
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
 # 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
+# 另外加上 prob_tier1_frames/prob_tier2_frames：視覺機率連續維持在對應門檻之上
+# 的幀數，只需連續 PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES 幀即可，不用跟雷達秒數一樣長。
 _LEAD_STATE_CACHE = {
-    0: {'track': None, 'absent': 0, 'last_aLeadK': None},
-    1: {'track': None, 'absent': 0, 'last_aLeadK': None}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'prob_tier1_frames': 0, 'prob_tier2_frames': 0},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'prob_tier1_frames': 0, 'prob_tier2_frames': 0}
 }
 MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
@@ -233,23 +252,48 @@ def get_lead_ext(
   if len(valid_tracks) > 0:
     max_ema_confidence = max(track.ema_confidence[lead_idx] for track in valid_tracks.values())
 
-  # dp: 持續性救援——任一 valid track 已經持續出現超過 PERSISTENCE_RESCUE_SEC 秒，
-  # 即使信心度仍停在低點，門檻計算改用 EMA_VAL_RANGE 的最高值代入，效果等同信心度
-  # 已經爬滿，換算出來的視覺門檻會落在 PROB_THRES_RANGE 最寬鬆的一端。
-  is_persistent = (abs(steering_angle_deg) < PERSISTENCE_RESCUE_MAX_ANGLE and
-                   any(track.valid_streak_frames[lead_idx] >= PERSISTENCE_RESCUE_FRAMES for track in valid_tracks.values()))
-  confidence_for_thres = EMA_VAL_RANGE[1] if is_persistent else max_ema_confidence
+  # dp: 兩段式持續性救援——找出符合「距離在範圍內、橫向在車道中心 ±範圍內」的
+  # valid track 裡，持續有效幀數最長的一個，依它的持續時間套用對應的寬鬆門檻。
+  # 方向盤角度超標（正在轉彎）時整段不啟用。
+  normal_thres = float(np.interp(max_ema_confidence, EMA_VAL_RANGE, PROB_THRES_RANGE))
+  current_prob_thres = normal_thres
+  is_persistent = False
+  best_streak = 0
 
-  current_prob_thres = float(np.interp(confidence_for_thres, EMA_VAL_RANGE, PROB_THRES_RANGE))
+  # dp: 視覺機率連續維持在對應門檻之上的幀數，只需短暫確認（見下方 PROB_CONFIRM_FRAMES），
+  # 不用跟雷達的持續秒數一樣長。
+  rescue_cache = _LEAD_STATE_CACHE[lead_idx]
+  rescue_cache['prob_tier1_frames'] = rescue_cache['prob_tier1_frames'] + 1 if lead_prob > PERSISTENCE_RESCUE_TIER1_PROB_THRES else 0
+  rescue_cache['prob_tier2_frames'] = rescue_cache['prob_tier2_frames'] + 1 if lead_prob > PERSISTENCE_RESCUE_TIER2_PROB_THRES else 0
 
-  if is_persistent:
-    normal_thres = float(np.interp(max_ema_confidence, EMA_VAL_RANGE, PROB_THRES_RANGE))
-    if normal_thres > current_prob_thres and normal_thres >= lead_prob > current_prob_thres:
-      cloudlog.debug(
-        f"[RadarD_Persistence_DP] 持續性救援啟用！目標 {lead_idx} | "
-        f"信心度: {max_ema_confidence:.2f} | 相機機率: {lead_prob:.2f} "
-        f"(原門檻: {normal_thres:.2f} → 救援後: {current_prob_thres:.2f})"
-      )
+  # dp: 最長偵測距離隨車速動態放大——車速越快，需要救援機制涵蓋的距離越遠
+  # （高速時同樣的物理距離，留給反應的時間更短），車速 10km/h 對應 10m，
+  # 100km/h 以上封頂在 PERSISTENCE_RESCUE_MAX_DIST_CAP（100m）。
+  v_ego_kmh = v_ego * 3.6
+  persistence_rescue_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH)
+
+  if abs(steering_angle_deg) < PERSISTENCE_RESCUE_MAX_ANGLE:
+    eligible_streaks = [track.valid_streak_frames[lead_idx] for track in valid_tracks.values()
+                         if track.dRel <= persistence_rescue_max_dist and abs(track.yRel) <= PERSISTENCE_RESCUE_MAX_YREL]
+    best_streak = max(eligible_streaks, default=0)
+
+    if (best_streak >= PERSISTENCE_RESCUE_TIER2_FRAMES and
+        rescue_cache['prob_tier2_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
+      current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER2_PROB_THRES)
+      is_persistent = True
+    elif (best_streak >= PERSISTENCE_RESCUE_TIER1_FRAMES and
+          rescue_cache['prob_tier1_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
+      current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER1_PROB_THRES)
+      is_persistent = True
+
+  if is_persistent and normal_thres > current_prob_thres and normal_thres >= lead_prob > current_prob_thres:
+    cloudlog.debug(
+      f"[RadarD_Persistence_DP] 持續性救援啟用！目標 {lead_idx} | "
+      f"信心度: {max_ema_confidence:.2f} | 相機機率: {lead_prob:.2f} | 雷達持續幀數: {best_streak} | "
+      f"視覺維持幀數(tier1/tier2): {rescue_cache['prob_tier1_frames']}/{rescue_cache['prob_tier2_frames']} "
+      f"(原門檻: {normal_thres:.2f} → 救援後: {current_prob_thres:.2f})"
+    )
+
 
   selected_track = None
   if len(valid_tracks) > 0 and ready and lead_prob > current_prob_thres:
