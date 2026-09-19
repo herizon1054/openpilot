@@ -2072,4 +2072,4 @@ msgstr ""
 "方向燈作動時淡出車道置中修正，避免與變換車道或轉彎動作互相干擾。"
 
 msgid "Steering Angle"
-msgstr "方向盤角度"
+msgstr "轉向角度"
