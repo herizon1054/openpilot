@@ -25,6 +25,10 @@ A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
 ALLOW_THROTTLE_THRESHOLD_E2E = 0.1   # mode=='blended'(e2e) 使用，調低以提升加速意願
+# mode=='blended' 且是由 AEM 的方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，
+# 動態把節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在轉彎/變換車道當下加速意願過高；
+# 非方向燈觸發的一般 blended（車速判斷的實驗模式）仍維持原本的 0.1，行為不變
+ALLOW_THROTTLE_THRESHOLD_E2E_TURN = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -101,9 +105,10 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # v4：過彎判斷改用 modelV2.orientationRate.z（與 dtsc.py 同一來源，跨品牌通用），
-      # aem.update_states 內部自行從 model_msg 取值，呼叫端維持原本三個參數即可
-      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
+      # v6：新增方向燈覆寫，打方向燈時不受車速雙門檻限制強制切為實驗模式
+      blinker_on = sm['carState'].leftBlinker or sm['carState'].rightBlinker
+      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
+                              blinker_on=blinker_on)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -138,7 +143,14 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
-    allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E if mode == 'blended' else ALLOW_THROTTLE_THRESHOLD_ACC
+    if mode == 'blended':
+      # v6：若目前的 blended 是由 AEM 的方向燈覆寫觸發，動態改用較保守的門檻（跟 acc 一樣）
+      if (dp_flags & DPFlags.AEM) and self.aem.blinker_active:
+        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E_TURN
+      else:
+        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+    else:
+      allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
     self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
