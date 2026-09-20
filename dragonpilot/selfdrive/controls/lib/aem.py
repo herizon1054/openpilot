@@ -24,9 +24,14 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 # 判斷優先權（由高到低）：
 #   1. 過彎減速保護：側向加速度 |a_y| 超過 CURVE_LAT_ACCEL_ENTER 時強制切為一般模式 (acc)，
 #      避免在彎道中使用行為較不可預期的 e2e 縱向控制。
-#      a_y = |v_ego * yawRate|（carState.yawRate 為車輛最佳估計橫擺角速度，rad/s），
-#      比方向盤角度更能反映實際過彎的側向 G，且已內含車速的影響（同角度在不同車速
-#      下的側向 G 差異很大，純角度門檻會太武斷）。
+#      a_y = |v_ego * yaw_rate|，yaw_rate 取自 modelV2.orientationRate.z[0]（視覺模型預測
+#      的橫擺角速度，rad/s，與 dtsc.py 同一來源）。
+#      ⚠️ 這裡刻意不用 carState.yawRate：openpilot 各品牌 carstate.py 只有 Ford、PSA
+#      會實際賦值，包含 Toyota 在內的其餘品牌從未設定該欄位，數值恆為 0.0（capnp 預設值）。
+#      本 fork 主力車款 Corolla TSS2（Toyota）即屬未賦值品牌，若採用 carState.yawRate，
+#      過彎保護在這台車上會完全失效且沒有任何錯誤訊息——已用實際路測 rlog 驗證
+#      carState.yawRate 全程恆為 0.0，而 modelV2.orientationRate.z[0] 全程有非零值，
+#      因此改用模型訊號，與 dtsc.py 的資料來源一致，可跨品牌使用。
 #   2. 車速雙門檻 + 遲滯區間：
 #        v_ego <= SPEED_TO_EXPERIMENTAL (80 km/h) -> 切換為實驗模式 (blended)
 #        v_ego >= SPEED_TO_NORMAL       (90 km/h) -> 切換為一般模式 (acc)
@@ -47,12 +52,12 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #   這才是真正「大彎道」的量級。
 #
 #   依使用者需求「輕微彎道交給實驗模式過彎，大彎道才交給一般模式 + DTSC」，
-#   本模組把門檻訂在 DECEL_BP 的中後段，只在彎道嚴重到 DTSC 需要中重度煞車時才切手，
+#   本模組把門檻訂在 DECEL_BP 的中段，在彎道已經需要中等力道煞車時才切手，
 #   而非跟 DTSC 一起在 ~1.0 m/s² 就介入：
-#     CURVE_LAT_ACCEL_ENTER = 2.6 m/s²（≈0.27G，對應 DTSC 減速度 -1.6，接近舒適上限）
-#     CURVE_LAT_ACCEL_EXIT  = 2.0 m/s²（≈0.20G，對應 DTSC 減速度 -1.2，仍在中段，形成遲滯緩衝）
-#   1.0~2.0 m/s² 這段的輕微彎道，維持在實驗模式，由 blended/e2e 自行處理過彎減速。
-#   ⚠️ 2.6/2.0 m/s² 為方向性建議值，非針對特定車款的實測結論，建議依路測 log
+#     CURVE_LAT_ACCEL_ENTER = 1.96 m/s²（0.2G，對應 DTSC 減速度約 -1.0~-1.2，中等彎道）
+#     CURVE_LAT_ACCEL_EXIT  = 1.50 m/s²（≈0.15G，低於進入門檻，形成遲滯緩衝）
+#   1.0~1.5 m/s² 這段的輕微彎道，維持在實驗模式，由 blended/e2e 自行處理過彎減速。
+#   ⚠️ 1.96/1.50 m/s² 為方向性建議值，非針對特定車款的實測結論，建議依路測 log
 #   （尤其是切手當下 blended 是否來得及減速、DTSC 介入時模式是否已經正確切到 acc）微調。
 #
 # 與原廠設計的差異（intentional divergence，非 upstream 行為，依使用者要求記錄於此）：
@@ -74,14 +79,28 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 from openpilot.common.realtime import DT_MDL
 
+# v4 變更紀錄（相對於 v3 的重大修正，非單純刻意分歧，屬於 bug fix）：
+#   v1~v3 皆用 carState.yawRate 計算側向加速度，經由實際路測 rlog（TOYOTA_COROLLA_TSS2）
+#   驗證發現：Toyota（以及除 Ford/PSA 外的絕大多數品牌）carstate.py 從未對 ret.yawRate
+#   賦值，該欄位在這些車上恆為 0.0，導致過彎保護完全失效、且無任何錯誤或警告。
+#   v4 改用 modelV2.orientationRate.z[0]（與 dtsc.py 相同的資料來源），已用同一份
+#   rlog 驗證全程有非零值。update_states 介面因此變回只需要 model_msg / radar_msg /
+#   v_ego 三個參數，不再需要外部傳入 yaw_rate 或 steering_angle_deg。
+#
+# v5 變更紀錄（相對於 v4 的門檻調整）：
+#   v3/v4 把進入門檻上修到 2.6 m/s²（≈0.27G，對應 DTSC 減速度 -1.6，接近舒適上限），
+#   只在彎道逼近 DTSC 舒適上限時才切手。v5 依需求下修回 0.2G（1.96 m/s²），對應 DTSC
+#   減速度約 -1.0~-1.2，屬於中等彎道即切手，比 v3/v4 更早把控制權交給一般模式 + DTSC。
+#   解除門檻同步下修為 1.50 m/s²（≈0.15G），維持約 0.46 m/s² 的遲滯緩衝。
+
 # 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
 SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
 SPEED_TO_NORMAL       = 90.0 / 3.6   # 車速 >= 90 km/h -> 切換為一般模式 (acc)
 
-# 過彎判斷門檻：側向加速度 a_y = |v_ego * yawRate|（m/s²），含遲滯避免臨界值抖動
+# 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
-CURVE_LAT_ACCEL_ENTER = 2.6   # 進入過彎保護（約 0.27G，對應 DTSC 減速度 -1.6，接近舒適上限）
-CURVE_LAT_ACCEL_EXIT  = 2.0   # 解除過彎保護（約 0.20G，對應 DTSC 減速度 -1.2，低於進入門檻避免抖動）
+CURVE_LAT_ACCEL_ENTER = 1.96   # 進入過彎保護（0.2G，對應 DTSC 減速度約 -1.0 ~ -1.2，中等彎道）
+CURVE_LAT_ACCEL_EXIT  = 1.50   # 解除過彎保護（≈0.15G，低於進入門檻避免抖動）
 
 # 側向加速度的低通濾波係數，濾除單幀雜訊尖峰（風格與 dtsc.py / ocm.py 的 LPF_ALPHA 一致）
 LAT_ACCEL_LPF_ALPHA = 0.2
@@ -105,7 +124,8 @@ class AEM:
     self._curve_confirm_t = 0.0
     self._lat_accel_filtered = 0.0
 
-  def update_states(self, model_msg, radar_msg, v_ego, yaw_rate=0.0):
+  def update_states(self, model_msg, radar_msg, v_ego):
+    yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
     self._update_speed_mode(v_ego)
     self._update_curve_override(v_ego, yaw_rate)
