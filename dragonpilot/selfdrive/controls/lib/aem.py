@@ -38,12 +38,22 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      （加速度）忽然跳動，導致突然減速或加速。
 #
 # 側向加速度門檻參考來源（同一 fork 內的 dtsc.py，已依實測調校，非憑空訂值）：
-#   SCCV_ABORT_PRED_LAT_ACC_TH = 0.7 m/s²  -> DTSC 認定「連彎道都算不上」的雜訊下限
-#   LAT_LIMIT_V = [1.9 ~ 2.7] m/s²         -> DTSC 判斷「該為過彎降速」的舒適側向加速度上限表
-#   本模組採 2.0 m/s²（≈0.2G）進入、1.5 m/s²（≈0.15G）解除，落在 DTSC 的舒適區間中段，
-#   意即側向 G 已經來到 DTSC 本身也會考慮降速的量級時，才把縱向控制權交還一般模式，
-#   避免 blended 模式的油門行為與 DTSC 的煞車動作互相打架。
-#   ⚠️ 2.0/1.5 m/s² 為方向性建議值，非針對特定車款的實測結論，建議依路測 log 微調。
+#   SCCV_ABORT_PRED_LAT_ACC_TH = 0.7 m/s²                     -> DTSC 認定連彎道都算不上的雜訊下限
+#   DECEL_BP = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.3, 2.6, 3.0]  -> DTSC 側向加速度 -> 減速度的對照表
+#   DECEL_V  = [0.0, -0.1, -0.3, -0.5, -0.8, -1.2, -1.4, -1.6, -2.0]（MAX_COMFORT_DECEL = -2.0）
+#   換言之 DTSC 本身從 ~1.0 m/s²（≈0.1G）就開始輕微收油，是漸進式介入，不是一個單一開關；
+#   1.0~2.3 m/s² 這段只需要 -0.1 ~ -1.4 m/s² 的輕度到中度減速，交給實驗模式(e2e)自行處理
+#   多半已經足夠；直到 2.6 m/s² 附近，DTSC 才需要 -1.6 m/s²，逼近舒適上限 -2.0，
+#   這才是真正「大彎道」的量級。
+#
+#   依使用者需求「輕微彎道交給實驗模式過彎，大彎道才交給一般模式 + DTSC」，
+#   本模組把門檻訂在 DECEL_BP 的中後段，只在彎道嚴重到 DTSC 需要中重度煞車時才切手，
+#   而非跟 DTSC 一起在 ~1.0 m/s² 就介入：
+#     CURVE_LAT_ACCEL_ENTER = 2.6 m/s²（≈0.27G，對應 DTSC 減速度 -1.6，接近舒適上限）
+#     CURVE_LAT_ACCEL_EXIT  = 2.0 m/s²（≈0.20G，對應 DTSC 減速度 -1.2，仍在中段，形成遲滯緩衝）
+#   1.0~2.0 m/s² 這段的輕微彎道，維持在實驗模式，由 blended/e2e 自行處理過彎減速。
+#   ⚠️ 2.6/2.0 m/s² 為方向性建議值，非針對特定車款的實測結論，建議依路測 log
+#   （尤其是切手當下 blended 是否來得及減速、DTSC 介入時模式是否已經正確切到 acc）微調。
 #
 # 與原廠設計的差異（intentional divergence，非 upstream 行為，依使用者要求記錄於此）：
 #   原始 AEM 完全依 modelV2.meta.disengagePredictions.gasPressProbs 的機率門檻 (0.4/0.6)
@@ -55,6 +65,12 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #   v1 使用方向盤角度 (steeringAngleDeg > 60°) 判斷過彎，未考慮車速造成的側向 G 差異，
 #   且容易被市區路口轉彎、迴轉等大角度但低側向 G 的情境誤觸發。v2 改用
 #   a_y = |v_ego * yawRate| 取代方向盤角度，同一套遲滯 + 防彈跳機制沿用不變。
+#
+# v3 變更紀錄（相對於 v2 的刻意分歧）：
+#   v2 的 2.0/1.5 m/s² 門檻其實比 DTSC 自己開始介入的 ~1.0 m/s² 高出不少，但仍會讓
+#   DTSC 剛開始輕度收油（1.0~2.0 m/s²）的「輕微彎道」就被 AEM 切去一般模式。
+#   v3 依需求把整組門檻上移到 DECEL_BP 中後段（2.0/2.6 m/s²），讓輕微彎道留在實驗
+#   模式自行處理，只有側向 G 逼近 DTSC 舒適上限的大彎道才交給一般模式 + DTSC。
 
 from openpilot.common.realtime import DT_MDL
 
@@ -63,8 +79,9 @@ SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模�
 SPEED_TO_NORMAL       = 90.0 / 3.6   # 車速 >= 90 km/h -> 切換為一般模式 (acc)
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yawRate|（m/s²），含遲滯避免臨界值抖動
-CURVE_LAT_ACCEL_ENTER = 2.0   # 進入過彎保護（約 0.2G，參考 dtsc.py 的 LAT_LIMIT_V 中段）
-CURVE_LAT_ACCEL_EXIT  = 1.5   # 解除過彎保護（約 0.15G，低於進入門檻，避免抖動）
+# 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
+CURVE_LAT_ACCEL_ENTER = 2.6   # 進入過彎保護（約 0.27G，對應 DTSC 減速度 -1.6，接近舒適上限）
+CURVE_LAT_ACCEL_EXIT  = 2.0   # 解除過彎保護（約 0.20G，對應 DTSC 減速度 -1.2，低於進入門檻避免抖動）
 
 # 側向加速度的低通濾波係數，濾除單幀雜訊尖峰（風格與 dtsc.py / ocm.py 的 LPF_ALPHA 一致）
 LAT_ACCEL_LPF_ALPHA = 0.2
