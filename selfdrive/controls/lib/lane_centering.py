@@ -145,7 +145,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import smooth_value
 
 _KPH_TO_MS = 1.0 / 3.6
 
-_MIN_V_EGO = 15.0 * _KPH_TO_MS  # 15 km/h（原 StarPilot 為 5.0 m/s ≈ 18 km/h，見檔頭說明）
+_MIN_V_EGO = 20.0 * _KPH_TO_MS  # 20 km/h（原 StarPilot 為 5.0 m/s ≈ 18 km/h，見檔頭說明）
 _MIN_LANE_PROB = 0.6
 _MAX_LANE_STD = 0.3
 _MIN_LANE_WIDTH = 2.6
