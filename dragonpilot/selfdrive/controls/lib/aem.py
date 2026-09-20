@@ -32,13 +32,21 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      過彎保護在這台車上會完全失效且沒有任何錯誤訊息——已用實際路測 rlog 驗證
 #      carState.yawRate 全程恆為 0.0，而 modelV2.orientationRate.z[0] 全程有非零值，
 #      因此改用模型訊號，與 dtsc.py 的資料來源一致，可跨品牌使用。
-#   2. 車速雙門檻 + 遲滯區間：
+#   2. 方向燈覆寫：左/右方向燈任一啟動時，強制切為實驗模式 (blended)，且不受第 3 點的
+#      車速雙門檻限制（即使車速已經 >= 90 km/h 處於一般模式區間，打方向燈時依然強制
+#      切回實驗模式）。方向燈的優先權低於過彎保護：若當下已經因為側向 G 過大判定為
+#      過彎（第 1 點），即使同時打方向燈，仍維持一般模式，安全優先。
+#      方向燈訊號取自 carState.leftBlinker / rightBlinker，這是方向燈拉桿的持續狀態
+#      （不是實際燈泡閃爍的頻閃訊號，Toyota 上為 BLINKERS_STATE.TURN_SIGNALS == 1/2），
+#      本身已經是穩定的布林值，不會有頻閃雜訊，仍套用與其他條件一致的 CONFIRM_TIME_S
+#      防彈跳，但不受 MIN_DWELL_TIME_S 限制（打燈意圖應該立即反應，不應該被延遲）。
+#   3. 車速雙門檻 + 遲滯區間：
 #        v_ego <= SPEED_TO_EXPERIMENTAL (80 km/h) -> 切換為實驗模式 (blended)
 #        v_ego >= SPEED_TO_NORMAL       (90 km/h) -> 切換為一般模式 (acc)
 #      80~90 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
-#   3. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
-#      車速模式的切換另外要求距離上一次切換至少 MIN_DWELL_TIME_S 秒（過彎的強制/解除
-#      不受此最短間隔限制，確保過彎安全保護不會被延遲觸發）。
+#   4. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
+#      車速模式的切換另外要求距離上一次切換至少 MIN_DWELL_TIME_S 秒（過彎與方向燈的
+#      強制/解除不受此最短間隔限制，確保安全保護與駕駛意圖不會被延遲觸發）。
 #      這是本次要求的「過渡」機制：避免感測雜訊或臨界值附近的抖動造成縱向目標
 #      （加速度）忽然跳動，導致突然減速或加速。
 #
@@ -92,6 +100,12 @@ from openpilot.common.realtime import DT_MDL
 #   只在彎道逼近 DTSC 舒適上限時才切手。v5 依需求下修回 0.2G（1.96 m/s²），對應 DTSC
 #   減速度約 -1.0~-1.2，屬於中等彎道即切手，比 v3/v4 更早把控制權交給一般模式 + DTSC。
 #   解除門檻同步下修為 1.50 m/s²（≈0.15G），維持約 0.46 m/s² 的遲滯緩衝。
+#
+# v6 變更紀錄（相對於 v5 的功能新增）：
+#   新增方向燈覆寫：打方向燈時強制切為實驗模式，不受車速雙門檻限制，優先權低於過彎
+#   保護（見上方優先權第 2 點）。同時新增 blinker_active 唯讀屬性，供呼叫端（例如
+#   longitudinal_planner.py 動態調整 ALLOW_THROTTLE_THRESHOLD_E2E）讀取目前是否處於
+#   方向燈覆寫狀態，不需要重複實作一份判斷邏輯。
 
 # 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
 SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
@@ -124,11 +138,22 @@ class AEM:
     self._curve_confirm_t = 0.0
     self._lat_accel_filtered = 0.0
 
-  def update_states(self, model_msg, radar_msg, v_ego):
+    # 方向燈覆寫狀態
+    self._blinker_active = False
+    self._blinker_pending = False
+    self._blinker_confirm_t = 0.0
+
+  @property
+  def blinker_active(self):
+    """目前是否處於方向燈覆寫（強制實驗模式）狀態，供呼叫端讀取（例如動態調整節流門檻）。"""
+    return self._blinker_active
+
+  def update_states(self, model_msg, radar_msg, v_ego, blinker_on=False):
     yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
     self._update_speed_mode(v_ego)
     self._update_curve_override(v_ego, yaw_rate)
+    self._update_blinker_override(blinker_on)
 
   def _update_speed_mode(self, v_ego):
     if v_ego <= SPEED_TO_EXPERIMENTAL:
@@ -168,7 +193,23 @@ class AEM:
     if self._curve_pending != self._curve_active and self._curve_confirm_t >= CONFIRM_TIME_S:
       self._curve_active = self._curve_pending
 
+  def _update_blinker_override(self, blinker_on):
+    candidate = bool(blinker_on)
+
+    if candidate == self._blinker_pending:
+      self._blinker_confirm_t += DT_MDL
+    else:
+      self._blinker_pending = candidate
+      self._blinker_confirm_t = 0.0
+
+    # 不套用 MIN_DWELL_TIME_S：打燈/收燈的意圖應該即時反應，不應該被車速邏輯的
+    # 最短維持時間卡住
+    if self._blinker_pending != self._blinker_active and self._blinker_confirm_t >= CONFIRM_TIME_S:
+      self._blinker_active = self._blinker_pending
+
   def get_mode(self, mode):
     if self._curve_active:
       return 'acc'
+    if self._blinker_active:
+      return 'blended'
     return 'blended' if self._speed_mode == 'experimental' else 'acc'
