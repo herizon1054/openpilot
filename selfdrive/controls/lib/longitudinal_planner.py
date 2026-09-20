@@ -101,10 +101,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # v2：改用側向加速度 a_y = |v_ego * yawRate| 判斷過彎（取代方向盤角度），
-      # 因此改傳 carState.yawRate（車輛最佳估計橫擺角速度）
-      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
-                              yaw_rate=sm['carState'].yawRate)
+      # v4：過彎判斷改用 modelV2.orientationRate.z（與 dtsc.py 同一來源，跨品牌通用），
+      # aem.update_states 內部自行從 model_msg 取值，呼叫端維持原本三個參數即可
+      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
