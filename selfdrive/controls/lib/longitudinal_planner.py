@@ -101,8 +101,10 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # 已修正：將 sm 拆解並傳入正確的 model_msg, radar_msg 與 v_ego
-      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
+      # v2：改用側向加速度 a_y = |v_ego * yawRate| 判斷過彎（取代方向盤角度），
+      # 因此改傳 carState.yawRate（車輛最佳估計橫擺角速度）
+      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
+                              yaw_rate=sm['carState'].yawRate)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
