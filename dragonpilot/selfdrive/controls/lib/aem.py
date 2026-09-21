@@ -62,8 +62,8 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #   依使用者需求「輕微彎道交給實驗模式過彎，大彎道才交給一般模式 + DTSC」，
 #   本模組把門檻訂在 DECEL_BP 的中段，在彎道已經需要中等力道煞車時才切手，
 #   而非跟 DTSC 一起在 ~1.0 m/s² 就介入：
-#     CURVE_LAT_ACCEL_ENTER = 1.96 m/s²（0.2G，對應 DTSC 減速度約 -1.0~-1.2，中等彎道）
-#     CURVE_LAT_ACCEL_EXIT  = 1.50 m/s²（≈0.15G，低於進入門檻，形成遲滯緩衝）
+#     CURVE_LAT_ACCEL_ENTER = 1.76 m/s²（依需求調整，低於原本 1.96 的中等彎道估算值）
+#     CURVE_LAT_ACCEL_EXIT  = 1.30 m/s²（依需求調整，低於進入門檻，形成遲滯緩衝）
 #   1.0~1.5 m/s² 這段的輕微彎道，維持在實驗模式，由 blended/e2e 自行處理過彎減速。
 #   ⚠️ 1.96/1.50 m/s² 為方向性建議值，非針對特定車款的實測結論，建議依路測 log
 #   （尤其是切手當下 blended 是否來得及減速、DTSC 介入時模式是否已經正確切到 acc）微調。
@@ -120,7 +120,8 @@ from openpilot.common.realtime import DT_MDL
 #
 # v9 變更紀錄（相對於 v8 的功能新增）：
 #   新增「基礎節流門檻依車速動態切換」：車速 <= 60km/h 用較保守的 0.2，車速 >= 70km/h
-#   用較積極的 0.1，60~70km/h 為過渡帶維持前一狀態。透過 base_throttle_threshold 屬性
+#   用較積極的 0.1，60~70km/h 為過渡帶維持前一狀態（門檻數字後續依需求調整為 50/60km/h，
+#   見常數區與 v9 之後的變更）。透過 base_throttle_threshold 屬性
 #   暴露給呼叫端，取代原本寫死在 longitudinal_planner.py 裡的固定值。跟 near_stop_active
 #   一樣只影響節流門檻，不寫進 get_mode()。四個常數（車速門檻×2、節流值×2）彼此獨立，
 #   個別調整互不影響；longitudinal_planner.py 的 ALLOW_THROTTLE_THRESHOLD_E2E（AEM 停用
@@ -132,8 +133,8 @@ SPEED_TO_NORMAL       = 90.0 / 3.6   # 車速 >= 90 km/h -> 切換為一般模�
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
-CURVE_LAT_ACCEL_ENTER = 1.96   # 進入過彎保護（0.2G，對應 DTSC 減速度約 -1.0 ~ -1.2，中等彎道）
-CURVE_LAT_ACCEL_EXIT  = 1.50   # 解除過彎保護（≈0.15G，低於進入門檻避免抖動）
+CURVE_LAT_ACCEL_ENTER = 1.76   # 進入過彎保護
+CURVE_LAT_ACCEL_EXIT  = 1.30   # 解除過彎保護
 
 # 側向加速度的低通濾波係數，濾除單幀雜訊尖峰（風格與 dtsc.py / ocm.py 的 LPF_ALPHA 一致）
 LAT_ACCEL_LPF_ALPHA = 0.2
@@ -151,7 +152,7 @@ NEAR_STOP_ENTER_M = 50.0   # 距離 <= 50m 進入「接近停止線」狀態（�
 NEAR_STOP_EXIT_M  = 60.0   # 距離 > 60m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
 
 # 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有方向燈/接近停止線覆寫時使用。
-# 60~70 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
+# 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
 # 避免車速在邊界附近小幅波動時頻繁切換。
 # ⚠️ 以下四個常數彼此獨立，個別調整互不影響：車速門檻（KPH）決定「什麼時候切換」，
 # 節流值（VALUE）決定「切換後用多保守/多積極的門檻」，兩兩之間可以任意分開調整。
@@ -204,7 +205,7 @@ class AEM:
 
   @property
   def base_throttle_threshold(self):
-    """依車速動態決定的基礎節流門檻（車速 <= 60km/h 為 0.2，>= 70km/h 為 0.1，中間維持
+    """依車速動態決定的基礎節流門檻（車速 <= 50km/h 為 0.2，>= 60km/h 為 0.1，中間維持
     前一狀態）。供呼叫端在沒有方向燈/接近停止線覆寫時使用；有覆寫時呼叫端應取兩者中
     較保守（較高）的值，而不是直接覆蓋掉這個車速判斷。"""
     return (BASE_THROTTLE_LOW_SPEED_VALUE if self._base_throttle_state == 'low'
@@ -298,7 +299,7 @@ class AEM:
     elif v_kph >= BASE_THROTTLE_HIGH_SPEED_KPH:
       candidate = 'high'
     else:
-      candidate = self._base_throttle_state   # 60~70 km/h 過渡帶：維持前一狀態，不切換
+      candidate = self._base_throttle_state   # 50~60 km/h 過渡帶：維持前一狀態，不切換
 
     if candidate == self._base_throttle_pending:
       self._base_throttle_confirm_t += DT_MDL
