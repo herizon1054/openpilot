@@ -28,7 +28,7 @@ ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，�
 # allow_throttle 恆為 True、油門上限形同沒有夾限，經確認是跟車過度敏感積極的主因之一）；
 # AEM 啟用時改用 self.aem.base_throttle_threshold 依車速動態切換（見 v9：<=60km/h 為 0.2，
 # >=70km/h 為 0.1），這裡的固定值只當作 AEM 未啟用時的後備值
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.1
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
 ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
