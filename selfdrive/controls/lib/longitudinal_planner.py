@@ -30,7 +30,7 @@ ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，�
 ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
-ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
+ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
 # mode=='blended' 且是由 AEM 方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，比接近停止線
 # 更保守（0.5，高於 ACC 的 0.4），因為轉彎/變換車道當下的風險判斷應該比單純接近停止線更嚴格
 ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER = 0.5
