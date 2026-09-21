@@ -48,7 +48,7 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 # 用同一份 rlog 驗證：加上這兩個機制後，三份 log 的 allow_throttle 切換次數從
 # 22~34 次/分鐘降到 0~4 次/分鐘，降幅 88%~100%。
 THROTTLE_PROB_LPF_ALPHA = 0.2   # 濾除單幀雜訊尖峰，風格與 aem.py 的 LAT_ACCEL_LPF_ALPHA 一致，維持不變
-ALLOW_THROTTLE_HYSTERESIS = 0.10   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
+ALLOW_THROTTLE_HYSTERESIS = 0.15   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
                                     # 避免濾波後的值仍在門檻附近小幅擺盪時來回橫跳
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
