@@ -45,10 +45,6 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                      plan[:,Plan.ACCELERATION][:,0],
                                                      ModelConstants.T_IDXS,
                                                      action_t=long_action_t)
-    # dp: 原本這裡有「加速方向不對稱平滑」（想加速時用較短的 LONG_SMOOTH_SECONDS_ACCEL_UP
-    # =0.2，降低滯後；減速時用 0.3）。經路測 rlog 實測發現 desiredAcceleration 的方向
-    # 每分鐘反轉 300 多次，代表這個時間常數本身也跟著頻繁切換，多引入一層不必要的雜訊，
-    # 已依需求還原成單一 LONG_SMOOTH_SECONDS（0.3），不再依方向切換。
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
 
     desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
