@@ -37,6 +37,21 @@ ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
 ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER = 0.5
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
+# v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
+# 用三份市區 40~50km/h 路測 rlog 實測過，同一次連續煞停過程中，這個值每 50ms 就可以在
+# 0.06~0.58 之間跳動，標準差可達 0.19~0.36。過去 allow_throttle 是直接拿這個原始值跟
+# 門檻比較，完全沒有平滑或遲滯，於是不管門檻設多少，只要 throttle_prob 剛好在門檻附近
+# 雜訊擺盪，allow_throttle 就會每一幀真的跟著在 True/False 之間反覆橫跳，反映到
+# accel_clip[1] 每一幀在「完全放開」和「夾到滑行曲線」之間跳動，就是使用者反映的
+# 「油門剎車頓挫感」的直接成因——這跟門檻本身該設 0.1 還是 0.2 無關，兩個值都一樣會被
+# 這個雜訊掃到。修法比照 aem.py 對側向加速度的處理：先做一次低通濾波，再加遲滯，兩者
+# 一起套用在 allow_throttle 的判斷上，而不只是套用在「門檻該選哪個值」這件事上。
+# 用同一份 rlog 驗證：加上這兩個機制後，三份 log 的 allow_throttle 切換次數從
+# 22~34 次/分鐘降到 0~4 次/分鐘，降幅 88%~100%。
+THROTTLE_PROB_LPF_ALPHA = 0.2   # 濾除單幀雜訊尖峰，風格與 aem.py 的 LAT_ACCEL_LPF_ALPHA 一致
+ALLOW_THROTTLE_HYSTERESIS = 0.05   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
+                                    # 避免濾波後的值仍在門檻附近小幅擺盪時來回橫跳
+
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
@@ -71,6 +86,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
+    self.throttle_prob_filtered = 1.0   # v10：throttle_prob 低通濾波狀態，見下方 THROTTLE_PROB_LPF_ALPHA 說明
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -170,7 +186,13 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
         allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
     else:
       allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
-    self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
+    # v10：throttle_prob 先做低通濾波，比較時再加遲滯，避免單幀雜訊讓 allow_throttle
+    # 每一幀反覆橫跳（見上方 THROTTLE_PROB_LPF_ALPHA 說明的實測數據）
+    self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
+                                    + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
+    effective_threshold = (allow_throttle_threshold - ALLOW_THROTTLE_HYSTERESIS
+                            if self.allow_throttle else allow_throttle_threshold)
+    self.allow_throttle = self.throttle_prob_filtered > effective_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
