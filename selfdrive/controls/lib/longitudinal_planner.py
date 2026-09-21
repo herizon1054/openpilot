@@ -24,11 +24,10 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-# mode=='blended'(e2e) 基準門檻。AEM 停用時固定用這個值（0.2，原 0.1 太低，幾乎讓
-# allow_throttle 恆為 True、油門上限形同沒有夾限，經確認是跟車過度敏感積極的主因之一）；
-# AEM 啟用時改用 self.aem.base_throttle_threshold 依車速動態切換（見 v9：<=60km/h 為 0.2，
-# >=70km/h 為 0.1），這裡的固定值只當作 AEM 未啟用時的後備值
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.1
+# mode=='blended'(e2e) 基準門檻，AEM 停用時固定用這個值。這個常數獨立設定，跟 aem.py 的
+# BASE_THROTTLE_LOW_SPEED_VALUE / BASE_THROTTLE_HIGH_SPEED_VALUE（AEM 啟用時依車速動態
+# 切換用的門檻）互不影響，各自調整不會牽動對方——AEM 啟用時完全不會用到這個常數
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
 ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
@@ -48,7 +47,7 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 # 一起套用在 allow_throttle 的判斷上，而不只是套用在「門檻該選哪個值」這件事上。
 # 用同一份 rlog 驗證：加上這兩個機制後，三份 log 的 allow_throttle 切換次數從
 # 22~34 次/分鐘降到 0~4 次/分鐘，降幅 88%~100%。
-THROTTLE_PROB_LPF_ALPHA = 0.2   # 濾除單幀雜訊尖峰，風格與 aem.py 的 LAT_ACCEL_LPF_ALPHA 一致
+THROTTLE_PROB_LPF_ALPHA = 0.2   # 濾除單幀雜訊尖峰，風格與 aem.py 的 LAT_ACCEL_LPF_ALPHA 一致，維持不變
 ALLOW_THROTTLE_HYSTERESIS = 0.10   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
                                     # 避免濾波後的值仍在門檻附近小幅擺盪時來回橫跳
 
