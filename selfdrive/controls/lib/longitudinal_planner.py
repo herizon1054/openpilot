@@ -24,11 +24,15 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.2   # mode=='blended'(e2e) 使用，調低以提升加速意願
-# mode=='blended' 且是由 AEM 的方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，
-# 動態把節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在轉彎/變換車道當下加速意願過高；
-# 非方向燈觸發的一般 blended（車速判斷的實驗模式）仍維持原本的 0.1，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E_TURN = 0.5
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.2   # mode=='blended'(e2e) 一般情境使用（原 0.1 太低，幾乎讓
+                                      # allow_throttle 恆為 True、油門上限形同沒有夾限，經確認
+                                      # 是跟車過度敏感積極的主因之一，調高到 0.2 收斂一些）
+# mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
+# 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
+ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
+# mode=='blended' 且是由 AEM 方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，比接近停止線
+# 更保守（0.5，高於 ACC 的 0.4），因為轉彎/變換車道當下的風險判斷應該比單純接近停止線更嚴格
+ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER = 0.5
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -105,10 +109,15 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # v6：新增方向燈覆寫，打方向燈時不受車速雙門檻限制強制切為實驗模式
+      # v7：新增「接近模型停止線」節流保守化。⚠️ self.traffic_stop.stop_dist_m 要到本
+      # function 後段呼叫 LongitudinalPlannerDP.update_targets() 時才會刷新成這一幀的值，
+      # 這裡讀到的是上一幀（約 50ms 前）的結果——由於這一項只影響節流門檻、本身又有
+      # 0.5 秒防彈跳，一幀的落差可忽略；若要完全同步，需把 update_targets() 提前到
+      # 這裡之前呼叫，但那會牽動它目前使用 self.v_desired_filter.x/self.a_desired
+      # （上一幀平滑值）作為輸入參數的既有設計，改動風險較高，這裡先不動。
       blinker_on = sm['carState'].leftBlinker or sm['carState'].rightBlinker
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
-                              blinker_on=blinker_on)
+                              blinker_on=blinker_on, stop_dist_m=self.traffic_stop.stop_dist_m)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -144,11 +153,15 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
     if mode == 'blended':
-      # v6：若目前的 blended 是由 AEM 的方向燈覆寫觸發，動態改用較保守的門檻（跟 acc 一樣）
-      if (dp_flags & DPFlags.AEM) and self.aem.blinker_active:
-        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E_TURN
-      else:
-        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+      # v8：方向燈跟接近停止線分開給不同保守程度的門檻（方向燈 0.5 較高，接近停止線 0.4）；
+      # 兩者都沒觸發時用一般的 0.2。兩者同時成立時取較保守（較高）的那個，而不是固定順序，
+      # 避免未來新增第三種覆寫條件時還要重新排列 if/elif 的優先順序
+      allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+      if dp_flags & DPFlags.AEM:
+        if self.aem.blinker_active:
+          allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER)
+        if self.aem.near_stop_active:
+          allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
     else:
       allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
     self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
