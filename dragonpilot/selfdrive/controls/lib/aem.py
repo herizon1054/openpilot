@@ -106,6 +106,17 @@ from openpilot.common.realtime import DT_MDL
 #   保護（見上方優先權第 2 點）。同時新增 blinker_active 唯讀屬性，供呼叫端（例如
 #   longitudinal_planner.py 動態調整 ALLOW_THROTTLE_THRESHOLD_E2E）讀取目前是否處於
 #   方向燈覆寫狀態，不需要重複實作一份判斷邏輯。
+#
+# v7 變更紀錄（相對於 v6 的功能新增）：
+#   新增「接近模型停止線」狀態：距離 <= 50m（含遲滯，60m 解除）時，near_stop_active
+#   屬性回傳 True。⚠️ 這一項刻意只影響呼叫端的節流門檻選擇，不寫進 get_mode()、
+#   不影響 blended/acc 判斷——接不接近停止線，跟該不該用 e2e 縱向控制是兩個問題，
+#   AEM 原本的職責是選 mode，這裡只是額外暴露一個狀態供節流門檻參考，避免職責混在一起。
+#   50m 沿用同一 fork 的 traffic_stop.py 既有常數 TRAFFIC_STOP_DISTANCE_FADE_BP_M 的
+#   上限值（該模組本來就把「接近停止線」的物理意義定在 50m 內），不是另外憑空訂的數字。
+#   距離來源必須是 traffic_stop.py 算出來的 stop_dist_m（已經過 median+moving-average
+#   平滑與物理偏移修正），不是原始 model_msg.position.x，否則會繼承模型單幀跳動的雜訊。
+#   stop_dist_m 為 None（目前沒有主動停等）明確視為「不接近」，不可誤判為距離 0。
 
 # 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
 SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
@@ -122,6 +133,14 @@ LAT_ACCEL_LPF_ALPHA = 0.2
 # 防彈跳與最短維持時間
 CONFIRM_TIME_S   = 0.5   # 任一切換條件需連續成立這麼久（秒）才生效，濾除瞬間雜訊
 MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）才允許下一次切換
+
+# 距離模型停止線的節流保守化門檻（m），含遲滯避免臨界值抖動
+# ⚠️ 這一組只影響呼叫端的節流門檻選擇（near_stop_active 屬性），不影響 get_mode()
+# 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併，
+# 保持跟方向燈覆寫（會改變 mode）語意上的區隔。
+NEAR_STOP_ENTER_M = 50.0   # 距離 <= 50m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
+                           # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
+NEAR_STOP_EXIT_M  = 60.0   # 距離 > 60m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
 
 
 class AEM:
@@ -143,17 +162,30 @@ class AEM:
     self._blinker_pending = False
     self._blinker_confirm_t = 0.0
 
+    # 接近停止線狀態（只影響節流門檻，不影響 get_mode()）
+    self._near_stop_active = False
+    self._near_stop_pending = False
+    self._near_stop_confirm_t = 0.0
+
   @property
   def blinker_active(self):
     """目前是否處於方向燈覆寫（強制實驗模式）狀態，供呼叫端讀取（例如動態調整節流門檻）。"""
     return self._blinker_active
 
-  def update_states(self, model_msg, radar_msg, v_ego, blinker_on=False):
+  @property
+  def near_stop_active(self):
+    """目前是否處於「接近模型停止線」狀態（距離 <= 50m，含遲滯），供呼叫端讀取，
+    用來決定是否改用較保守的節流門檻（longitudinal_planner.py 的
+    ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP）。不影響 get_mode() 的 blended/acc 判斷。"""
+    return self._near_stop_active
+
+  def update_states(self, model_msg, radar_msg, v_ego, blinker_on=False, stop_dist_m=None):
     yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
     self._update_speed_mode(v_ego)
     self._update_curve_override(v_ego, yaw_rate)
     self._update_blinker_override(blinker_on)
+    self._update_near_stop(stop_dist_m)
 
   def _update_speed_mode(self, v_ego):
     if v_ego <= SPEED_TO_EXPERIMENTAL:
@@ -206,6 +238,26 @@ class AEM:
     # 最短維持時間卡住
     if self._blinker_pending != self._blinker_active and self._blinker_confirm_t >= CONFIRM_TIME_S:
       self._blinker_active = self._blinker_pending
+
+  def _update_near_stop(self, stop_dist_m):
+    # stop_dist_m 為 None 代表 traffic_stop 目前沒有主動停等中（功能關閉、或沒偵測到
+    # 紅燈/停止標誌），必須明確視為「不接近」，不能當成距離 0 處理，否則會誤判成
+    # 永遠接近停止線
+    if stop_dist_m is None:
+      candidate = False
+    else:
+      threshold = NEAR_STOP_EXIT_M if self._near_stop_active else NEAR_STOP_ENTER_M
+      candidate = stop_dist_m <= threshold
+
+    if candidate == self._near_stop_pending:
+      self._near_stop_confirm_t += DT_MDL
+    else:
+      self._near_stop_pending = candidate
+      self._near_stop_confirm_t = 0.0
+
+    # 同樣不套用 MIN_DWELL_TIME_S：這只影響節流保守程度，沒有理由延遲生效或延遲解除
+    if self._near_stop_pending != self._near_stop_active and self._near_stop_confirm_t >= CONFIRM_TIME_S:
+      self._near_stop_active = self._near_stop_pending
 
   def get_mode(self, mode):
     if self._curve_active:
