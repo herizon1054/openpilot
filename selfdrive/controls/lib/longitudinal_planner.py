@@ -24,9 +24,11 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.2   # mode=='blended'(e2e) 一般情境使用（原 0.1 太低，幾乎讓
-                                      # allow_throttle 恆為 True、油門上限形同沒有夾限，經確認
-                                      # 是跟車過度敏感積極的主因之一，調高到 0.2 收斂一些）
+# mode=='blended'(e2e) 基準門檻。AEM 停用時固定用這個值（0.2，原 0.1 太低，幾乎讓
+# allow_throttle 恆為 True、油門上限形同沒有夾限，經確認是跟車過度敏感積極的主因之一）；
+# AEM 啟用時改用 self.aem.base_throttle_threshold 依車速動態切換（見 v9：<=60km/h 為 0.2，
+# >=70km/h 為 0.1），這裡的固定值只當作 AEM 未啟用時的後備值
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
 ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.4
@@ -153,15 +155,19 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
     if mode == 'blended':
-      # v8：方向燈跟接近停止線分開給不同保守程度的門檻（方向燈 0.5 較高，接近停止線 0.4）；
-      # 兩者都沒觸發時用一般的 0.2。兩者同時成立時取較保守（較高）的那個，而不是固定順序，
-      # 避免未來新增第三種覆寫條件時還要重新排列 if/elif 的優先順序
-      allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+      # v9：基準門檻改由 AEM 依車速動態決定（<=60km/h 為 0.2，>=70km/h 為 0.1），
+      # AEM 未啟用時退回固定的 ALLOW_THROTTLE_THRESHOLD_E2E（0.2）當後備值。
+      # 方向燈跟接近停止線分開給不同保守程度的門檻（方向燈 0.5、接近停止線 0.4），
+      # 兩者同時成立時取較保守（較高）的那個，而不是固定順序，避免未來新增第三種
+      # 覆寫條件時還要重新排列 if/elif 的優先順序
       if dp_flags & DPFlags.AEM:
+        allow_throttle_threshold = self.aem.base_throttle_threshold
         if self.aem.blinker_active:
           allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER)
         if self.aem.near_stop_active:
           allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
+      else:
+        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
     else:
       allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
     self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
