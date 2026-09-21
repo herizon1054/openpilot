@@ -121,8 +121,10 @@ from openpilot.common.realtime import DT_MDL
 # v9 變更紀錄（相對於 v8 的功能新增）：
 #   新增「基礎節流門檻依車速動態切換」：車速 <= 60km/h 用較保守的 0.2，車速 >= 70km/h
 #   用較積極的 0.1，60~70km/h 為過渡帶維持前一狀態。透過 base_throttle_threshold 屬性
-#   暴露給呼叫端，取代原本寫死在 longitudinal_planner.py 裡的固定 0.2。跟 near_stop_active
-#   一樣只影響節流門檻，不寫進 get_mode()。
+#   暴露給呼叫端，取代原本寫死在 longitudinal_planner.py 裡的固定值。跟 near_stop_active
+#   一樣只影響節流門檻，不寫進 get_mode()。四個常數（車速門檻×2、節流值×2）彼此獨立，
+#   個別調整互不影響；longitudinal_planner.py 的 ALLOW_THROTTLE_THRESHOLD_E2E（AEM 停用
+#   時的後備值）也是完全獨立的常數，跟這裡的門檻值互不牽動。
 
 # 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
 SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
@@ -151,10 +153,12 @@ NEAR_STOP_EXIT_M  = 60.0   # 距離 > 60m 才解除，形成 10m 遲滯緩衝，
 # 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有方向燈/接近停止線覆寫時使用。
 # 60~70 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
 # 避免車速在邊界附近小幅波動時頻繁切換。
-BASE_THROTTLE_LOW_SPEED_KPH  = 60.0   # 車速 <= 60 km/h -> 用較保守的 BASE_THROTTLE_LOW_SPEED_VALUE
-BASE_THROTTLE_HIGH_SPEED_KPH = 70.0   # 車速 >= 70 km/h -> 用較積極的 BASE_THROTTLE_HIGH_SPEED_VALUE
-BASE_THROTTLE_LOW_SPEED_VALUE  = 0.2
-BASE_THROTTLE_HIGH_SPEED_VALUE = 0.1
+# ⚠️ 以下四個常數彼此獨立，個別調整互不影響：車速門檻（KPH）決定「什麼時候切換」，
+# 節流值（VALUE）決定「切換後用多保守/多積極的門檻」，兩兩之間可以任意分開調整。
+BASE_THROTTLE_LOW_SPEED_KPH    = 50.0   # 車速 <= 這個值 -> 判定為低速，套用 BASE_THROTTLE_LOW_SPEED_VALUE
+BASE_THROTTLE_HIGH_SPEED_KPH   = 60.0   # 車速 >= 這個值 -> 判定為高速，套用 BASE_THROTTLE_HIGH_SPEED_VALUE
+BASE_THROTTLE_LOW_SPEED_VALUE  = 0.2    # 低速（<=50km/h）時使用的節流門檻，越低代表加速意願越積極
+BASE_THROTTLE_HIGH_SPEED_VALUE = 0.1    # 高速（>=60km/h）時使用的節流門檻，越低代表加速意願越積極
 
 
 class AEM:
