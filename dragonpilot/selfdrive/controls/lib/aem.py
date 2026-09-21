@@ -147,9 +147,9 @@ MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）�
 # ⚠️ 這一組只影響呼叫端的節流門檻選擇（near_stop_active 屬性），不影響 get_mode()
 # 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併，
 # 保持跟方向燈覆寫（會改變 mode）語意上的區隔。
-NEAR_STOP_ENTER_M = 50.0   # 距離 <= 50m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
+NEAR_STOP_ENTER_M = 40.0   # 距離 <= 40m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
                            # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
-NEAR_STOP_EXIT_M  = 60.0   # 距離 > 60m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
+NEAR_STOP_EXIT_M  = 50.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
 
 # 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有方向燈/接近停止線覆寫時使用。
 # 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
