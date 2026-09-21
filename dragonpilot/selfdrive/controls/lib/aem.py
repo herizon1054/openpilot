@@ -117,6 +117,12 @@ from openpilot.common.realtime import DT_MDL
 #   距離來源必須是 traffic_stop.py 算出來的 stop_dist_m（已經過 median+moving-average
 #   平滑與物理偏移修正），不是原始 model_msg.position.x，否則會繼承模型單幀跳動的雜訊。
 #   stop_dist_m 為 None（目前沒有主動停等）明確視為「不接近」，不可誤判為距離 0。
+#
+# v9 變更紀錄（相對於 v8 的功能新增）：
+#   新增「基礎節流門檻依車速動態切換」：車速 <= 60km/h 用較保守的 0.2，車速 >= 70km/h
+#   用較積極的 0.1，60~70km/h 為過渡帶維持前一狀態。透過 base_throttle_threshold 屬性
+#   暴露給呼叫端，取代原本寫死在 longitudinal_planner.py 裡的固定 0.2。跟 near_stop_active
+#   一樣只影響節流門檻，不寫進 get_mode()。
 
 # 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
 SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
@@ -141,6 +147,14 @@ MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）�
 NEAR_STOP_ENTER_M = 50.0   # 距離 <= 50m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
                            # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
 NEAR_STOP_EXIT_M  = 60.0   # 距離 > 60m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
+
+# 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有方向燈/接近停止線覆寫時使用。
+# 60~70 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
+# 避免車速在邊界附近小幅波動時頻繁切換。
+BASE_THROTTLE_LOW_SPEED_KPH  = 60.0   # 車速 <= 60 km/h -> 用較保守的 BASE_THROTTLE_LOW_SPEED_VALUE
+BASE_THROTTLE_HIGH_SPEED_KPH = 70.0   # 車速 >= 70 km/h -> 用較積極的 BASE_THROTTLE_HIGH_SPEED_VALUE
+BASE_THROTTLE_LOW_SPEED_VALUE  = 0.2
+BASE_THROTTLE_HIGH_SPEED_VALUE = 0.1
 
 
 class AEM:
@@ -167,6 +181,11 @@ class AEM:
     self._near_stop_pending = False
     self._near_stop_confirm_t = 0.0
 
+    # 基礎節流門檻的車速狀態（只影響節流門檻，不影響 get_mode()）
+    self._base_throttle_state = 'low'   # 'low' -> 0.2, 'high' -> 0.1
+    self._base_throttle_pending = self._base_throttle_state
+    self._base_throttle_confirm_t = 0.0
+
   @property
   def blinker_active(self):
     """目前是否處於方向燈覆寫（強制實驗模式）狀態，供呼叫端讀取（例如動態調整節流門檻）。"""
@@ -179,6 +198,14 @@ class AEM:
     ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP）。不影響 get_mode() 的 blended/acc 判斷。"""
     return self._near_stop_active
 
+  @property
+  def base_throttle_threshold(self):
+    """依車速動態決定的基礎節流門檻（車速 <= 60km/h 為 0.2，>= 70km/h 為 0.1，中間維持
+    前一狀態）。供呼叫端在沒有方向燈/接近停止線覆寫時使用；有覆寫時呼叫端應取兩者中
+    較保守（較高）的值，而不是直接覆蓋掉這個車速判斷。"""
+    return (BASE_THROTTLE_LOW_SPEED_VALUE if self._base_throttle_state == 'low'
+            else BASE_THROTTLE_HIGH_SPEED_VALUE)
+
   def update_states(self, model_msg, radar_msg, v_ego, blinker_on=False, stop_dist_m=None):
     yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
@@ -186,6 +213,7 @@ class AEM:
     self._update_curve_override(v_ego, yaw_rate)
     self._update_blinker_override(blinker_on)
     self._update_near_stop(stop_dist_m)
+    self._update_base_throttle(v_ego)
 
   def _update_speed_mode(self, v_ego):
     if v_ego <= SPEED_TO_EXPERIMENTAL:
@@ -258,6 +286,26 @@ class AEM:
     # 同樣不套用 MIN_DWELL_TIME_S：這只影響節流保守程度，沒有理由延遲生效或延遲解除
     if self._near_stop_pending != self._near_stop_active and self._near_stop_confirm_t >= CONFIRM_TIME_S:
       self._near_stop_active = self._near_stop_pending
+
+  def _update_base_throttle(self, v_ego):
+    v_kph = v_ego * 3.6
+    if v_kph <= BASE_THROTTLE_LOW_SPEED_KPH:
+      candidate = 'low'
+    elif v_kph >= BASE_THROTTLE_HIGH_SPEED_KPH:
+      candidate = 'high'
+    else:
+      candidate = self._base_throttle_state   # 60~70 km/h 過渡帶：維持前一狀態，不切換
+
+    if candidate == self._base_throttle_pending:
+      self._base_throttle_confirm_t += DT_MDL
+    else:
+      self._base_throttle_pending = candidate
+      self._base_throttle_confirm_t = 0.0
+
+    # 不套用 MIN_DWELL_TIME_S：這只影響節流保守程度（不像 mode 切換那樣需要避免頻繁
+    # 改變控制策略），沒有理由延遲生效或延遲解除
+    if self._base_throttle_pending != self._base_throttle_state and self._base_throttle_confirm_t >= CONFIRM_TIME_S:
+      self._base_throttle_state = self._base_throttle_pending
 
   def get_mode(self, mode):
     if self._curve_active:
