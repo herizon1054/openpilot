@@ -24,11 +24,11 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E = 0.1   # mode=='blended'(e2e) 使用，調低以提升加速意願
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.2   # mode=='blended'(e2e) 使用，調低以提升加速意願
 # mode=='blended' 且是由 AEM 的方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，
 # 動態把節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在轉彎/變換車道當下加速意願過高；
 # 非方向燈觸發的一般 blended（車速判斷的實驗模式）仍維持原本的 0.1，行為不變
-ALLOW_THROTTLE_THRESHOLD_E2E_TURN = 0.4
+ALLOW_THROTTLE_THRESHOLD_E2E_TURN = 0.5
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
