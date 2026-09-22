@@ -31,9 +31,6 @@ ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
 ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
-# mode=='blended' 且是由 AEM 方向燈覆寫觸發時使用：打燈變換車道/路口轉彎時，比接近停止線
-# 更保守（0.5，高於 ACC 的 0.4），因為轉彎/變換車道當下的風險判斷應該比單純接近停止線更嚴格
-ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER = 0.5
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
@@ -47,7 +44,10 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 # 一起套用在 allow_throttle 的判斷上，而不只是套用在「門檻該選哪個值」這件事上。
 # 用同一份 rlog 驗證：加上這兩個機制後，三份 log 的 allow_throttle 切換次數從
 # 22~34 次/分鐘降到 0~4 次/分鐘，降幅 88%~100%。
-THROTTLE_PROB_LPF_ALPHA = 0.2   # 濾除單幀雜訊尖峰，風格與 aem.py 的 LAT_ACCEL_LPF_ALPHA 一致，維持不變
+THROTTLE_PROB_LPF_ALPHA = 0.05   # 依需求調更強（原 0.2），讓濾波後的值更不容易掉，
+                                  # 加速時更不容易被單幀雜訊誤判成「該放油門」；
+                                  # 代價是追上一個新的、持續的訊號變化也會變慢
+                                  # （等效時間常數約 1 秒，原 0.2 約 0.22 秒）
 ALLOW_THROTTLE_HYSTERESIS = 0.15   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
                                     # 避免濾波後的值仍在門檻附近小幅擺盪時來回橫跳
 
@@ -132,9 +132,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       # 0.5 秒防彈跳，一幀的落差可忽略；若要完全同步，需把 update_targets() 提前到
       # 這裡之前呼叫，但那會牽動它目前使用 self.v_desired_filter.x/self.a_desired
       # （上一幀平滑值）作為輸入參數的既有設計，改動風險較高，這裡先不動。
-      blinker_on = sm['carState'].leftBlinker or sm['carState'].rightBlinker
+      # 方向燈覆寫（blinker_on）依需求已整段移除，AEM 不再需要方向燈這個輸入。
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
-                              blinker_on=blinker_on, stop_dist_m=self.traffic_stop.stop_dist_m)
+                              stop_dist_m=self.traffic_stop.stop_dist_m)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -170,15 +170,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
     if mode == 'blended':
-      # v9：基準門檻改由 AEM 依車速動態決定（<=60km/h 為 0.2，>=70km/h 為 0.1），
-      # AEM 未啟用時退回固定的 ALLOW_THROTTLE_THRESHOLD_E2E（0.2）當後備值。
-      # 方向燈跟接近停止線分開給不同保守程度的門檻（方向燈 0.5、接近停止線 0.4），
-      # 兩者同時成立時取較保守（較高）的那個，而不是固定順序，避免未來新增第三種
-      # 覆寫條件時還要重新排列 if/elif 的優先順序
+      # v9：基準門檻改由 AEM 依車速動態決定，AEM 未啟用時退回固定的
+      # ALLOW_THROTTLE_THRESHOLD_E2E（0.2）當後備值。
+      # 依需求取消方向燈對節流門檻的影響——方向燈仍會透過 aem.get_mode() 讓 AEM 強制
+      # 切為實驗模式，只是不再額外拉高這裡的節流門檻；接近停止線的覆寫維持不變。
       if dp_flags & DPFlags.AEM:
         allow_throttle_threshold = self.aem.base_throttle_threshold
-        if self.aem.blinker_active:
-          allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_BLINKER)
         if self.aem.near_stop_active:
           allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
       else:
