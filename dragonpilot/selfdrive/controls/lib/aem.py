@@ -32,21 +32,13 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      過彎保護在這台車上會完全失效且沒有任何錯誤訊息——已用實際路測 rlog 驗證
 #      carState.yawRate 全程恆為 0.0，而 modelV2.orientationRate.z[0] 全程有非零值，
 #      因此改用模型訊號，與 dtsc.py 的資料來源一致，可跨品牌使用。
-#   2. 方向燈覆寫：左/右方向燈任一啟動時，強制切為實驗模式 (blended)，且不受第 3 點的
-#      車速雙門檻限制（即使車速已經 >= 90 km/h 處於一般模式區間，打方向燈時依然強制
-#      切回實驗模式）。方向燈的優先權低於過彎保護：若當下已經因為側向 G 過大判定為
-#      過彎（第 1 點），即使同時打方向燈，仍維持一般模式，安全優先。
-#      方向燈訊號取自 carState.leftBlinker / rightBlinker，這是方向燈拉桿的持續狀態
-#      （不是實際燈泡閃爍的頻閃訊號，Toyota 上為 BLINKERS_STATE.TURN_SIGNALS == 1/2），
-#      本身已經是穩定的布林值，不會有頻閃雜訊，仍套用與其他條件一致的 CONFIRM_TIME_S
-#      防彈跳，但不受 MIN_DWELL_TIME_S 限制（打燈意圖應該立即反應，不應該被延遲）。
-#   3. 車速雙門檻 + 遲滯區間：
-#        v_ego <= SPEED_TO_EXPERIMENTAL (80 km/h) -> 切換為實驗模式 (blended)
-#        v_ego >= SPEED_TO_NORMAL       (90 km/h) -> 切換為一般模式 (acc)
-#      80~90 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
-#   4. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
-#      車速模式的切換另外要求距離上一次切換至少 MIN_DWELL_TIME_S 秒（過彎與方向燈的
-#      強制/解除不受此最短間隔限制，確保安全保護與駕駛意圖不會被延遲觸發）。
+#   2. 車速雙門檻 + 遲滯區間：
+#        v_ego <= SPEED_TO_EXPERIMENTAL (50 km/h) -> 切換為實驗模式 (blended)
+#        v_ego >= SPEED_TO_NORMAL       (60 km/h) -> 切換為一般模式 (acc)
+#      50~60 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
+#   3. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
+#      車速模式的切換另外要求距離上一次切換至少 MIN_DWELL_TIME_S 秒（過彎的強制/解除
+#      不受此最短間隔限制，確保安全保護不會被延遲觸發）。
 #      這是本次要求的「過渡」機制：避免感測雜訊或臨界值附近的抖動造成縱向目標
 #      （加速度）忽然跳動，導致突然減速或加速。
 #
@@ -101,11 +93,9 @@ from openpilot.common.realtime import DT_MDL
 #   減速度約 -1.0~-1.2，屬於中等彎道即切手，比 v3/v4 更早把控制權交給一般模式 + DTSC。
 #   解除門檻同步下修為 1.50 m/s²（≈0.15G），維持約 0.46 m/s² 的遲滯緩衝。
 #
-# v6 變更紀錄（相對於 v5 的功能新增）：
-#   新增方向燈覆寫：打方向燈時強制切為實驗模式，不受車速雙門檻限制，優先權低於過彎
-#   保護（見上方優先權第 2 點）。同時新增 blinker_active 唯讀屬性，供呼叫端（例如
-#   longitudinal_planner.py 動態調整 ALLOW_THROTTLE_THRESHOLD_E2E）讀取目前是否處於
-#   方向燈覆寫狀態，不需要重複實作一份判斷邏輯。
+# v6 曾新增方向燈覆寫（打方向燈強制切為實驗模式）與對應的節流門檻覆寫，依需求已
+# 於後續版本整段移除（含 blinker_on 參數、blinker_active 屬性），方向燈目前完全不影響
+# AEM 的判斷。
 #
 # v7 變更紀錄（相對於 v6 的功能新增）：
 #   新增「接近模型停止線」狀態：距離 <= 50m（含遲滯，60m 解除）時，near_stop_active
@@ -127,9 +117,9 @@ from openpilot.common.realtime import DT_MDL
 #   個別調整互不影響；longitudinal_planner.py 的 ALLOW_THROTTLE_THRESHOLD_E2E（AEM 停用
 #   時的後備值）也是完全獨立的常數，跟這裡的門檻值互不牽動。
 
-# 車速門檻（km/h 換算為 m/s），80~90 km/h 為遲滯 / 過渡帶
-SPEED_TO_EXPERIMENTAL = 80.0 / 3.6   # 車速 <= 80 km/h -> 切換為實驗模式 (blended)
-SPEED_TO_NORMAL       = 90.0 / 3.6   # 車速 >= 90 km/h -> 切換為一般模式 (acc)
+# 車速門檻（km/h 換算為 m/s），50~60 km/h 為遲滯 / 過渡帶
+SPEED_TO_EXPERIMENTAL = 50.0 / 3.6   # 車速 <= 50 km/h -> 切換為實驗模式 (blended)
+SPEED_TO_NORMAL       = 60.0 / 3.6   # 車速 >= 60 km/h -> 切換為一般模式 (acc)
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
@@ -145,14 +135,13 @@ MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）�
 
 # 距離模型停止線的節流保守化門檻（m），含遲滯避免臨界值抖動
 # ⚠️ 這一組只影響呼叫端的節流門檻選擇（near_stop_active 屬性），不影響 get_mode()
-# 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併，
-# 保持跟方向燈覆寫（會改變 mode）語意上的區隔。
+# 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併。
 NEAR_STOP_ENTER_M = 40.0   # 距離 <= 40m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
                            # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
 NEAR_STOP_EXIT_M  = 50.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
 
-# 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有方向燈/接近停止線覆寫時使用。
-# 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻（80/90）的設計，
+# 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有接近停止線覆寫時使用。
+# 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻的遲滯設計，
 # 避免車速在邊界附近小幅波動時頻繁切換。
 # ⚠️ 以下四個常數彼此獨立，個別調整互不影響：車速門檻（KPH）決定「什麼時候切換」，
 # 節流值（VALUE）決定「切換後用多保守/多積極的門檻」，兩兩之間可以任意分開調整。
@@ -176,11 +165,6 @@ class AEM:
     self._curve_confirm_t = 0.0
     self._lat_accel_filtered = 0.0
 
-    # 方向燈覆寫狀態
-    self._blinker_active = False
-    self._blinker_pending = False
-    self._blinker_confirm_t = 0.0
-
     # 接近停止線狀態（只影響節流門檻，不影響 get_mode()）
     self._near_stop_active = False
     self._near_stop_pending = False
@@ -192,11 +176,6 @@ class AEM:
     self._base_throttle_confirm_t = 0.0
 
   @property
-  def blinker_active(self):
-    """目前是否處於方向燈覆寫（強制實驗模式）狀態，供呼叫端讀取（例如動態調整節流門檻）。"""
-    return self._blinker_active
-
-  @property
   def near_stop_active(self):
     """目前是否處於「接近模型停止線」狀態（距離 <= 50m，含遲滯），供呼叫端讀取，
     用來決定是否改用較保守的節流門檻（longitudinal_planner.py 的
@@ -206,17 +185,16 @@ class AEM:
   @property
   def base_throttle_threshold(self):
     """依車速動態決定的基礎節流門檻（車速 <= 50km/h 為 0.2，>= 60km/h 為 0.1，中間維持
-    前一狀態）。供呼叫端在沒有方向燈/接近停止線覆寫時使用；有覆寫時呼叫端應取兩者中
+    前一狀態）。供呼叫端在沒有接近停止線覆寫時使用；有覆寫時呼叫端應取兩者中
     較保守（較高）的值，而不是直接覆蓋掉這個車速判斷。"""
     return (BASE_THROTTLE_LOW_SPEED_VALUE if self._base_throttle_state == 'low'
             else BASE_THROTTLE_HIGH_SPEED_VALUE)
 
-  def update_states(self, model_msg, radar_msg, v_ego, blinker_on=False, stop_dist_m=None):
+  def update_states(self, model_msg, radar_msg, v_ego, stop_dist_m=None):
     yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
     self._update_speed_mode(v_ego)
     self._update_curve_override(v_ego, yaw_rate)
-    self._update_blinker_override(blinker_on)
     self._update_near_stop(stop_dist_m)
     self._update_base_throttle(v_ego)
 
@@ -226,7 +204,7 @@ class AEM:
     elif v_ego >= SPEED_TO_NORMAL:
       candidate = 'normal'
     else:
-      candidate = self._speed_mode   # 80~90 km/h 過渡帶：維持前一狀態，不切換
+      candidate = self._speed_mode   # 50~60 km/h 過渡帶：維持前一狀態，不切換
 
     if candidate == self._speed_pending:
       self._speed_confirm_t += DT_MDL
@@ -257,20 +235,6 @@ class AEM:
 
     if self._curve_pending != self._curve_active and self._curve_confirm_t >= CONFIRM_TIME_S:
       self._curve_active = self._curve_pending
-
-  def _update_blinker_override(self, blinker_on):
-    candidate = bool(blinker_on)
-
-    if candidate == self._blinker_pending:
-      self._blinker_confirm_t += DT_MDL
-    else:
-      self._blinker_pending = candidate
-      self._blinker_confirm_t = 0.0
-
-    # 不套用 MIN_DWELL_TIME_S：打燈/收燈的意圖應該即時反應，不應該被車速邏輯的
-    # 最短維持時間卡住
-    if self._blinker_pending != self._blinker_active and self._blinker_confirm_t >= CONFIRM_TIME_S:
-      self._blinker_active = self._blinker_pending
 
   def _update_near_stop(self, stop_dist_m):
     # stop_dist_m 為 None 代表 traffic_stop 目前沒有主動停等中（功能關閉、或沒偵測到
@@ -315,6 +279,4 @@ class AEM:
   def get_mode(self, mode):
     if self._curve_active:
       return 'acc'
-    if self._blinker_active:
-      return 'blended'
     return 'blended' if self._speed_mode == 'experimental' else 'acc'
