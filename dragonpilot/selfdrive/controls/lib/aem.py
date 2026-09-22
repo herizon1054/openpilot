@@ -118,8 +118,8 @@ from openpilot.common.realtime import DT_MDL
 #   時的後備值）也是完全獨立的常數，跟這裡的門檻值互不牽動。
 
 # 車速門檻（km/h 換算為 m/s），50~60 km/h 為遲滯 / 過渡帶
-SPEED_TO_EXPERIMENTAL = 50.0 / 3.6   # 車速 <= 50 km/h -> 切換為實驗模式 (blended)
-SPEED_TO_NORMAL       = 60.0 / 3.6   # 車速 >= 60 km/h -> 切換為一般模式 (acc)
+SPEED_TO_EXPERIMENTAL = 60.0 / 3.6   # 車速 <= 50 km/h -> 切換為實驗模式 (blended)
+SPEED_TO_NORMAL       = 70.0 / 3.6   # 車速 >= 60 km/h -> 切換為一般模式 (acc)
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
