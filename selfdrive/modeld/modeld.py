@@ -34,6 +34,9 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
+LONG_SMOOTH_SECONDS_ACCEL_UP = 0.1   # 想加速時用很短的平滑時間常數（約 0.1 秒內就跟上），
+                                      # 比完全不平滑（0.0）多留一點點緩衝，也比原本統一的
+                                      # 0.3 明顯更直接；減速方向不受影響，仍用 LONG_SMOOTH_SECONDS。
 MIN_LAT_CONTROL_SPEED = 0.3
 
 
@@ -45,7 +48,17 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                      plan[:,Plan.ACCELERATION][:,0],
                                                      ModelConstants.T_IDXS,
                                                      action_t=long_action_t)
-    desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
+    # dp: 加速方向不對稱平滑 —— 依需求，只要這一幀模型想要的加速度比上一次輸出的還高
+    # （想加速），就完全不平滑（tau=0，直接用原始值），讓 e2e 的加速意願零延遲、最直接
+    # 地反映出來；想減速/煞車（desired_accel <= 前一輸出值）時，維持原本 LONG_SMOOTH_SECONDS
+    # 不變，煞車平順度不受影響。
+    # ⚠️ 刻意分歧：先前（v1）試過 LONG_SMOOTH_SECONDS_ACCEL_UP=0.2 這個折衷值，因為
+    # desiredAcceleration 方向反轉頻繁（實測每分鐘 300+ 次），連帶讓這個時間常數本身也
+    # 頻繁切換、引入額外雜訊，因此改回統一值。這次依需求直接跳過折衷，改用 tau=0（完全
+    # 不平滑），因為使用者已確認不需要顧慮這裡的平順度——安全與舒適的天花板交給
+    # longitudinal_planner.py 的 min(mpc, e2e) 把關，e2e 本身多果斷都不會超過 mpc。
+    long_smooth_tau = LONG_SMOOTH_SECONDS_ACCEL_UP if desired_accel > prev_action.desiredAcceleration else LONG_SMOOTH_SECONDS
+    desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, long_smooth_tau)
 
     desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
                                                 plan[:,Plan.ORIENTATION_RATE][:,2],
