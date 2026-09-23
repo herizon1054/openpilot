@@ -88,6 +88,44 @@ PERSISTENCE_RESCUE_TIER2_PROB_THRES = 0.3
 # （硬性要求視覺也要長時間可靠，會跟「視覺本來就不可靠、靠雷達補強」的設計初衷矛盾）。
 PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES = 3
 
+# dp(log 驗證修正 A): 上面的 3 幀確認，必須用「未濾波」的原始 leadsV3[i].prob 計數。
+# radard.py 傳進來的 lead_prob 已經過非對稱濾波（上升瞬間到位、下降 alpha=0.2），
+# 單幀 0.45 尖峰會被撐成 0.45→0.38→0.32，連續 3 幀 >0.3，確認形同虛設。
+# 門檻比較（lead_prob > current_prob_thres）仍沿用濾波後的值，行為與原本一致。
+
+# dp(修正 6): 靜止/慢速目標不參與持續性救援。判定標準與 _apply_slow_protection 相同：
+# 目標絕對速度 < max(1.0, DYNAMIC_SPEED_PCT * v_ego)。路邊違停、施工護欄、待轉機車
+# 屬於這類，交給原廠 low_speed_override 與正常 0.5 門檻處理。
+
+# dp(修正 7): 救援偵測距離下限。原本 v_kmh * 1.0，15~30 km/h 市區走走停停時只有 15~30m。
+PERSISTENCE_RESCUE_MIN_DIST = 20.0
+
+# dp(log 驗證修正 1b-v2): 橫向排除改為「無狀態」且必須同時滿足：
+#   (a) 落在本車預測路徑走廊外：|yRel - 路徑y(d)| > LANE_CORRIDOR_HALF_WIDTH，且
+#   (b) 與視覺前車不一致：橫向差 > LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN (2.0m)，
+#       或絕對速度差 > max(LANE_GATE_DV_MIN, LANE_GATE_DV_PCT * |視覺前車速度|)。
+# 7 段 log 統計（同一物體的雷達/視覺配對 344 組）：雷達與視覺的橫向差在 20~40m 有 20% 超過
+# 2.0m，所以不能只看視覺 y；舊版 1.5m 回歸門檻會把真前車永久鎖在出界狀態（92102 43.4s 起
+# 連續 2.8 秒、92104 26.8s 起停等中）。走廊內的目標一律不因視覺 y 不一致而排除。
+LANE_CORRIDOR_HALF_WIDTH = 1.75     # 半個車道寬 (m)
+# 近距離雷達橫向偏差補償：Toyota 雷達在近距離常打到車尾角落，log 實測 <10m 時雷達與視覺
+# 橫向差中位數約 1.0m（92104 26.8s 停等時，正前方 6m 的真前車 R1809 雷達 y≈-2.4m）。
+# 距離 <= 8m 走廊半寬加 1.0m，15m 以上不加，中間線性內插。
+LANE_CORRIDOR_NEAR_BP = [8.0, 15.0]
+LANE_CORRIDOR_NEAR_EXTRA = [1.0, 0.0]
+LANE_GATE_DV_MIN = 2.0              # m/s
+LANE_GATE_DV_PCT = 0.25
+
+# dp(修正 4): 模型路徑（modelV2.position）預測。車速低於此值時 position.x 會擠在 0 附近、
+# 不單調，退回原本的自行車模型。
+MODEL_PATH_MIN_SPEED = 3.0          # m/s
+MODEL_PATH_MIN_LENGTH = 5.0         # 模型路徑最短有效長度 (m)
+
+# dp(修正 5): fuzzy 距離容差隨距離放大。原本固定 [0.5, 1.5] m，視覺測距在中遠距離
+# 誤差常超過 1.5m，導致 EMA 與 valid_streak 在 ~30m 外無法累積。
+# 比照原廠 dist_sane 精神（25% 或 5m），但取較保守的比例。
+FUZZY_D_BOUNDS_PCT = [0.05, 0.12]   # 滿分 / 歸零 對應的距離比例
+
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
 # 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
@@ -122,7 +160,8 @@ class TrackDP(Track):
     super().__init__(identifier, v_lead, kalman_params)
     self.ema_confidence = {0: 0.4, 1: 0.4}
     self.holdover_frames = {0: 0, 1: 0}
-    self.is_out_of_lane = False
+    # dp(修正 1): 依 lead_idx 分開存。原本單一 bool 會被 leadOne/leadTwo 互相覆寫遲滯狀態。
+    self.is_out_of_lane = {0: False, 1: False}
     self.closing_speed_streak = {0: 0, 1: 0}   # dp: 連續幾幀符合「正在快速接近」
     self.valid_streak_frames = {0: 0, 1: 0}    # dp: 連續被判定為有效（含續命寬限期）的幀數
 
@@ -136,26 +175,29 @@ class TrackDP(Track):
       self.closing_speed_streak[lead_idx] = 0
     return self.closing_speed_streak[lead_idx] >= VEL_SANE_CONFIRM_FRAMES
 
-  def _check_spatial_boundaries(self, vision_y: float) -> bool:
-    left_bound = vision_y + LANE_WIDTH_FALLBACK
-    right_bound = vision_y - LANE_WIDTH_FALLBACK
-    current_y = self.yRel
+  def _update_lane_gate(self, lead_idx: int, vision_y: float, vision_v: float, v_ego: float, path_y: float) -> bool:
+    # dp(修正 1b-v2): 無狀態橫向排除，取代原本 _check_spatial_boundaries() 的遲滯鎖存。
+    # 原本的遲滯邏輯實際上從未生效（>2.0m 時提早 return，跳過了設定出界的程式），
+    # 補上之後又因 1.5m 回歸門檻，讓雷達/視覺橫向偏差 1.5~2.0m 的真前車被永久鎖在出界。
+    # 單幀誤判由 get_lead_ext 的 SELECT_HOLDOVER_FRAMES 續命銜接。
+    corridor_half = LANE_CORRIDOR_HALF_WIDTH + float(np.interp(self.dRel, LANE_CORRIDOR_NEAR_BP, LANE_CORRIDOR_NEAR_EXTRA))
+    outside_corridor = abs(self.yRel - path_y) > corridor_half
+    lateral_mismatch = abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
+    speed_mismatch = abs((self.vRel + v_ego) - vision_v) > max(LANE_GATE_DV_MIN, LANE_GATE_DV_PCT * abs(vision_v))
+    self.is_out_of_lane[lead_idx] = outside_corridor and (lateral_mismatch or speed_mismatch)
+    return self.is_out_of_lane[lead_idx]
 
-    if not self.is_out_of_lane:
-      if current_y > (left_bound + LANE_HYSTERESIS_MARGIN) or current_y < (right_bound - LANE_HYSTERESIS_MARGIN):
-        self.is_out_of_lane = True
-    else:
-      if right_bound <= current_y <= left_bound:
-        self.is_out_of_lane = False
-
-    return not self.is_out_of_lane
+  def is_slow_or_stationary(self, v_ego: float) -> bool:
+    return abs(self.vRel + v_ego) < max(1.0, DYNAMIC_SPEED_PCT * v_ego)
 
   def _calculate_fuzzy_score(self, offset_vision_dist: float, vision_y: float, vision_v: float, v_ego: float, lead_idx: int) -> float:
     err_d = abs(self.dRel - offset_vision_dist)
     err_y = abs(self.yRel - vision_y)
     err_v = abs((self.vRel + v_ego) - vision_v)
 
-    score_d = float(np.interp(err_d, FUZZY_BOUNDS, [1.0, 0.0]))
+    d_bounds = [max(FUZZY_BOUNDS[0], FUZZY_D_BOUNDS_PCT[0] * offset_vision_dist),
+                max(FUZZY_BOUNDS[1], FUZZY_D_BOUNDS_PCT[1] * offset_vision_dist)]
+    score_d = float(np.interp(err_d, d_bounds, [1.0, 0.0]))
     score_y = float(np.interp(err_y, FUZZY_BOUNDS, [1.0, 0.0]))
     score_v = float(np.interp(err_v, FUZZY_BOUNDS, [1.0, 0.0]))
 
@@ -188,7 +230,8 @@ class TrackDP(Track):
 
     return current_ema
 
-  def process_track_logic(self, lead_idx: int, lead_msg: capnp._DynamicStructReader, v_ego: float, lead_prob: float, is_turning: bool = False):
+  def process_track_logic(self, lead_idx: int, lead_msg: capnp._DynamicStructReader, v_ego: float, lead_prob: float, is_turning: bool = False,
+                          path_y: float = 0.0):
     offset_vision_dist = lead_msg.x[0] - RADAR_TO_CAMERA
     vision_y = -lead_msg.y[0]
     vision_v = lead_msg.v[0]
@@ -196,13 +239,18 @@ class TrackDP(Track):
     # dp: 「必須真實量測」這道門檻改成只在轉彎時生效——
     # 轉彎時保留保護，避免旁側車道目標因外推值誤判成切入本車道；
     # 直行/巡航時放行，避免正常雷達漏拍拖慢插隊車輛的信心度累積、反應變慢半拍。
-    is_invalid = (is_turning and not self.measured) or abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
-    
+    #
+    # dp(log 驗證修正 1b-v2): 原本 is_out_of_lane 從未被設為 True（見 _update_lane_gate 說明），
+    # valid_tracks 的橫向過濾等於不存在。log 實證：92216 55.0s 車速 46 km/h，右車道線外
+    # 1.1~1.9m、80m 處的靜止物被選為前車；92101 22.1s 右側 5~7m 的靜止物被選為前車。
+    is_out = self._update_lane_gate(lead_idx, vision_y, vision_v, v_ego, path_y)
+    is_lateral_far = abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
+    is_invalid = (is_turning and not self.measured) or is_lateral_far or is_out
+
     fuzzy_score = 0.0
     if not is_invalid:
-      is_valid_spatial = self._check_spatial_boundaries(vision_y)
       fuzzy_score = self._calculate_fuzzy_score(offset_vision_dist, vision_y, vision_v, v_ego, lead_idx)
-      is_invalid = not is_valid_spatial or fuzzy_score == 0.0
+      is_invalid = fuzzy_score == 0.0
 
     if is_invalid:
       if self.holdover_frames[lead_idx] > 0:
@@ -238,6 +286,9 @@ def get_lead_ext(
   steer_ratio: float = 15.0,
   wheelbase: float = 2.7,
   low_speed_override: bool = True,
+  raw_lead_prob: float | None = None,
+  path_x: list[float] | None = None,
+  path_y: list[float] | None = None,
 ) -> dict[str, Any]:
   """
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
@@ -250,11 +301,30 @@ def get_lead_ext(
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
 
+  # dp(修正 4): 優先使用模型規劃路徑（modelV2.position；模型座標 y 向右為正，取負號
+  # 轉成 radar 座標 y 向左為正；x 由攝影機起算，故以 dRel + RADAR_TO_CAMERA 查表）。
+  # 模型路徑能預見前方彎道，彎道入口「車頭還直、路已經在彎」時不會把彎道外側的
+  # 路邊物體框進走廊。低速或路徑無效時退回原本的自行車模型。
+  use_model_path = False
+  px = py = None
+  if path_x is not None and path_y is not None and len(path_x) >= 2 and len(path_x) == len(path_y):
+    px = np.asarray(path_x, dtype=float)
+    py = np.asarray(path_y, dtype=float)
+    if v_ego > MODEL_PATH_MIN_SPEED and bool(np.all(np.diff(px) > 0)) and (px[-1] - px[0]) > MODEL_PATH_MIN_LENGTH:
+      use_model_path = True
+
+  def _path_y_at(d: float) -> float:
+    # 走廊中心：模型路徑有效時用模型路徑，否則假設直行（低速/停等/路口大角度轉彎時，
+    # 自行車模型的二次外推會失真，不適合拿來做排除）。
+    if use_model_path:
+      return -float(np.interp(d + RADAR_TO_CAMERA, px, py))
+    return 0.0
+
   if ready:
     for track in tracks.values():
-      track.process_track_logic(lead_idx, lead_msg, v_ego, lead_prob, is_turning)
+      track.process_track_logic(lead_idx, lead_msg, v_ego, lead_prob, is_turning, path_y=_path_y_at(track.dRel))
 
-  valid_tracks = {k: v for k, v in tracks.items() if not v.is_out_of_lane and v.ema_confidence[lead_idx] > 0.0}
+  valid_tracks = {k: v for k, v in tracks.items() if not v.is_out_of_lane[lead_idx] and v.ema_confidence[lead_idx] > 0.0}
 
   if len(valid_tracks) > 0:
     max_ema_confidence = max(track.ema_confidence[lead_idx] for track in valid_tracks.values())
@@ -270,14 +340,18 @@ def get_lead_ext(
   # dp: 視覺機率連續維持在對應門檻之上的幀數，只需短暫確認（見下方 PROB_CONFIRM_FRAMES），
   # 不用跟雷達的持續秒數一樣長。
   rescue_cache = _LEAD_STATE_CACHE[lead_idx]
-  rescue_cache['prob_tier1_frames'] = rescue_cache['prob_tier1_frames'] + 1 if lead_prob > PERSISTENCE_RESCUE_TIER1_PROB_THRES else 0
-  rescue_cache['prob_tier2_frames'] = rescue_cache['prob_tier2_frames'] + 1 if lead_prob > PERSISTENCE_RESCUE_TIER2_PROB_THRES else 0
+  # dp(修正 A): 用原始機率計數（見 PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES 下方說明）
+  confirm_prob = lead_prob if raw_lead_prob is None else raw_lead_prob
+  rescue_cache['prob_tier1_frames'] = rescue_cache['prob_tier1_frames'] + 1 if confirm_prob > PERSISTENCE_RESCUE_TIER1_PROB_THRES else 0
+  rescue_cache['prob_tier2_frames'] = rescue_cache['prob_tier2_frames'] + 1 if confirm_prob > PERSISTENCE_RESCUE_TIER2_PROB_THRES else 0
 
   # dp: 最長偵測距離隨車速動態放大——車速越快，需要救援機制涵蓋的距離越遠
   # （高速時同樣的物理距離，留給反應的時間更短），車速 10km/h 對應 10m，
   # 100km/h 以上封頂在 PERSISTENCE_RESCUE_MAX_DIST_CAP（100m）。
   v_ego_kmh = v_ego * 3.6
-  base_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH)
+  # dp(修正 7): 加上 PERSISTENCE_RESCUE_MIN_DIST 下限
+  base_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP,
+                      max(PERSISTENCE_RESCUE_MIN_DIST, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH))
 
   # dp: 路徑預測——用自行車模型從方向盤角度反推路徑曲率，算出每個雷達目標所在
   # 距離上，預測路徑應該落在哪個橫向位置，取代原本單純假設「直線、車道中心」
@@ -291,7 +365,9 @@ def get_lead_ext(
   # dp: 用同一個曲率，反推「預測路徑偏移超過半個車道寬之前，這個距離都還算可信」
   # 的距離上限——用實際幾何算出來，取代原本隨角度線性遞減的粗略估計。彎道越急
   # （曲率越大），這個距離上限自然越短；完全直行（curvature≈0）時不受此限制。
-  if abs(curvature) > 1e-6:
+  if use_model_path:
+    persistence_rescue_max_dist = min(base_max_dist, float(px[-1] - RADAR_TO_CAMERA))
+  elif abs(curvature) > 1e-6:
     curvature_max_dist = math.sqrt(2 * PERSISTENCE_RESCUE_MAX_LATERAL_DEVIATION / abs(curvature))
     persistence_rescue_max_dist = min(base_max_dist, curvature_max_dist)
   else:
@@ -307,7 +383,13 @@ def get_lead_ext(
   for track in valid_tracks.values():
     if track.dRel > persistence_rescue_max_dist:
       continue
-    predicted_y = curvature * (track.dRel ** 2) / 2.0
+    # dp(修正 6): 靜止/慢速目標不參與救援
+    if track.is_slow_or_stationary(v_ego):
+      continue
+    if use_model_path:
+      predicted_y = _path_y_at(track.dRel)
+    else:
+      predicted_y = curvature * (track.dRel ** 2) / 2.0
     if abs(track.yRel - predicted_y) <= PERSISTENCE_RESCUE_MAX_YREL:
       eligible_streaks.append(track.valid_streak_frames[lead_idx])
   best_streak = max(eligible_streaks, default=0)
