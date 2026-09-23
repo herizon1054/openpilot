@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import capnp
-import math
 import numpy as np
 from typing import Any
 from cereal import messaging, car
@@ -58,47 +57,33 @@ VEL_SANE_FALLBACK_SPEED = 3.0       # 原廠門檻：接近速度 (v_ego + vRel)
 VEL_SANE_CONFIRM_FRAMES = 3         # 需連續幾幀都符合才真正啟用寬鬆備援
 VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全比照原廠「視為合理」的語意
 
-# dp: 持續性救援 —— 目標連續被判定為有效（valid_streak_frames，容忍續命寬限期內
-# 的短暫失效，不因單幀漏拍就中斷），即使信心度（ema_confidence）因為幾何比對品質
-# 普通、一直停在初始值附近沒有爬高，持續時間本身也視為證據，門檻依持續時間分級放寬
-# （見下方兩段式門檻）。以下四個條件先框定啟用範圍：
-PERSISTENCE_RESCUE_MAX_ANGLE = 25.0  # 方向盤角度需在 ±此值以內才啟用；25 度對應時速 40 左右常見彎道
-                                      # 的估計角度，遠低於市區路口轉彎所需角度（170 度以上），確保真正
-                                      # 轉彎時機制一定關閉，同時不會讓一般彎道就整個失效。
-PERSISTENCE_RESCUE_MAX_DIST_CAP = 100.0  # 最長偵測距離上限 (m)，車速達到/超過對應值後不再繼續放大
-PERSISTENCE_RESCUE_DIST_PER_KMH = 1.0    # 每 1 km/h 車速對應 1 公尺偵測距離（車速 10km/h→10m，100km/h→100m 封頂）
-PERSISTENCE_RESCUE_MAX_LATERAL_DEVIATION = 1.75  # 半個車道寬度 (m)，用曲率反推「預測路徑偏移這麼多之前，
-                                                  # 距離都算可信」的距離上限，取代原本隨手訂的線性遞減
-PERSISTENCE_RESCUE_MAX_YREL = 1.0    # 車道中心左右各 1 公尺，超出此範圍視為非本車道目標，不啟用救援
-
-# dp: 兩段式持續性救援 —— 雷達持續偵測（valid_streak_frames）越久，容許的視覺信心度
-# 門檻越寬鬆，分兩級漸進，不是一次到位：
-#   持續 1.0 秒 → 門檻最多放寬到 0.4
-#   持續 2.0 秒 → 門檻最多放寬到 0.3（PROB_THRES_RANGE 裡最寬鬆的一端）
-PERSISTENCE_RESCUE_TIER1_SEC = 1.0
-PERSISTENCE_RESCUE_TIER1_FRAMES = int(PERSISTENCE_RESCUE_TIER1_SEC / DT_MDL)
-PERSISTENCE_RESCUE_TIER1_PROB_THRES = 0.4
-
-PERSISTENCE_RESCUE_TIER2_SEC = 2.0
-PERSISTENCE_RESCUE_TIER2_FRAMES = int(PERSISTENCE_RESCUE_TIER2_SEC / DT_MDL)
-PERSISTENCE_RESCUE_TIER2_PROB_THRES = 0.3
-
-# dp: 視覺機率不用跟雷達秒數掛勾——雷達的持續時間本身就是「這是真實物體」的證據，
-# 視覺只需要短暫確認幾幀，排除單幀雜訊尖峰即可，不需要也撐滿跟雷達一樣長的時間
-# （硬性要求視覺也要長時間可靠，會跟「視覺本來就不可靠、靠雷達補強」的設計初衷矛盾）。
-PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES = 3
-
-# dp(log 驗證修正 A): 上面的 3 幀確認，必須用「未濾波」的原始 leadsV3[i].prob 計數。
-# radard.py 傳進來的 lead_prob 已經過非對稱濾波（上升瞬間到位、下降 alpha=0.2），
-# 單幀 0.45 尖峰會被撐成 0.45→0.38→0.32，連續 3 幀 >0.3，確認形同虛設。
-# 門檻比較（lead_prob > current_prob_thres）仍沿用濾波後的值，行為與原本一致。
-
-# dp(修正 6): 靜止/慢速目標不參與持續性救援。判定標準與 _apply_slow_protection 相同：
-# 目標絕對速度 < max(1.0, DYNAMIC_SPEED_PCT * v_ego)。路邊違停、施工護欄、待轉機車
-# 屬於這類，交給原廠 low_speed_override 與正常 0.5 門檻處理。
-
-# dp(修正 7): 救援偵測距離下限。原本 v_kmh * 1.0，15~30 km/h 市區走走停停時只有 15~30m。
-PERSISTENCE_RESCUE_MIN_DIST = 20.0
+# dp: 雷達主導救援（取代原本的兩段式持續性救援）
+# 原本的救援用 valid_streak_frames（雷達與視覺吻合的連續幀數）當證據，並把門檻降到 0.4/0.3，
+# 但持續計數本身依賴視覺位置吻合，視覺一不可靠就先中斷。10 段 log 重播中，因救援而
+# 改變的前車選擇累計 0 幀。改為以「雷達本身的穩定性」當證據：
+#   一個雷達目標連續 RADAR_RESCUE_CONFIRM_FRAMES 幀同時滿足下列條件，即成為救援候選：
+#     - 真實量測（measured）
+#     - 向前移動：絕對速度 > max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego)，
+#       排除靜止物（路邊違停、護欄、ETC 門架）與對向來車
+#     - 位在模型路徑走廊內：|yRel - 模型路徑y(d)| < RADAR_RESCUE_CORRIDOR
+#     - 距離在 [RADAR_RESCUE_MIN_DIST, RADAR_RESCUE_MAX_DIST]
+#     - 方向盤角度 < RADAR_RESCUE_MAX_ANGLE（路口轉彎時關閉）
+#     - 模型路徑有效（車速 > MODEL_PATH_MIN_SPEED）
+#   任一幀不符合即歸零重新計數。
+# 採用條件（僅 leadOne）：
+#     - 視覺信心度 lead_prob >= RADAR_RESCUE_MIN_PROB（總視覺信心度門檻下限）
+#     - 目前沒有前車，或救援候選比現有前車更近
+# 10 段 log（走廊 ±1.0m）：純雷達規則觸發時，未曾落在車道線外 0.5m 以上的目標；
+# 92104 14.5s（88m 外 21 km/h 慢車，視覺 0.2~0.3）與 92102 33.6s（92m 外 16 km/h，
+# 視覺 0.14）為原邏輯遺漏、此規則可補回的本車道慢車。
+RADAR_RESCUE_MIN_PROB = 0.1         # 總視覺信心度門檻下限
+RADAR_RESCUE_CORRIDOR = 1.0         # 模型路徑左右各 1.0m
+RADAR_RESCUE_CONFIRM_FRAMES = int(1.0 / DT_MDL)   # 連續 1 秒
+RADAR_RESCUE_MIN_DIST = 5.0
+RADAR_RESCUE_MAX_DIST = 120.0
+RADAR_RESCUE_MIN_SPEED = 3.0        # m/s
+RADAR_RESCUE_MIN_SPEED_PCT = 0.2
+RADAR_RESCUE_MAX_ANGLE = 25.0       # deg
 
 # dp(log 驗證修正 1b-v2): 橫向排除改為「無狀態」且必須同時滿足：
 #   (a) 落在本車預測路徑走廊外：|yRel - 路徑y(d)| > LANE_CORRIDOR_HALF_WIDTH，且
@@ -122,18 +107,16 @@ MODEL_PATH_MIN_SPEED = 3.0          # m/s
 MODEL_PATH_MIN_LENGTH = 5.0         # 模型路徑最短有效長度 (m)
 
 # dp(修正 5): fuzzy 距離容差隨距離放大。原本固定 [0.5, 1.5] m，視覺測距在中遠距離
-# 誤差常超過 1.5m，導致 EMA 與 valid_streak 在 ~30m 外無法累積。
+# 誤差常超過 1.5m，導致 EMA 在 ~30m 外無法累積。
 # 比照原廠 dist_sane 精神（25% 或 5m），但取較保守的比例。
 FUZZY_D_BOUNDS_PCT = [0.05, 0.12]   # 滿分 / 歸零 對應的距離比例
 
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
 # 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
-# 另外加上 prob_tier1_frames/prob_tier2_frames：視覺機率連續維持在對應門檻之上
-# 的幀數，只需連續 PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES 幀即可，不用跟雷達秒數一樣長。
 _LEAD_STATE_CACHE = {
-    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'prob_tier1_frames': 0, 'prob_tier2_frames': 0},
-    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'prob_tier1_frames': 0, 'prob_tier2_frames': 0}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False}
 }
 MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
@@ -163,7 +146,7 @@ class TrackDP(Track):
     # dp(修正 1): 依 lead_idx 分開存。原本單一 bool 會被 leadOne/leadTwo 互相覆寫遲滯狀態。
     self.is_out_of_lane = {0: False, 1: False}
     self.closing_speed_streak = {0: 0, 1: 0}   # dp: 連續幾幀符合「正在快速接近」
-    self.valid_streak_frames = {0: 0, 1: 0}    # dp: 連續被判定為有效（含續命寬限期）的幀數
+    self.radar_rescue_frames = 0               # dp: 連續符合雷達主導救援條件的幀數（與 lead_idx 無關）
 
   def _check_closing_speed_fallback(self, lead_idx: int, v_ego: float) -> bool:
     # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件，但要求連續 N 幀都成立
@@ -187,8 +170,14 @@ class TrackDP(Track):
     self.is_out_of_lane[lead_idx] = outside_corridor and (lateral_mismatch or speed_mismatch)
     return self.is_out_of_lane[lead_idx]
 
-  def is_slow_or_stationary(self, v_ego: float) -> bool:
-    return abs(self.vRel + v_ego) < max(1.0, DYNAMIC_SPEED_PCT * v_ego)
+  def update_radar_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float) -> None:
+    # dp: 每幀呼叫一次（只在 leadOne 那次呼叫時更新，避免一幀累加兩次）
+    eligible = (path_valid and bool(self.measured) and
+                RADAR_RESCUE_MIN_DIST < self.dRel < RADAR_RESCUE_MAX_DIST and
+                abs(self.yRel - path_y) < RADAR_RESCUE_CORRIDOR and
+                (self.vRel + v_ego) > max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego) and
+                abs(steering_angle_deg) < RADAR_RESCUE_MAX_ANGLE)
+    self.radar_rescue_frames = self.radar_rescue_frames + 1 if eligible else 0
 
   def _calculate_fuzzy_score(self, offset_vision_dist: float, vision_y: float, vision_v: float, v_ego: float, lead_idx: int) -> float:
     err_d = abs(self.dRel - offset_vision_dist)
@@ -255,14 +244,12 @@ class TrackDP(Track):
     if is_invalid:
       if self.holdover_frames[lead_idx] > 0:
         self.holdover_frames[lead_idx] -= 1
-        return   # 續命寬限期內的短暫失效，視為連續的一部分，不中斷 valid_streak_frames
+        return   # 續命寬限期內的短暫失效，EMA 維持不變
       else:
         self.ema_confidence[lead_idx] = ALPHA_DOWN * 0.0 + (1 - ALPHA_DOWN) * self.ema_confidence[lead_idx]
-        self.valid_streak_frames[lead_idx] = 0   # 寬限期已用盡，真正失效，連續紀錄歸零
         return
 
     self.holdover_frames[lead_idx] = RELEASE_FRAMES
-    self.valid_streak_frames[lead_idx] += 1
 
     final_alpha_up = self._calculate_threat_multipliers(v_ego)
     target_ema = fuzzy_score
@@ -286,7 +273,6 @@ def get_lead_ext(
   steer_ratio: float = 15.0,
   wheelbase: float = 2.7,
   low_speed_override: bool = True,
-  raw_lead_prob: float | None = None,
   path_x: list[float] | None = None,
   path_y: list[float] | None = None,
 ) -> dict[str, Any]:
@@ -294,9 +280,9 @@ def get_lead_ext(
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
   新增 is_turning：由 radard.py 依方向盤角度/角速度判斷是否正在轉彎，
   轉出去給 process_track_logic 決定是否要求「必須真實量測」。
-  新增 steering_angle_deg/steer_ratio/wheelbase：用自行車模型從方向盤角度反推
-  路徑曲率，供「持續性救援」判斷目標是否落在預測路徑走廊內，並讓角度越大、
-  偵測距離連續縮短，取代原本單純的角度二元開關。
+  steering_angle_deg：雷達主導救援的方向盤角度開關。
+  steer_ratio/wheelbase：原本供自行車模型路徑預測使用，已改用模型路徑（path_x/path_y），
+  目前未使用，保留參數僅為維持 radard.py 的呼叫介面。
   """
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
@@ -304,7 +290,7 @@ def get_lead_ext(
   # dp(修正 4): 優先使用模型規劃路徑（modelV2.position；模型座標 y 向右為正，取負號
   # 轉成 radar 座標 y 向左為正；x 由攝影機起算，故以 dRel + RADAR_TO_CAMERA 查表）。
   # 模型路徑能預見前方彎道，彎道入口「車頭還直、路已經在彎」時不會把彎道外側的
-  # 路邊物體框進走廊。低速或路徑無效時退回原本的自行車模型。
+  # 路邊物體框進走廊。低速或路徑無效時，橫向閘門假設直行，雷達主導救援則停用。
   use_model_path = False
   px = py = None
   if path_x is not None and path_y is not None and len(path_x) >= 2 and len(path_x) == len(path_y):
@@ -329,106 +315,89 @@ def get_lead_ext(
   if len(valid_tracks) > 0:
     max_ema_confidence = max(track.ema_confidence[lead_idx] for track in valid_tracks.values())
 
-  # dp: 兩段式持續性救援——找出符合「距離在範圍內、橫向在車道中心 ±範圍內」的
-  # valid track 裡，持續有效幀數最長的一個，依它的持續時間套用對應的寬鬆門檻。
-  # 方向盤角度超標（正在轉彎）時整段不啟用。
   normal_thres = float(np.interp(max_ema_confidence, EMA_VAL_RANGE, PROB_THRES_RANGE))
-  current_prob_thres = normal_thres
-  is_persistent = False
-  best_streak = 0
+  current_prob_thres = normal_thres   # 總視覺信心度門檻（雷達主導救援生效時會同步降到 RADAR_RESCUE_MIN_PROB）
 
-  # dp: 視覺機率連續維持在對應門檻之上的幀數，只需短暫確認（見下方 PROB_CONFIRM_FRAMES），
-  # 不用跟雷達的持續秒數一樣長。
-  rescue_cache = _LEAD_STATE_CACHE[lead_idx]
-  # dp(修正 A): 用原始機率計數（見 PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES 下方說明）
-  confirm_prob = lead_prob if raw_lead_prob is None else raw_lead_prob
-  rescue_cache['prob_tier1_frames'] = rescue_cache['prob_tier1_frames'] + 1 if confirm_prob > PERSISTENCE_RESCUE_TIER1_PROB_THRES else 0
-  rescue_cache['prob_tier2_frames'] = rescue_cache['prob_tier2_frames'] + 1 if confirm_prob > PERSISTENCE_RESCUE_TIER2_PROB_THRES else 0
+  # dp: 雷達主導救援——只處理 leadOne，每幀更新一次所有雷達目標的連續幀數
+  rescue_track = None
+  if lead_idx == 0:
+    for track in tracks.values():
+      track.update_radar_rescue(v_ego, use_model_path, _path_y_at(track.dRel), steering_angle_deg)
+    rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
+    if ready and lead_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
+      rescue_track = min(rescue_candidates, key=lambda t: t.dRel)
 
-  # dp: 最長偵測距離隨車速動態放大——車速越快，需要救援機制涵蓋的距離越遠
-  # （高速時同樣的物理距離，留給反應的時間更短），車速 10km/h 對應 10m，
-  # 100km/h 以上封頂在 PERSISTENCE_RESCUE_MAX_DIST_CAP（100m）。
-  v_ego_kmh = v_ego * 3.6
-  # dp(修正 7): 加上 PERSISTENCE_RESCUE_MIN_DIST 下限
-  base_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP,
-                      max(PERSISTENCE_RESCUE_MIN_DIST, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH))
-
-  # dp: 路徑預測——用自行車模型從方向盤角度反推路徑曲率，算出每個雷達目標所在
-  # 距離上，預測路徑應該落在哪個橫向位置，取代原本單純假設「直線、車道中心」
-  # 的固定 ±PERSISTENCE_RESCUE_MAX_YREL 判斷。直行時 predicted_y≈0，效果跟原本
-  # 一樣；彎道時預測路徑會跟著彎，判斷更準確。
-  if steer_ratio > 0 and wheelbase > 0:
-    curvature = math.tan(math.radians(steering_angle_deg) / steer_ratio) / wheelbase
-  else:
-    curvature = 0.0
-
-  # dp: 用同一個曲率，反推「預測路徑偏移超過半個車道寬之前，這個距離都還算可信」
-  # 的距離上限——用實際幾何算出來，取代原本隨角度線性遞減的粗略估計。彎道越急
-  # （曲率越大），這個距離上限自然越短；完全直行（curvature≈0）時不受此限制。
-  if use_model_path:
-    persistence_rescue_max_dist = min(base_max_dist, float(px[-1] - RADAR_TO_CAMERA))
-  elif abs(curvature) > 1e-6:
-    curvature_max_dist = math.sqrt(2 * PERSISTENCE_RESCUE_MAX_LATERAL_DEVIATION / abs(curvature))
-    persistence_rescue_max_dist = min(base_max_dist, curvature_max_dist)
-  else:
-    persistence_rescue_max_dist = base_max_dist
-
-  # dp: 角度硬性開關——超過 PERSISTENCE_RESCUE_MAX_ANGLE（25 度）代表已經是真正的
-  # 轉彎/路口動作，不是一般彎道，直接把距離歸零，確保機制完全關閉，不只依賴
-  # 曲率公式自然收斂（曲率公式本身即使角度很大也不會真的算出 0）。
-  if abs(steering_angle_deg) >= PERSISTENCE_RESCUE_MAX_ANGLE:
-    persistence_rescue_max_dist = 0.0
-
-  eligible_streaks = []
-  for track in valid_tracks.values():
-    if track.dRel > persistence_rescue_max_dist:
-      continue
-    # dp(修正 6): 靜止/慢速目標不參與救援
-    if track.is_slow_or_stationary(v_ego):
-      continue
-    if use_model_path:
-      predicted_y = _path_y_at(track.dRel)
-    else:
-      predicted_y = curvature * (track.dRel ** 2) / 2.0
-    if abs(track.yRel - predicted_y) <= PERSISTENCE_RESCUE_MAX_YREL:
-      eligible_streaks.append(track.valid_streak_frames[lead_idx])
-  best_streak = max(eligible_streaks, default=0)
-
-  if (best_streak >= PERSISTENCE_RESCUE_TIER2_FRAMES and
-      rescue_cache['prob_tier2_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
-    current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER2_PROB_THRES)
-    is_persistent = True
-  elif (best_streak >= PERSISTENCE_RESCUE_TIER1_FRAMES and
-        rescue_cache['prob_tier1_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
-    current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER1_PROB_THRES)
-    is_persistent = True
-
-  if is_persistent and normal_thres > current_prob_thres and normal_thres >= lead_prob > current_prob_thres:
-    cloudlog.debug(
-      f"[RadarD_Persistence_DP] 持續性救援啟用！目標 {lead_idx} | "
-      f"信心度: {max_ema_confidence:.2f} | 相機機率: {lead_prob:.2f} | 雷達持續幀數: {best_streak} | "
-      f"視覺維持幀數(tier1/tier2): {rescue_cache['prob_tier1_frames']}/{rescue_cache['prob_tier2_frames']} "
-      f"(原門檻: {normal_thres:.2f} → 救援後: {current_prob_thres:.2f})"
-    )
-
-
-  selected_track = None
+  matched_track = None
   if len(valid_tracks) > 0 and ready and lead_prob > current_prob_thres:
-    selected_track = match_vision_to_track(v_ego, lead_msg, valid_tracks)
+    matched_track = match_vision_to_track(v_ego, lead_msg, valid_tracks)
 
   # 狀態機記憶：還原 Candy 版的殭屍物件強制續命邏輯 (直接快取物件)
+  # dp: 先判斷「這一幀若沒有配對成功，是否會由續命沿用上一個目標」，讓雷達主導救援能拿
+  # 「現有前車」做距離比較。cache['rescue'] 標記快取中的目標是否來自雷達主導救援。
   cache = _LEAD_STATE_CACHE[lead_idx]
-  if selected_track is not None:
-    cache['track'] = selected_track
+  held_track = None
+  if matched_track is None and cache['track'] is not None and cache['absent'] + 1 <= SELECT_HOLDOVER_FRAMES:
+    held_track = cache['track']
+  held_is_rescue = held_track is not None and cache['rescue']
+
+  # 純視覺後備前車候選：門檻刻意維持 normal_thres（最低 0.3），不跟著雷達主導救援降到 0.1。
+  # 0.1 只允許用在「雷達已連續 1 秒確認的本車道移動目標」，不允許單獨由視覺產生前車。
+  vision_cand = None
+  if matched_track is None and ready and lead_prob > normal_thres:
+    vision_cand = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+
+  # 現有前車距離（不含來自救援的續命目標，救援目標每幀都要重新和現有前車比較）
+  if matched_track is not None:
+    existing_d = matched_track.dRel
+  elif held_track is not None and not held_is_rescue:
+    existing_d = held_track.dRel
+  elif vision_cand is not None:
+    existing_d = vision_cand['dRel']
+  else:
+    existing_d = float('inf')
+
+  # dp: 雷達主導救援採用判斷——沒有前車，或救援候選比現有前車更近才採用
+  is_radar_rescue = (rescue_track is not None and rescue_track is not matched_track and
+                     rescue_track.dRel < existing_d)
+
+  vision_lead = None
+  if is_radar_rescue:
+    selected_track = rescue_track
+    cache['track'] = rescue_track
     cache['absent'] = 0
-  elif cache['track'] is not None:
-    cache['absent'] += 1
-    if cache['absent'] <= SELECT_HOLDOVER_FRAMES:
-      selected_track = cache['track']  # 強制回傳上一刻的凍結物件，維持鎖定
-    else:
+    cache['rescue'] = True
+    # 同步總視覺信心度門檻：這一幀的前車是在 RADAR_RESCUE_MIN_PROB 門檻下被接受的
+    current_prob_thres = min(current_prob_thres, RADAR_RESCUE_MIN_PROB)
+    cloudlog.debug(
+      f"[RadarD_RadarRescue_DP] 雷達主導救援！目標 {lead_idx} | 雷達 {rescue_track.identifier} "
+      f"d={rescue_track.dRel:.1f} y={rescue_track.yRel:.2f} v={rescue_track.vRel + v_ego:.1f} | "
+      f"連續 {rescue_track.radar_rescue_frames} 幀 | 相機機率: {lead_prob:.2f} "
+      f"(原門檻: {normal_thres:.2f} → {current_prob_thres:.2f}) | 原前車距離: {existing_d:.1f}"
+    )
+  elif matched_track is not None:
+    selected_track = matched_track
+    cache['track'] = matched_track
+    cache['absent'] = 0
+    cache['rescue'] = False
+  else:
+    selected_track = None
+    if held_is_rescue and vision_cand is not None and vision_cand['dRel'] <= held_track.dRel:
+      # 救援條件已不成立、且視覺前車更近：不再續命較遠的救援目標，直接改用視覺前車
       cache['track'] = None
       cache['absent'] = 0
-      cache['last_aLeadK'] = None  # lead 真正消失，重置參考基準，避免下一個新目標被錯誤地拿舊值做限制
+      cache['last_aLeadK'] = None
+      cache['rescue'] = False
+    elif cache['track'] is not None:
+      cache['absent'] += 1
+      if cache['absent'] <= SELECT_HOLDOVER_FRAMES:
+        selected_track = cache['track']  # 強制回傳上一刻的凍結物件，維持鎖定
+      else:
+        cache['track'] = None
+        cache['absent'] = 0
+        cache['last_aLeadK'] = None  # lead 真正消失，重置參考基準，避免下一個新目標被錯誤地拿舊值做限制
+        cache['rescue'] = False
+    if selected_track is None:
+      vision_lead = vision_cand
 
   lead_dict = {'status': False}
   if selected_track is not None:
@@ -448,14 +417,14 @@ def get_lead_ext(
     if model_tau is not None:
       lead_dict['aLeadTau'] = model_tau
 
-    if current_prob_thres < 0.5 and (0.5 >= lead_prob > current_prob_thres):
+    if not is_radar_rescue and current_prob_thres < 0.5 and (0.5 >= lead_prob > current_prob_thres):
       cloudlog.debug(
         f"[RadarD_EarlyLock_DP] 提早鎖定/續命成功！目標 {lead_idx} | "
         f"相機機率: {lead_prob:.2f} (動態門檻: {current_prob_thres:.2f})"
       )
 
-  elif (selected_track is None) and ready and (lead_prob > current_prob_thres):
-    lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+  elif vision_lead is not None:
+    lead_dict = vision_lead
     _LEAD_STATE_CACHE[lead_idx]['last_aLeadK'] = None  # 純視覺後備路徑不經過雷達物件，重置參考基準
 
 
