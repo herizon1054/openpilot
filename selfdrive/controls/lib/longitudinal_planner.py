@@ -30,7 +30,7 @@ ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，�
 ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
-ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
+ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.2
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
