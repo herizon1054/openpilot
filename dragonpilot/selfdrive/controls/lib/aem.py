@@ -33,10 +33,15 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      carState.yawRate 全程恆為 0.0，而 modelV2.orientationRate.z[0] 全程有非零值，
 #      因此改用模型訊號，與 dtsc.py 的資料來源一致，可跨品牌使用。
 #   2. 車速雙門檻 + 遲滯區間：
-#        v_ego <= SPEED_TO_EXPERIMENTAL (50 km/h) -> 切換為實驗模式 (blended)
-#        v_ego >= SPEED_TO_NORMAL       (60 km/h) -> 切換為一般模式 (acc)
-#      50~60 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
-#   3. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
+#        v_ego <= SPEED_TO_EXPERIMENTAL (20 km/h) -> 切換為實驗模式 (blended)
+#        v_ego >= SPEED_TO_NORMAL       (30 km/h) -> 切換為一般模式 (acc)
+#      20~30 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
+#   3. 接近模型停止線 + 車速閘門：near_stop_active 為 True 且車速通過
+#      STOP_MODE_SPEED_ENTER_KPH/EXIT_KPH 這組閘門（<=60km/h 開放、>=70km/h 關閉，
+#      60~70km/h 過渡帶維持前一狀態）時，強制切為實驗模式 (blended)。車速閘門的用意是
+#      避免在快速道路等高速情境遠遠看到停止線就被拉進實驗模式，只在市區低速接近停止線
+#      時才讓 mode 跟著切換。優先權低於過彎保護、高於車速雙門檻。
+#   4. 防彈跳 (debounce)：任何切換條件都必須連續成立 CONFIRM_TIME_S 秒才會真正生效。
 #      車速模式的切換另外要求距離上一次切換至少 MIN_DWELL_TIME_S 秒（過彎的強制/解除
 #      不受此最短間隔限制，確保安全保護不會被延遲觸發）。
 #      這是本次要求的「過渡」機制：避免感測雜訊或臨界值附近的抖動造成縱向目標
@@ -117,9 +122,17 @@ from openpilot.common.realtime import DT_MDL
 #   個別調整互不影響；longitudinal_planner.py 的 ALLOW_THROTTLE_THRESHOLD_E2E（AEM 停用
 #   時的後備值）也是完全獨立的常數，跟這裡的門檻值互不牽動。
 
-# 車速門檻（km/h 換算為 m/s），50~60 km/h 為遲滯 / 過渡帶
-SPEED_TO_EXPERIMENTAL = 20.0 / 3.6   # 車速 <= 50 km/h -> 切換為實驗模式 (blended)
-SPEED_TO_NORMAL       = 30.0 / 3.6   # 車速 >= 60 km/h -> 切換為一般模式 (acc)
+# v10 變更紀錄（相對於 v9 的功能新增）：
+#   新增「接近停止線時 mode 也強制切為實驗模式」：near_stop_active 為 True 且車速通過
+#   STOP_MODE_SPEED_ENTER_KPH(60)/EXIT_KPH(70) 這組獨立的車速閘門時，get_mode() 強制
+#   回傳 'blended'。車速閘門是為了避免高速情境（例如快速道路遠遠看到停止線）也被拉進
+#   實驗模式，只在市區低速（<=60km/h，直到 >=70km/h 才解除）接近停止線時才讓 mode
+#   跟著切換。優先權排在過彎保護之後、車速雙門檻之前。near_stop_active 本身（節流門檻
+#   覆寫）不受影響，車速閘門只決定要不要「額外」讓 mode 也跟著切，兩者是獨立判斷。
+
+# 車速門檻（km/h 換算為 m/s），20~30 km/h 為遲滯 / 過渡帶
+SPEED_TO_EXPERIMENTAL = 20.0 / 3.6   # 車速 <= 20 km/h -> 切換為實驗模式 (blended)
+SPEED_TO_NORMAL       = 30.0 / 3.6   # 車速 >= 30 km/h -> 切換為一般模式 (acc)
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
@@ -134,11 +147,16 @@ CONFIRM_TIME_S   = 0.5   # 任一切換條件需連續成立這麼久（秒）�
 MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）才允許下一次切換
 
 # 距離模型停止線的節流保守化門檻（m），含遲滯避免臨界值抖動
-# ⚠️ 這一組只影響呼叫端的節流門檻選擇（near_stop_active 屬性），不影響 get_mode()
-# 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併。
 NEAR_STOP_ENTER_M = 5.0   # 距離 <= 40m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
                            # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
 NEAR_STOP_EXIT_M  = 15.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
+
+# 接近停止線時，是否連 mode 也一併強制切為實驗模式，額外用車速做一次限制：
+# 車速 <= 60km/h 才允許這個覆寫生效，車速 >= 70km/h 就算正接近停止線也不觸發，
+# 60~70km/h 為過渡帶維持前一狀態。避免在高速（例如快速道路匝道遠遠看到停止線）時
+# 也被拉進實驗模式；只在市區低速接近停止線的情境下才讓 mode 跟著切換。
+STOP_MODE_SPEED_ENTER_KPH = 60.0   # 車速 <= 60km/h -> 允許「接近停止線」強制切 mode
+STOP_MODE_SPEED_EXIT_KPH  = 70.0   # 車速 >= 70km/h -> 不允許，就算接近停止線也不切 mode
 
 # 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有接近停止線覆寫時使用。
 # 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻的遲滯設計，
@@ -165,10 +183,15 @@ class AEM:
     self._curve_confirm_t = 0.0
     self._lat_accel_filtered = 0.0
 
-    # 接近停止線狀態（只影響節流門檻，不影響 get_mode()）
+    # 接近停止線狀態（節流門檻覆寫用，見 near_stop_active）
     self._near_stop_active = False
     self._near_stop_pending = False
     self._near_stop_confirm_t = 0.0
+
+    # 接近停止線的車速閘門狀態（get_mode() 是否要跟著切換用，見 STOP_MODE_SPEED_*）
+    self._stop_mode_speed_ok = True
+    self._stop_mode_speed_pending = self._stop_mode_speed_ok
+    self._stop_mode_speed_confirm_t = 0.0
 
     # 基礎節流門檻的車速狀態（只影響節流門檻，不影響 get_mode()）
     self._base_throttle_state = 'low'   # 'low' -> 0.2, 'high' -> 0.1
@@ -179,7 +202,9 @@ class AEM:
   def near_stop_active(self):
     """目前是否處於「接近模型停止線」狀態（距離 <= 50m，含遲滯），供呼叫端讀取，
     用來決定是否改用較保守的節流門檻（longitudinal_planner.py 的
-    ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP）。不影響 get_mode() 的 blended/acc 判斷。"""
+    ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP）。這個屬性本身不影響 get_mode()；
+    get_mode() 是否因為接近停止線而切成實驗模式，還要另外通過車速閘門
+    （STOP_MODE_SPEED_ENTER_KPH/EXIT_KPH），見 get_mode() 內部判斷。"""
     return self._near_stop_active
 
   @property
@@ -196,6 +221,7 @@ class AEM:
     self._update_speed_mode(v_ego)
     self._update_curve_override(v_ego, yaw_rate)
     self._update_near_stop(stop_dist_m)
+    self._update_stop_mode_speed_gate(v_ego)
     self._update_base_throttle(v_ego)
 
   def _update_speed_mode(self, v_ego):
@@ -256,6 +282,25 @@ class AEM:
     if self._near_stop_pending != self._near_stop_active and self._near_stop_confirm_t >= CONFIRM_TIME_S:
       self._near_stop_active = self._near_stop_pending
 
+  def _update_stop_mode_speed_gate(self, v_ego):
+    v_kph = v_ego * 3.6
+    if v_kph <= STOP_MODE_SPEED_ENTER_KPH:
+      candidate = True
+    elif v_kph >= STOP_MODE_SPEED_EXIT_KPH:
+      candidate = False
+    else:
+      candidate = self._stop_mode_speed_ok   # 60~70 km/h 過渡帶：維持前一狀態，不切換
+
+    if candidate == self._stop_mode_speed_pending:
+      self._stop_mode_speed_confirm_t += DT_MDL
+    else:
+      self._stop_mode_speed_pending = candidate
+      self._stop_mode_speed_confirm_t = 0.0
+
+    if (self._stop_mode_speed_pending != self._stop_mode_speed_ok
+        and self._stop_mode_speed_confirm_t >= CONFIRM_TIME_S):
+      self._stop_mode_speed_ok = self._stop_mode_speed_pending
+
   def _update_base_throttle(self, v_ego):
     v_kph = v_ego * 3.6
     if v_kph <= BASE_THROTTLE_LOW_SPEED_KPH:
@@ -279,4 +324,6 @@ class AEM:
   def get_mode(self, mode):
     if self._curve_active:
       return 'acc'
+    if self._near_stop_active and self._stop_mode_speed_ok:
+      return 'blended'
     return 'blended' if self._speed_mode == 'experimental' else 'acc'
