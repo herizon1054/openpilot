@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import capnp
+import math
 import numpy as np
 from typing import Any
 from cereal import messaging, car
@@ -61,9 +62,13 @@ VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全
 # 的短暫失效，不因單幀漏拍就中斷），即使信心度（ema_confidence）因為幾何比對品質
 # 普通、一直停在初始值附近沒有爬高，持續時間本身也視為證據，門檻依持續時間分級放寬
 # （見下方兩段式門檻）。以下四個條件先框定啟用範圍：
-PERSISTENCE_RESCUE_MAX_ANGLE = 10.0  # 方向盤角度需在 ±此值以內才啟用，避免彎道時的路徑幾何變化誤觸發
+PERSISTENCE_RESCUE_MAX_ANGLE = 25.0  # 方向盤角度需在 ±此值以內才啟用；25 度對應時速 40 左右常見彎道
+                                      # 的估計角度，遠低於市區路口轉彎所需角度（170 度以上），確保真正
+                                      # 轉彎時機制一定關閉，同時不會讓一般彎道就整個失效。
 PERSISTENCE_RESCUE_MAX_DIST_CAP = 100.0  # 最長偵測距離上限 (m)，車速達到/超過對應值後不再繼續放大
 PERSISTENCE_RESCUE_DIST_PER_KMH = 1.0    # 每 1 km/h 車速對應 1 公尺偵測距離（車速 10km/h→10m，100km/h→100m 封頂）
+PERSISTENCE_RESCUE_MAX_LATERAL_DEVIATION = 1.75  # 半個車道寬度 (m)，用曲率反推「預測路徑偏移這麼多之前，
+                                                  # 距離都算可信」的距離上限，取代原本隨手訂的線性遞減
 PERSISTENCE_RESCUE_MAX_YREL = 1.0    # 車道中心左右各 1 公尺，超出此範圍視為非本車道目標，不啟用救援
 
 # dp: 兩段式持續性救援 —— 雷達持續偵測（valid_streak_frames）越久，容許的視覺信心度
@@ -230,15 +235,17 @@ def get_lead_ext(
   lead_prob: float,
   is_turning: bool = False,
   steering_angle_deg: float = 0.0,
+  steer_ratio: float = 15.0,
+  wheelbase: float = 2.7,
   low_speed_override: bool = True,
 ) -> dict[str, Any]:
   """
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
   新增 is_turning：由 radard.py 依方向盤角度/角速度判斷是否正在轉彎，
   轉出去給 process_track_logic 決定是否要求「必須真實量測」。
-  新增 steering_angle_deg：方向盤實際角度，用於限制「持續性救援」只在方向盤
-  接近打直（避免彎道時路徑幾何本身變化，誤把彎道中的旁側車道目標當作持續有效）
-  的情況下才啟用。
+  新增 steering_angle_deg/steer_ratio/wheelbase：用自行車模型從方向盤角度反推
+  路徑曲率，供「持續性救援」判斷目標是否落在預測路徑走廊內，並讓角度越大、
+  偵測距離連續縮短，取代原本單純的角度二元開關。
   """
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
@@ -270,21 +277,49 @@ def get_lead_ext(
   # （高速時同樣的物理距離，留給反應的時間更短），車速 10km/h 對應 10m，
   # 100km/h 以上封頂在 PERSISTENCE_RESCUE_MAX_DIST_CAP（100m）。
   v_ego_kmh = v_ego * 3.6
-  persistence_rescue_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH)
+  base_max_dist = min(PERSISTENCE_RESCUE_MAX_DIST_CAP, v_ego_kmh * PERSISTENCE_RESCUE_DIST_PER_KMH)
 
-  if abs(steering_angle_deg) < PERSISTENCE_RESCUE_MAX_ANGLE:
-    eligible_streaks = [track.valid_streak_frames[lead_idx] for track in valid_tracks.values()
-                         if track.dRel <= persistence_rescue_max_dist and abs(track.yRel) <= PERSISTENCE_RESCUE_MAX_YREL]
-    best_streak = max(eligible_streaks, default=0)
+  # dp: 路徑預測——用自行車模型從方向盤角度反推路徑曲率，算出每個雷達目標所在
+  # 距離上，預測路徑應該落在哪個橫向位置，取代原本單純假設「直線、車道中心」
+  # 的固定 ±PERSISTENCE_RESCUE_MAX_YREL 判斷。直行時 predicted_y≈0，效果跟原本
+  # 一樣；彎道時預測路徑會跟著彎，判斷更準確。
+  if steer_ratio > 0 and wheelbase > 0:
+    curvature = math.tan(math.radians(steering_angle_deg) / steer_ratio) / wheelbase
+  else:
+    curvature = 0.0
 
-    if (best_streak >= PERSISTENCE_RESCUE_TIER2_FRAMES and
-        rescue_cache['prob_tier2_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
-      current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER2_PROB_THRES)
-      is_persistent = True
-    elif (best_streak >= PERSISTENCE_RESCUE_TIER1_FRAMES and
-          rescue_cache['prob_tier1_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
-      current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER1_PROB_THRES)
-      is_persistent = True
+  # dp: 用同一個曲率，反推「預測路徑偏移超過半個車道寬之前，這個距離都還算可信」
+  # 的距離上限——用實際幾何算出來，取代原本隨角度線性遞減的粗略估計。彎道越急
+  # （曲率越大），這個距離上限自然越短；完全直行（curvature≈0）時不受此限制。
+  if abs(curvature) > 1e-6:
+    curvature_max_dist = math.sqrt(2 * PERSISTENCE_RESCUE_MAX_LATERAL_DEVIATION / abs(curvature))
+    persistence_rescue_max_dist = min(base_max_dist, curvature_max_dist)
+  else:
+    persistence_rescue_max_dist = base_max_dist
+
+  # dp: 角度硬性開關——超過 PERSISTENCE_RESCUE_MAX_ANGLE（25 度）代表已經是真正的
+  # 轉彎/路口動作，不是一般彎道，直接把距離歸零，確保機制完全關閉，不只依賴
+  # 曲率公式自然收斂（曲率公式本身即使角度很大也不會真的算出 0）。
+  if abs(steering_angle_deg) >= PERSISTENCE_RESCUE_MAX_ANGLE:
+    persistence_rescue_max_dist = 0.0
+
+  eligible_streaks = []
+  for track in valid_tracks.values():
+    if track.dRel > persistence_rescue_max_dist:
+      continue
+    predicted_y = curvature * (track.dRel ** 2) / 2.0
+    if abs(track.yRel - predicted_y) <= PERSISTENCE_RESCUE_MAX_YREL:
+      eligible_streaks.append(track.valid_streak_frames[lead_idx])
+  best_streak = max(eligible_streaks, default=0)
+
+  if (best_streak >= PERSISTENCE_RESCUE_TIER2_FRAMES and
+      rescue_cache['prob_tier2_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
+    current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER2_PROB_THRES)
+    is_persistent = True
+  elif (best_streak >= PERSISTENCE_RESCUE_TIER1_FRAMES and
+        rescue_cache['prob_tier1_frames'] >= PERSISTENCE_RESCUE_PROB_CONFIRM_FRAMES):
+    current_prob_thres = min(current_prob_thres, PERSISTENCE_RESCUE_TIER1_PROB_THRES)
+    is_persistent = True
 
   if is_persistent and normal_thres > current_prob_thres and normal_thres >= lead_prob > current_prob_thres:
     cloudlog.debug(
@@ -364,8 +399,8 @@ class RadarDExt(RadarD):
   """
   DP 版專屬：初始化參數對齊 DP 的單一 delay 參數。
   """
-  def __init__(self, delay: float = 0.0):
-    super().__init__(delay)
+  def __init__(self, delay: float = 0.0, steer_ratio: float = 15.0, wheelbase: float = 2.7):
+    super().__init__(delay, steer_ratio, wheelbase)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     super().update(sm, rr)
