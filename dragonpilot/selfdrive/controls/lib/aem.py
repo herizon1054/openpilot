@@ -136,9 +136,9 @@ MIN_DWELL_TIME_S = 2.0   # 車速模式切換後至少維持這麼久（秒）�
 # 距離模型停止線的節流保守化門檻（m），含遲滯避免臨界值抖動
 # ⚠️ 這一組只影響呼叫端的節流門檻選擇（near_stop_active 屬性），不影響 get_mode()
 # 本身的 blended/acc 判斷——是否接近停止線跟該不該用 e2e 是兩件事，這裡刻意不合併。
-NEAR_STOP_ENTER_M = 40.0   # 距離 <= 40m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
+NEAR_STOP_ENTER_M = 5.0   # 距離 <= 40m 進入「接近停止線」狀態（沿用 traffic_stop.py 自己的
                            # TRAFFIC_STOP_DISTANCE_FADE_BP_M 上限值，非另外憑空訂的數字）
-NEAR_STOP_EXIT_M  = 50.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
+NEAR_STOP_EXIT_M  = 15.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，避免在 50m 附近來回抖動
 
 # 基礎節流門檻依車速動態切換（km/h），供呼叫端在沒有接近停止線覆寫時使用。
 # 50~60 km/h 為過渡帶，維持前一狀態不切換，緩衝寬度比照車速模式門檻的遲滯設計，
@@ -147,8 +147,8 @@ NEAR_STOP_EXIT_M  = 50.0   # 距離 > 50m 才解除，形成 10m 遲滯緩衝，
 # 節流值（VALUE）決定「切換後用多保守/多積極的門檻」，兩兩之間可以任意分開調整。
 BASE_THROTTLE_LOW_SPEED_KPH    = 50.0   # 車速 <= 這個值 -> 判定為低速，套用 BASE_THROTTLE_LOW_SPEED_VALUE
 BASE_THROTTLE_HIGH_SPEED_KPH   = 60.0   # 車速 >= 這個值 -> 判定為高速，套用 BASE_THROTTLE_HIGH_SPEED_VALUE
-BASE_THROTTLE_LOW_SPEED_VALUE  = 0.2    # 低速（<=50km/h）時使用的節流門檻，越低代表加速意願越積極
-BASE_THROTTLE_HIGH_SPEED_VALUE = 0.1    # 高速（>=60km/h）時使用的節流門檻，越低代表加速意願越積極
+BASE_THROTTLE_LOW_SPEED_VALUE  = 0.1    # 低速（<=50km/h）時使用的節流門檻，越低代表加速意願越積極
+BASE_THROTTLE_HIGH_SPEED_VALUE = 0.0    # 高速（>=60km/h）時使用的節流門檻，越低代表加速意願越積極
 
 
 class AEM:
