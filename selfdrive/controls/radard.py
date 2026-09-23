@@ -183,7 +183,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
 
 class RadarD:
-  def __init__(self, delay: float = 0.0):
+  def __init__(self, delay: float = 0.0, steer_ratio: float = 15.0, wheelbase: float = 2.7):
     self.current_time = 0.0
 
     self.tracks: dict[int, Track] = {}
@@ -193,6 +193,10 @@ class RadarD:
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.last_v_ego_frame = -1
+
+    # dp: 供 radard_ext 的持續性救援做路徑預測（自行車模型）用
+    self.steer_ratio = steer_ratio
+    self.wheelbase = wheelbase
 
     self.radar_state: capnp._DynamicStructBuilder | None = None
     self.radar_state_valid = False
@@ -254,8 +258,8 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, steering_angle_deg, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, steering_angle_deg, low_speed_override=False)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=True)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
@@ -283,7 +287,7 @@ def main() -> None:
   # 🎛️ 專屬 DP 擴充引入點：動態替換並生成帶有提早鎖定邏輯的實例
   # ==============================================================================
   from dragonpilot.selfdrive.controls.radard_ext import RadarDExt as RadarD
-  RD = RadarD(CP.radarDelay)
+  RD = RadarD(CP.radarDelay, CP.steerRatio, CP.wheelbase)
 
   while 1:
     sm.update()
