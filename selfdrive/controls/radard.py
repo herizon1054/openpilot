@@ -262,13 +262,14 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      # dp: 傳入模型規劃路徑，供橫向閘門與雷達主導救援的走廊判斷使用。
+      # dp: 傳入模型規劃路徑（供橫向閘門與雷達主導救援的走廊判斷），以及未濾波的原始
+      # lead 機率（雷達主導救援的視覺信心度下限只看原始值，最嚴格版本）。
       path_x = list(sm['modelV2'].position.x)
       path_y = list(sm['modelV2'].position.y)
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=True,
-                                          path_x=path_x, path_y=path_y)
+                                          raw_lead_prob=leads_v3[0].prob, path_x=path_x, path_y=path_y)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=False,
-                                          path_x=path_x, path_y=path_y)
+                                          raw_lead_prob=leads_v3[1].prob, path_x=path_x, path_y=path_y)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
