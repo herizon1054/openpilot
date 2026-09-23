@@ -34,7 +34,7 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
-LONG_SMOOTH_SECONDS_ACCEL_UP = 0.3   # 想加速時用很短的平滑時間常數（約 0.1 秒內就跟上），
+LONG_SMOOTH_SECONDS_ACCEL_UP = 0.1   # 想加速時用很短的平滑時間常數（約 0.1 秒內就跟上），
                                       # 比完全不平滑（0.0）多留一點點緩衝，也比原本統一的
                                       # 0.3 明顯更直接；減速方向不受影響，仍用 LONG_SMOOTH_SECONDS。
 MIN_LAT_CONTROL_SPEED = 0.3
