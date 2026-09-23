@@ -71,7 +71,10 @@ VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全
 #     - 模型路徑有效（車速 > MODEL_PATH_MIN_SPEED）
 #   任一幀不符合即歸零重新計數。
 # 採用條件（僅 leadOne）：
-#     - 視覺信心度 lead_prob >= RADAR_RESCUE_MIN_PROB（總視覺信心度門檻下限）
+#     - 視覺信心度 >= RADAR_RESCUE_MIN_PROB（總視覺信心度門檻下限），以「未濾波」的原始
+#       leadsV3[0].prob 判斷（最嚴格版本）。radard.py 的 lead_prob 經非對稱濾波（上升瞬間到位、
+#       下降每幀 alpha=0.2），濾波值恆 >= 原始值，單幀尖峰會被撐住約 5~6 幀；改用原始值後，
+#       原始機率一低於 0.1 當幀就停止採用。
 #     - 目前沒有前車，或救援候選比現有前車更近
 # 10 段 log（走廊 ±1.0m）：純雷達規則觸發時，未曾落在車道線外 0.5m 以上的目標；
 # 92104 14.5s（88m 外 21 km/h 慢車，視覺 0.2~0.3）與 92102 33.6s（92m 外 16 km/h，
@@ -273,6 +276,7 @@ def get_lead_ext(
   steer_ratio: float = 15.0,
   wheelbase: float = 2.7,
   low_speed_override: bool = True,
+  raw_lead_prob: float | None = None,
   path_x: list[float] | None = None,
   path_y: list[float] | None = None,
 ) -> dict[str, Any]:
@@ -281,6 +285,8 @@ def get_lead_ext(
   新增 is_turning：由 radard.py 依方向盤角度/角速度判斷是否正在轉彎，
   轉出去給 process_track_logic 決定是否要求「必須真實量測」。
   steering_angle_deg：雷達主導救援的方向盤角度開關。
+  raw_lead_prob：未濾波的原始 lead 機率，雷達主導救援的視覺信心度下限只看這個值；
+  未提供時（例如測試）退回使用濾波後的 lead_prob。
   steer_ratio/wheelbase：原本供自行車模型路徑預測使用，已改用模型路徑（path_x/path_y），
   目前未使用，保留參數僅為維持 radard.py 的呼叫介面。
   """
@@ -320,11 +326,12 @@ def get_lead_ext(
 
   # dp: 雷達主導救援——只處理 leadOne，每幀更新一次所有雷達目標的連續幀數
   rescue_track = None
+  rescue_prob = lead_prob if raw_lead_prob is None else raw_lead_prob
   if lead_idx == 0:
     for track in tracks.values():
       track.update_radar_rescue(v_ego, use_model_path, _path_y_at(track.dRel), steering_angle_deg)
     rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
-    if ready and lead_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
+    if ready and rescue_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
       rescue_track = min(rescue_candidates, key=lambda t: t.dRel)
 
   matched_track = None
@@ -371,7 +378,7 @@ def get_lead_ext(
     cloudlog.debug(
       f"[RadarD_RadarRescue_DP] 雷達主導救援！目標 {lead_idx} | 雷達 {rescue_track.identifier} "
       f"d={rescue_track.dRel:.1f} y={rescue_track.yRel:.2f} v={rescue_track.vRel + v_ego:.1f} | "
-      f"連續 {rescue_track.radar_rescue_frames} 幀 | 相機機率: {lead_prob:.2f} "
+      f"連續 {rescue_track.radar_rescue_frames} 幀 | 相機機率(原始/濾波): {rescue_prob:.2f}/{lead_prob:.2f} "
       f"(原門檻: {normal_thres:.2f} → {current_prob_thres:.2f}) | 原前車距離: {existing_d:.1f}"
     )
   elif matched_track is not None:
@@ -381,8 +388,10 @@ def get_lead_ext(
     cache['rescue'] = False
   else:
     selected_track = None
-    if held_is_rescue and vision_cand is not None and vision_cand['dRel'] <= held_track.dRel:
-      # 救援條件已不成立、且視覺前車更近：不再續命較遠的救援目標，直接改用視覺前車
+    if held_is_rescue:
+      # 最嚴格版本：來自雷達主導救援的目標不享有續命。救援條件（原始視覺機率 >= 0.1、
+      # 雷達連續 1 秒、移動、走廊內、真實量測）任一項在這一幀不成立，救援前車當幀就撤銷，
+      # 不用 SELECT_HOLDOVER_FRAMES 延長。
       cache['track'] = None
       cache['absent'] = 0
       cache['last_aLeadK'] = None
