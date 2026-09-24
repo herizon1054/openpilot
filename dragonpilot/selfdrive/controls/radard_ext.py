@@ -43,6 +43,7 @@ PROB_THRES_RANGE = [0.5, 0.3]       # 映射出對應的「視覺提早放行門
 
 RELEASE_FRAMES = 5                  # 目標短暫丟失或出界時的 EMA 續命凍結幀數
 SELECT_HOLDOVER_FRAMES = 3          # 雷達硬體斷流時，強制維持上一幀鎖定的幀數
+
 # dp(切入閃爍修正): 鎖定黏著。視覺前車在兩台車之間跳動時（切入/切出、前方有兩台車），
 # 原廠配對的 dist_sane（誤差 < max(25%, 5m)）時過時不過，前車在雷達目標、純視覺、另一台
 # 雷達目標之間來回切換。
@@ -54,6 +55,8 @@ SELECT_HOLDOVER_FRAMES = 3          # 雷達硬體斷流時，強制維持上一
 #       SWITCH_FARTHER_CONFIRM_FRAMES 幀都選到新目標才切換。換成「更近」的目標
 #       （切入車）一律立即切換，不延遲。
 STICKY_HOLD_FRAMES = 10             # 0.5 秒
+SWITCH_FARTHER_CONFIRM_FRAMES = 5   # 0.25 秒
+
 # dp(重複雷達點閃爍修正): Toyota TSS2 雷達常把同一台車回報成兩個 trackId（例如 log 92462
 # 的 17685/18307），兩點距離差中位數 0.02m、橫向差 0.08m、速度差 0.05 m/s。原廠
 # match_vision_to_track() 取機率最大者，兩點幾乎一樣，每幀依微小差異互換（92462 車上
@@ -64,7 +67,6 @@ STICKY_HOLD_FRAMES = 10             # 0.5 秒
 SAME_OBJ_MAX_DD = 1.5               # m
 SAME_OBJ_MAX_DY = 1.0               # m
 SAME_OBJ_MAX_DV = 1.5               # m/s
-SWITCH_FARTHER_CONFIRM_FRAMES = 5   # 0.25 秒
 
 MODEL_TAU_MIN_PROB = 0.5            # 啟動驗證的最低視覺機率
 MODEL_TAU_BRAKE_A = -0.5            # 啟動驗證的最低急煞門檻 (m/s²)
@@ -73,9 +75,10 @@ MODEL_TAU_SPURIOUS = 3.0            # 視覺預測即將加速
 
 # dp: 比照原廠 match_vision_to_track() 的 vel_sane 擇一寬鬆備援：
 #   vel_sane = (誤差 < 10) OR (v_ego + vRel > 3)
-# 「正在明顯接近」時，就算速度誤差略大也視為合理，不讓 score_v 把總分拉到 0。
-# 要求連續多幀都符合「正在接近」才啟用，避免單幀雷達雜訊造成的速度突然跳動誤觸發。
-VEL_SANE_FALLBACK_SPEED = 3.0       # 原廠門檻：接近速度 (v_ego + vRel) 超過此值視為明顯接近
+# 注意：v_ego + vRel 是目標的「絕對速度」，不是接近速度。原廠的意思是「目標本身在移動
+# （> 10.8 km/h）就不是靜止雜訊，速度比對直接放行」。此處行為與原廠相同（連續 3 幀
+# 確認後 score_v 視為滿分），註解已更正；變數名沿用舊名以維持相容。
+VEL_SANE_FALLBACK_SPEED = 3.0       # 原廠門檻：目標絕對速度 (v_ego + vRel) 超過此值視為移動目標
 VEL_SANE_CONFIRM_FRAMES = 3         # 需連續幾幀都符合才真正啟用寬鬆備援
 VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全比照原廠「視為合理」的語意
 
@@ -110,7 +113,7 @@ RADAR_RESCUE_MIN_SPEED = 3.0        # m/s
 RADAR_RESCUE_MIN_SPEED_PCT = 0.2
 RADAR_RESCUE_MAX_ANGLE = 25.0       # deg
 
-# dp(log 驗證修正 1b-v2): 橫向排除改為「無狀態」且必須同時滿足：
+# dp(log 驗證修正 1b-v2): 橫向排除必須同時滿足（第五版起加上去抖動，見 GATE_DEBOUNCE_FRAMES）：
 #   (a) 落在本車預測路徑走廊外：|yRel - 路徑y(d)| > LANE_CORRIDOR_HALF_WIDTH，且
 #   (b) 與視覺前車不一致：橫向差 > LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN (2.0m)，
 #       或絕對速度差 > max(LANE_GATE_DV_MIN, LANE_GATE_DV_PCT * |視覺前車速度|)。
@@ -137,7 +140,7 @@ GATE_PATH_JUMP_LIMIT = 1.0          # m
 LANE_GATE_DV_PCT = 0.25
 
 # dp(修正 4): 模型路徑（modelV2.position）預測。車速低於此值時 position.x 會擠在 0 附近、
-# 不單調，退回原本的自行車模型。
+# 不單調：橫向閘門改為假設直行，雷達主導救援停用。
 MODEL_PATH_MIN_SPEED = 3.0          # m/s
 MODEL_PATH_MIN_LENGTH = 5.0         # 模型路徑最短有效長度 (m)
 
@@ -146,12 +149,6 @@ MODEL_PATH_MIN_LENGTH = 5.0         # 模型路徑最短有效長度 (m)
 # 比照原廠 dist_sane 精神（25% 或 5m），但取較保守的比例。
 FUZZY_D_BOUNDS_PCT = [0.05, 0.12]   # 滿分 / 歸零 對應的距離比例
 
-# 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
-# dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
-# 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
-_LOW_SPEED_LAST = {'track': None}   # dp: 上一幀低速覆寫選到的雷達目標（重複點閃爍修正用）
-
-
 def _is_same_object(a, b) -> bool:
   # dp: 兩個雷達目標是否為同一個實體物體的重複回報
   return (abs(a.dRel - b.dRel) <= SAME_OBJ_MAX_DD and
@@ -159,9 +156,15 @@ def _is_same_object(a, b) -> bool:
           abs(a.vRel - b.vRel) <= SAME_OBJ_MAX_DV)
 
 
+_LOW_SPEED_LAST = {'track': None}   # dp: 上一幀低速覆寫選到的雷達目標（重複點閃爍修正用）
+
+# 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
+# dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
+# 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車。
+# dp(第七版): 加上 last_aLeadK_track，換成「不同物體」時不做變化率限制（見輸出段說明）。
 _LEAD_STATE_CACHE = {
-    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0},
-    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'last_aLeadK_track': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'last_aLeadK_track': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0}
 }
 MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
@@ -197,8 +200,8 @@ class TrackDP(Track):
     self.radar_rescue_frames = 0               # dp: 連續符合雷達主導救援條件的幀數（與 lead_idx 無關）
 
   def _check_closing_speed_fallback(self, lead_idx: int, v_ego: float) -> bool:
-    # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件，但要求連續 N 幀都成立
-    # 才真正啟用寬鬆備援，避免單幀雷達雜訊造成的速度瞬間跳動誤觸發。
+    # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件（目標絕對速度 > 3 m/s，即移動目標），
+    # 但要求連續 N 幀都成立才啟用，避免單幀雷達雜訊造成的速度瞬間跳動誤觸發。
     is_closing_fast = (v_ego + self.vRel) > VEL_SANE_FALLBACK_SPEED
     if is_closing_fast:
       self.closing_speed_streak[lead_idx] = min(self.closing_speed_streak[lead_idx] + 1, VEL_SANE_CONFIRM_FRAMES)
@@ -207,7 +210,7 @@ class TrackDP(Track):
     return self.closing_speed_streak[lead_idx] >= VEL_SANE_CONFIRM_FRAMES
 
   def _update_lane_gate(self, lead_idx: int, vision_y: float, vision_v: float, v_ego: float, path_y: float) -> bool:
-    # dp(修正 1b-v2): 無狀態橫向排除，取代原本 _check_spatial_boundaries() 的遲滯鎖存。
+    # dp(修正 1b-v2): 取代原本 _check_spatial_boundaries() 的遲滯鎖存。
     # 原本的遲滯邏輯實際上從未生效（>2.0m 時提早 return，跳過了設定出界的程式），
     # 補上之後又因 1.5m 回歸門檻，讓雷達/視覺橫向偏差 1.5~2.0m 的真前車被永久鎖在出界。
     # dp(切入閃爍修正): 加上去抖動（GATE_DEBOUNCE_FRAMES）與模型路徑跳動保護。
@@ -254,7 +257,7 @@ class TrackDP(Track):
     score_y = float(np.interp(err_y, FUZZY_BOUNDS, [1.0, 0.0]))
     score_v = float(np.interp(err_v, FUZZY_BOUNDS, [1.0, 0.0]))
 
-    # dp: 比照原廠 vel_sane 的擇一寬鬆備援——連續多幀確認正在快速接近時，
+    # dp: 比照原廠 vel_sane 的擇一寬鬆備援——連續多幀確認目標在移動時，
     # 即使速度誤差略大，也不讓 score_v 把總分拉到 0。
     if self._check_closing_speed_fallback(lead_idx, v_ego):
       score_v = max(score_v, VEL_SANE_FALLBACK_SCORE)
@@ -334,8 +337,6 @@ def get_lead_ext(
   lead_prob: float,
   is_turning: bool = False,
   steering_angle_deg: float = 0.0,
-  steer_ratio: float = 15.0,
-  wheelbase: float = 2.7,
   low_speed_override: bool = True,
   raw_lead_prob: float | None = None,
   path_x: list[float] | None = None,
@@ -348,8 +349,8 @@ def get_lead_ext(
   steering_angle_deg：雷達主導救援的方向盤角度開關。
   raw_lead_prob：未濾波的原始 lead 機率，雷達主導救援的視覺信心度下限只看這個值；
   未提供時（例如測試）退回使用濾波後的 lead_prob。
-  steer_ratio/wheelbase：原本供自行車模型路徑預測使用，已改用模型路徑（path_x/path_y），
-  目前未使用，保留參數僅為維持 radard.py 的呼叫介面。
+  path_x/path_y：modelV2.position，供橫向閘門、鎖定黏著與雷達主導救援的走廊判斷。
+  radard.py 一律以關鍵字參數傳入上述擴充參數，避免位置參數錯位。
   """
   lead_idx = 0 if low_speed_override else 1
   max_ema_confidence = 0.0
@@ -516,11 +517,18 @@ def get_lead_ext(
     # dp: 不管是「凍結續命中」還是「剛恢復匹配、瞬間跳到最新卡曼值」，
     # 都對 aLeadK 做變化率限制，避免瞬間跳動被誤判成前車突然減速（幽靈煞車）。
     # 只限制 aLeadK，dRel/yRel/vRel 不受影響，維持插隊偵測所需的位置即時性。
+    # dp(第七版): 換成「不同物體」（例如切入車取代原前車）時不做限制，直接採用新目標的
+    # aLeadK。原本會拿舊前車的 aLeadK 當基準、每幀最多變 1.0 m/s²，切入車若正在急煞，
+    # 要好幾幀才追上真值。同一物體的重複雷達點之間仍照常限制。
+    last_ref = cache['last_aLeadK_track']
+    if last_ref is not None and last_ref is not selected_track and not _is_same_object(last_ref, selected_track):
+      cache['last_aLeadK'] = None
     if cache['last_aLeadK'] is not None:
       raw_aLeadK = lead_dict['aLeadK']
       delta = float(np.clip(raw_aLeadK - cache['last_aLeadK'], -MAX_ALEADK_DELTA_PER_FRAME, MAX_ALEADK_DELTA_PER_FRAME))
       lead_dict['aLeadK'] = float(cache['last_aLeadK'] + delta)
     cache['last_aLeadK'] = float(lead_dict['aLeadK'])
+    cache['last_aLeadK_track'] = selected_track
 
     # 視覺加速度雙重驗證阻尼
     model_tau = get_model_lead_tau(lead_msg, lead_prob)
@@ -570,10 +578,11 @@ radard.get_lead = get_lead_ext
 
 class RadarDExt(RadarD):
   """
-  DP 版專屬：初始化參數對齊 DP 的單一 delay 參數。
+  DP 版專屬：初始化參數對齊 DP 的單一 delay 參數（第七版起移除未使用的 steer_ratio/wheelbase，
+  與最初版介面相同）。
   """
-  def __init__(self, delay: float = 0.0, steer_ratio: float = 15.0, wheelbase: float = 2.7):
-    super().__init__(delay, steer_ratio, wheelbase)
+  def __init__(self, delay: float = 0.0):
+    super().__init__(delay)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     super().update(sm, rr)
