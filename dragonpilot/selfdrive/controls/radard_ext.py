@@ -43,6 +43,28 @@ PROB_THRES_RANGE = [0.5, 0.3]       # 映射出對應的「視覺提早放行門
 
 RELEASE_FRAMES = 5                  # 目標短暫丟失或出界時的 EMA 續命凍結幀數
 SELECT_HOLDOVER_FRAMES = 3          # 雷達硬體斷流時，強制維持上一幀鎖定的幀數
+# dp(切入閃爍修正): 鎖定黏著。視覺前車在兩台車之間跳動時（切入/切出、前方有兩台車），
+# 原廠配對的 dist_sane（誤差 < max(25%, 5m)）時過時不過，前車在雷達目標、純視覺、另一台
+# 雷達目標之間來回切換。
+#   以下兩項只套用在「移動中」的鎖定目標（絕對速度 > max(1.0, DYNAMIC_SPEED_PCT * v_ego)），
+#   靜止目標維持原本行為，避免把路邊/路口的靜止物黏住更久。
+#   (1) 已鎖定的雷達目標仍在雷達清單中、仍在本車走廊內、且沒有更近的純視覺前車時，
+#       配對失敗可續命 STICKY_HOLD_FRAMES 幀（原本 3 幀）。
+#   (2) 配對結果換成「更遠」的另一個目標，而原鎖定目標仍在走廊內時，需連續
+#       SWITCH_FARTHER_CONFIRM_FRAMES 幀都選到新目標才切換。換成「更近」的目標
+#       （切入車）一律立即切換，不延遲。
+STICKY_HOLD_FRAMES = 10             # 0.5 秒
+# dp(重複雷達點閃爍修正): Toyota TSS2 雷達常把同一台車回報成兩個 trackId（例如 log 92462
+# 的 17685/18307），兩點距離差中位數 0.02m、橫向差 0.08m、速度差 0.05 m/s。原廠
+# match_vision_to_track() 取機率最大者，兩點幾乎一樣，每幀依微小差異互換（92462 車上
+# 實際 60 秒內換了 279 次），畫面上的鎖定點一閃一閃。這是原廠行為（原廠 radard 已不做
+# 雷達點叢集），不是先前修改造成的。
+# 修正：新選到的目標若和目前鎖定目標「是同一個物體」（三項差距都在下列範圍內），
+# 沿用目前鎖定目標。log 中重複點的最大差距：距離 1.13m、橫向 0.60m、速度 0.90 m/s。
+SAME_OBJ_MAX_DD = 1.5               # m
+SAME_OBJ_MAX_DY = 1.0               # m
+SAME_OBJ_MAX_DV = 1.5               # m/s
+SWITCH_FARTHER_CONFIRM_FRAMES = 5   # 0.25 秒
 
 MODEL_TAU_MIN_PROB = 0.5            # 啟動驗證的最低視覺機率
 MODEL_TAU_BRAKE_A = -0.5            # 啟動驗證的最低急煞門檻 (m/s²)
@@ -102,6 +124,16 @@ LANE_CORRIDOR_HALF_WIDTH = 1.75     # 半個車道寬 (m)
 LANE_CORRIDOR_NEAR_BP = [8.0, 15.0]
 LANE_CORRIDOR_NEAR_EXTRA = [1.0, 0.0]
 LANE_GATE_DV_MIN = 2.0              # m/s
+# dp(切入閃爍修正): 橫向閘門去抖動。旁車切入時，目標橫向正好跨越走廊邊界、視覺 y 追趕落後，
+# 無狀態閘門每幀翻轉，前車在「雷達目標 ↔ 純視覺」之間一閃一閃（log 92102 45.2s：閘門
+# 在 5 幀內翻轉 4 次，連續 4 幀出界後超過續命 3 幀，前車跳成純視覺）。
+# 改為：新目標第一幀直接採用當下判定；之後判定需連續 GATE_DEBOUNCE_FRAMES 幀相反才切換狀態。
+# 進出使用同一組條件（不是 1.5m/2.0m 的不對稱遲滯），不會再發生「永久鎖在出界」的問題。
+GATE_DEBOUNCE_FRAMES = 3
+# 模型路徑不穩定保護：同一目標距離處的路徑 y 與上一幀相差超過此值（路口轉彎時模型在
+# 直行/轉彎之間跳動，log 92102 45.2s 在 24m 處一幀內從 -21m 跳到 -35m 再到 -12m），
+# 該幀無法判斷走廊，視為「未出界」（比照原廠不做橫向排除），並照常累計去抖動。
+GATE_PATH_JUMP_LIMIT = 1.0          # m
 LANE_GATE_DV_PCT = 0.25
 
 # dp(修正 4): 模型路徑（modelV2.position）預測。車速低於此值時 position.x 會擠在 0 附近、
@@ -117,9 +149,19 @@ FUZZY_D_BOUNDS_PCT = [0.05, 0.12]   # 滿分 / 歸零 對應的距離比例
 # 全域快取：改回 Candy 版邏輯，直接快取 Track 物件本身
 # dp: 額外加上 last_aLeadK，用來在「凍結中」跟「剛恢復匹配」兩種情況下，
 # 都對輸出的 aLeadK 做變化率限制，避免瞬間跳動觸發幽靈煞車
+_LOW_SPEED_LAST = {'track': None}   # dp: 上一幀低速覆寫選到的雷達目標（重複點閃爍修正用）
+
+
+def _is_same_object(a, b) -> bool:
+  # dp: 兩個雷達目標是否為同一個實體物體的重複回報
+  return (abs(a.dRel - b.dRel) <= SAME_OBJ_MAX_DD and
+          abs(a.yRel - b.yRel) <= SAME_OBJ_MAX_DY and
+          abs(a.vRel - b.vRel) <= SAME_OBJ_MAX_DV)
+
+
 _LEAD_STATE_CACHE = {
-    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False},
-    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False}
+    0: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0},
+    1: {'track': None, 'absent': 0, 'last_aLeadK': None, 'rescue': False, 'switch_id': None, 'switch_cnt': 0}
 }
 MAX_ALEADK_DELTA_PER_FRAME = 1.0    # aLeadK 每幀最大允許變化量 (m/s²)，可依實測調整
 
@@ -148,6 +190,9 @@ class TrackDP(Track):
     self.holdover_frames = {0: 0, 1: 0}
     # dp(修正 1): 依 lead_idx 分開存。原本單一 bool 會被 leadOne/leadTwo 互相覆寫遲滯狀態。
     self.is_out_of_lane = {0: False, 1: False}
+    self.gate_initialized = {0: False, 1: False}   # dp: 閘門是否已完成第一幀判定
+    self.gate_flip_cnt = {0: 0, 1: 0}              # dp: 連續出現「與目前狀態相反」判定的幀數
+    self.gate_last_path_y = {0: None, 1: None}     # dp: 上一幀此目標距離處的走廊中心
     self.closing_speed_streak = {0: 0, 1: 0}   # dp: 連續幾幀符合「正在快速接近」
     self.radar_rescue_frames = 0               # dp: 連續符合雷達主導救援條件的幀數（與 lead_idx 無關）
 
@@ -165,12 +210,28 @@ class TrackDP(Track):
     # dp(修正 1b-v2): 無狀態橫向排除，取代原本 _check_spatial_boundaries() 的遲滯鎖存。
     # 原本的遲滯邏輯實際上從未生效（>2.0m 時提早 return，跳過了設定出界的程式），
     # 補上之後又因 1.5m 回歸門檻，讓雷達/視覺橫向偏差 1.5~2.0m 的真前車被永久鎖在出界。
-    # 單幀誤判由 get_lead_ext 的 SELECT_HOLDOVER_FRAMES 續命銜接。
+    # dp(切入閃爍修正): 加上去抖動（GATE_DEBOUNCE_FRAMES）與模型路徑跳動保護。
+    last_path_y = self.gate_last_path_y[lead_idx]
+    self.gate_last_path_y[lead_idx] = path_y
+    path_unstable = last_path_y is not None and abs(path_y - last_path_y) > GATE_PATH_JUMP_LIMIT
     corridor_half = LANE_CORRIDOR_HALF_WIDTH + float(np.interp(self.dRel, LANE_CORRIDOR_NEAR_BP, LANE_CORRIDOR_NEAR_EXTRA))
     outside_corridor = abs(self.yRel - path_y) > corridor_half
     lateral_mismatch = abs(self.yRel - vision_y) > (LANE_WIDTH_FALLBACK + LANE_HYSTERESIS_MARGIN)
     speed_mismatch = abs((self.vRel + v_ego) - vision_v) > max(LANE_GATE_DV_MIN, LANE_GATE_DV_PCT * abs(vision_v))
-    self.is_out_of_lane[lead_idx] = outside_corridor and (lateral_mismatch or speed_mismatch)
+    raw_out = (not path_unstable) and outside_corridor and (lateral_mismatch or speed_mismatch)
+
+    if not self.gate_initialized[lead_idx]:
+      # 新目標：第一幀直接採用當下判定（例如一出現就在路邊的靜止物，立即排除）
+      self.is_out_of_lane[lead_idx] = raw_out
+      self.gate_initialized[lead_idx] = True
+      self.gate_flip_cnt[lead_idx] = 0
+    elif raw_out != self.is_out_of_lane[lead_idx]:
+      self.gate_flip_cnt[lead_idx] += 1
+      if self.gate_flip_cnt[lead_idx] >= GATE_DEBOUNCE_FRAMES:
+        self.is_out_of_lane[lead_idx] = raw_out
+        self.gate_flip_cnt[lead_idx] = 0
+    else:
+      self.gate_flip_cnt[lead_idx] = 0
     return self.is_out_of_lane[lead_idx]
 
   def update_radar_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float) -> None:
@@ -333,6 +394,11 @@ def get_lead_ext(
     rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
     if ready and rescue_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
       rescue_track = min(rescue_candidates, key=lambda t: t.dRel)
+      # dp(重複雷達點閃爍修正): 上一幀的救援目標仍是候選、且與最近候選為同一物體時沿用
+      prev_rescue = _LEAD_STATE_CACHE[lead_idx]['track'] if _LEAD_STATE_CACHE[lead_idx]['rescue'] else None
+      if (prev_rescue is not None and prev_rescue is not rescue_track and
+          any(t is prev_rescue for t in rescue_candidates) and _is_same_object(prev_rescue, rescue_track)):
+        rescue_track = prev_rescue
 
   matched_track = None
   if len(valid_tracks) > 0 and ready and lead_prob > current_prob_thres:
@@ -342,16 +408,48 @@ def get_lead_ext(
   # dp: 先判斷「這一幀若沒有配對成功，是否會由續命沿用上一個目標」，讓雷達主導救援能拿
   # 「現有前車」做距離比較。cache['rescue'] 標記快取中的目標是否來自雷達主導救援。
   cache = _LEAD_STATE_CACHE[lead_idx]
-  held_track = None
-  if matched_track is None and cache['track'] is not None and cache['absent'] + 1 <= SELECT_HOLDOVER_FRAMES:
-    held_track = cache['track']
-  held_is_rescue = held_track is not None and cache['rescue']
+
+  # dp(重複雷達點閃爍修正): 新配對結果和目前鎖定目標是同一物體時，沿用目前鎖定目標
+  prev_track = cache['track']
+  if (matched_track is not None and prev_track is not None and matched_track is not prev_track and
+      tracks.get(prev_track.identifier) is prev_track and _is_same_object(prev_track, matched_track)):
+    matched_track = prev_track
+
+  # dp(切入閃爍修正): 目前鎖定的雷達目標是否仍在雷達清單中、且仍在本車走廊內
+  locked = cache['track'] if (cache['track'] is not None and not cache['rescue']) else None
+  locked_in_path = (locked is not None and tracks.get(locked.identifier) is locked and
+                    (locked.vRel + v_ego) > max(1.0, DYNAMIC_SPEED_PCT * v_ego) and
+                    not locked.is_out_of_lane[lead_idx] and
+                    abs(locked.yRel - _path_y_at(locked.dRel)) <= LANE_CORRIDOR_HALF_WIDTH)
+
+  # dp(切入閃爍修正 2): 換成更遠的目標需連續確認；換成更近的目標（切入車）立即切換
+  if matched_track is not None and locked_in_path and matched_track is not locked and matched_track.dRel > locked.dRel:
+    if cache['switch_id'] == matched_track.identifier:
+      cache['switch_cnt'] += 1
+    else:
+      cache['switch_id'] = matched_track.identifier
+      cache['switch_cnt'] = 1
+    if cache['switch_cnt'] < SWITCH_FARTHER_CONFIRM_FRAMES:
+      matched_track = locked   # 確認期間維持原鎖定目標
+  else:
+    cache['switch_id'] = None
+    cache['switch_cnt'] = 0
 
   # 純視覺後備前車候選：門檻刻意維持 normal_thres（最低 0.3），不跟著雷達主導救援降到 0.1。
   # 0.1 只允許用在「雷達已連續 1 秒確認的本車道移動目標」，不允許單獨由視覺產生前車。
   vision_cand = None
   if matched_track is None and ready and lead_prob > normal_thres:
     vision_cand = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+
+  # dp(切入閃爍修正 1): 鎖定目標仍在走廊內、且沒有更近的純視覺前車時，延長續命
+  hold_limit = SELECT_HOLDOVER_FRAMES
+  if locked_in_path and (vision_cand is None or vision_cand['dRel'] >= locked.dRel):
+    hold_limit = STICKY_HOLD_FRAMES
+
+  held_track = None
+  if matched_track is None and cache['track'] is not None and cache['absent'] + 1 <= hold_limit:
+    held_track = cache['track']
+  held_is_rescue = held_track is not None and cache['rescue']
 
   # 現有前車距離（不含來自救援的續命目標，救援目標每幀都要重新和現有前車比較）
   if matched_track is not None:
@@ -364,8 +462,11 @@ def get_lead_ext(
     existing_d = float('inf')
 
   # dp: 雷達主導救援採用判斷——沒有前車，或救援候選比現有前車更近才採用
+  # dp(重複雷達點閃爍修正): 救援候選若與現有雷達前車是同一物體（重複點），不算「更近的前車」
+  existing_track = matched_track if matched_track is not None else (held_track if not held_is_rescue else None)
   is_radar_rescue = (rescue_track is not None and rescue_track is not matched_track and
-                     rescue_track.dRel < existing_d)
+                     rescue_track.dRel < existing_d and
+                     not (existing_track is not None and _is_same_object(existing_track, rescue_track)))
 
   vision_lead = None
   if is_radar_rescue:
@@ -398,7 +499,7 @@ def get_lead_ext(
       cache['rescue'] = False
     elif cache['track'] is not None:
       cache['absent'] += 1
-      if cache['absent'] <= SELECT_HOLDOVER_FRAMES:
+      if cache['absent'] <= hold_limit:
         selected_track = cache['track']  # 強制回傳上一刻的凍結物件，維持鎖定
       else:
         cache['track'] = None
@@ -440,10 +541,22 @@ def get_lead_ext(
   # 原廠底線救援
   if low_speed_override:
     low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+    low_speed_used = None
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
-      if (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
+      # dp(重複雷達點閃爍修正): 上一幀低速覆寫選到的目標仍在清單中、且與最近目標為同一物體時沿用
+      last_ls = _LOW_SPEED_LAST['track']
+      if (last_ls is not None and last_ls is not closest_track and
+          any(c is last_ls for c in low_speed_tracks) and _is_same_object(last_ls, closest_track)):
+        closest_track = last_ls
+      # dp(重複雷達點閃爍修正): 現有雷達前車與最近目標為同一物體時，不因幾公分的差距而替換
+      # （刻意偏離原廠：原廠只要更近就替換，同一物體的重複點會因此每幀互換）
+      cur_track = tracks.get(lead_dict['radarTrackId']) if (lead_dict['status'] and lead_dict.get('radar')) else None
+      same_as_current = cur_track is not None and _is_same_object(cur_track, closest_track)
+      if not same_as_current and ((not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel'])):
         lead_dict = closest_track.get_RadarState()
+        low_speed_used = closest_track
+    _LOW_SPEED_LAST['track'] = low_speed_used
 
   return lead_dict
 
