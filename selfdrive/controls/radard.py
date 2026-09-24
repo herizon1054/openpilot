@@ -157,9 +157,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, lead_prob: float, *_dp_args, low_speed_override: bool = True, **_dp_kwargs) -> dict[str, Any]:
-  # dp: *_dp_args / **_dp_kwargs 吸收 radard_ext 專用參數（is_turning、路徑等），讓未載入
-  # radard_ext 的情境（process_replay、測試）不會 TypeError；原廠邏輯不使用這些參數。
+             model_v_ego: float, lead_prob: float, low_speed_override: bool = True) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
@@ -185,7 +183,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
 
 class RadarD:
-  def __init__(self, delay: float = 0.0, steer_ratio: float = 15.0, wheelbase: float = 2.7):
+  def __init__(self, delay: float = 0.0):
     self.current_time = 0.0
 
     self.tracks: dict[int, Track] = {}
@@ -195,10 +193,6 @@ class RadarD:
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.last_v_ego_frame = -1
-
-    # dp: 供 radard_ext 的持續性救援做路徑預測（自行車模型）用
-    self.steer_ratio = steer_ratio
-    self.wheelbase = wheelbase
 
     self.radar_state: capnp._DynamicStructBuilder | None = None
     self.radar_state_valid = False
@@ -217,10 +211,7 @@ class RadarD:
     # dp: 判斷是否正在轉彎（角度或角速度超過門檻），供 radard_ext 的信心度累積邏輯
     # 使用——轉彎時保留「必須真實量測」的保護（避免誤判旁側車道目標切入本車道），
     # 直行/巡航時放行（避免正常雷達漏拍拖慢插隊反應）。
-    # dp(修正 8): 角速度門檻 10 → 20 deg/s。log 實測（車速 >15 km/h、角度 <15 度）：
-    #   >=10 deg/s 佔 4~14% 幀（市區閃機車、路面修正就會觸發），>=20 deg/s 佔 1~6%。
-    is_turning = abs(sm['carState'].steeringAngleDeg) >= 15.0 or abs(sm['carState'].steeringRateDeg) >= 20.0
-    steering_angle_deg = sm['carState'].steeringAngleDeg
+    is_turning = abs(sm['carState'].steeringAngleDeg) >= 15.0 or abs(sm['carState'].steeringRateDeg) >= 10.0
 
     ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
 
@@ -262,14 +253,8 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      # dp: 傳入模型規劃路徑（供橫向閘門與雷達主導救援的走廊判斷），以及未濾波的原始
-      # lead 機率（雷達主導救援的視覺信心度下限只看原始值，最嚴格版本）。
-      path_x = list(sm['modelV2'].position.x)
-      path_y = list(sm['modelV2'].position.y)
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=True,
-                                          raw_lead_prob=leads_v3[0].prob, path_x=path_x, path_y=path_y)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, steering_angle_deg, self.steer_ratio, self.wheelbase, low_speed_override=False,
-                                          raw_lead_prob=leads_v3[1].prob, path_x=path_x, path_y=path_y)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, is_turning, low_speed_override=True)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, is_turning, low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
@@ -297,7 +282,7 @@ def main() -> None:
   # 🎛️ 專屬 DP 擴充引入點：動態替換並生成帶有提早鎖定邏輯的實例
   # ==============================================================================
   from dragonpilot.selfdrive.controls.radard_ext import RadarDExt as RadarD
-  RD = RadarD(CP.radarDelay, CP.steerRatio, CP.wheelbase)
+  RD = RadarD(CP.radarDelay)
 
   while 1:
     sm.update()
