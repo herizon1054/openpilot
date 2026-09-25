@@ -1615,3 +1615,54 @@ msgid ""
 msgstr ""
 "微调车辆相对于侦测到的停止线的停车位置。正值停更远，负值停更近。<br>这是叠加"
 "在固定的相机到车头保杆修正值之上，建议从小数值开始并依自己的装机情况调整。"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:8
+#, python-format
+msgid "Lane Centering Assist (LCA)"
+msgstr "车道线置中辅助(LCA)"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:9
+#, python-format
+msgid ""
+"Experimentally bias the model's desired curvature toward the detected lane "
+"center. Requires two confident lane lines and stays subject to the normal "
+"curvature and jerk limits. Ported from StarPilot."
+msgstr ""
+"实验性功能：让模型的目标曲率向侦测到的车道中心偏移。需要两侧车道线都达到"
+"一定的信心程度，且仍受一般曲率与加加速度（jerk）限制约束。移植自 "
+"StarPilot。"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:20
+#, python-format
+msgid "Lane Centering E2E Override"
+msgstr "车道线置中辅助 E2E 覆盖程度"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:21
+msgid ""
+"A ceiling on how much a confident end-to-end model path can override lane "
+"centering. The actual amount also scales continuously with the model "
+"path's confidence, vehicle speed, and how far it departs the lane center, "
+"so all three need to be favorable to reach this ceiling. 100% = model can "
+"fully override once those conditions are met; 0% = override is always "
+"disabled regardless of the other conditions."
+msgstr ""
+"这是模型路径可以覆盖车道置中的“上限”，实际生效程度还会依模型路径的"
+"信心程度、车速、偏移幅度连续调整，三者都达到最佳时才会用满这个上限。"
+"100% 代表这些条件都达标时由模型完全主导；0% 代表无论其他条件为何，"
+"覆盖机制永远停用。"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:40
+#, python-format
+msgid "Pause Lane Centering on Turn Signal"
+msgstr "打方向灯时暂停车道线置中辅助"
+
+#: dragonpilot/settings/min-feat.lat.lane_centering.py:41
+#, python-format
+msgid ""
+"Fade the lane-centering correction out while a turn signal is active so it "
+"does not fight a lane change or turn."
+msgstr ""
+"方向灯作动时淡出车道置中修正，避免与变换车道或转弯动作互相干扰。"
+
+msgid "Steering Angle"
+msgstr "转向角度"
