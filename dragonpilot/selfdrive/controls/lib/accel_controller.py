@@ -68,9 +68,20 @@ PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 # ==============================================================================
 # 條件式雷達滑行常數設定 (Early Coast)
 # ==============================================================================
-EARLY_COAST_TRIGGER_FRAMES = max(1, int(0.5 / DT_MDL))  # 觸發持續時間 (約 0.5 秒)
+EARLY_COAST_TRIGGER_FRAMES = max(1, int(0.5 / DT_MDL))  # 進入觸發所需的連續持續時間 (約 0.5 秒)
+EARLY_COAST_RELEASE_FRAMES = max(1, int(0.5 / DT_MDL))  # 解除觸發所需的連續持續時間 (約 0.5 秒，避免單幀雜訊瞬間解除)
 EARLY_COAST_MIN_DIST = 10.0                             # 最小觸發距離 (公尺)
-EARLY_COAST_MAX_DIST = 70.0                             # 最大觸發距離 (公尺)
+EARLY_COAST_MAX_DIST = 70.0                             # 最大觸發距離 (公尺，低速時的基準值)
+
+# 最大觸發距離依車速動態延伸的中斷點 (車速, 單位: m/s)
+# 60 km/h (16.7 m/s) 以下維持 70m；100 km/h (27.8 m/s) 以上放寬到 100m；中間線性內插
+EARLY_COAST_MAX_DIST_BP = [16.7, 27.8]
+EARLY_COAST_MAX_DIST_V = [EARLY_COAST_MAX_DIST, 100.0]
+
+# vRel 低通濾波係數 (風格與 dtsc.py / aem.py 的 LPF_ALPHA 一致)
+# 純視覺來源 (radard.py 的 get_RadarState_from_vision，無 Kalman 平滑) 的 vRel 逐幀雜訊較大，
+# 濾波後再拿去跟 v_rel_thresh / 0.0 比較，避免距離不穩定造成觸發狀態反覆橫跳
+EARLY_COAST_VREL_LPF_ALPHA = 0.2
 
 
 class AccelPersonalityController:
@@ -103,6 +114,8 @@ class AccelPersonalityController:
     # 狀態標記：是否觸發提早滑行與連續逼近幀數
     self._force_early_coast = False
     self._approach_frames = 0
+    self._release_frames = 0     # 解除觸發的連續幀計數器 (debounce)
+    self._vrel_filtered = 0.0    # 低通濾波後的 vRel，降低純視覺來源的逐幀雜訊
 
   def update(self, sm=None):
     """
@@ -124,33 +137,50 @@ class AccelPersonalityController:
           v_ego = float(sm['carState'].vEgo)
 
           # ==============================================================================
-          # 條件式雷達滑行邏輯 (固定 10~70m 區間 + Hysteresis 遲滯機制)
+          # 條件式雷達滑行邏輯 (依車速動態延伸的 10m~70/100m 區間 + 進出雙向 Debounce)
           # ==============================================================================
           if lead_one.status:
             # 根據車速動態計算逼近速度閾值
             v_rel_thresh = float(np.interp(v_ego, [16.0, 22.0], [0.5, 1.0]))
-            
-            # 1. 判斷是否為「持續逼近」且在固定的有效範圍內 (10m ~ 70m)
-            if lead_one.vRel < -v_rel_thresh and EARLY_COAST_MIN_DIST < lead_one.dRel < EARLY_COAST_MAX_DIST:
+
+            # 根據車速動態計算最大觸發距離 (60km/h 以下 70m，100km/h 以上 100m)
+            early_coast_max_dist = float(np.interp(v_ego, EARLY_COAST_MAX_DIST_BP, EARLY_COAST_MAX_DIST_V))
+
+            # 0. 對 vRel 做低通濾波，降低純視覺來源 (無雷達 Track 的 Kalman 平滑) 的逐幀雜訊，
+            # 避免跟車距離不穩定時，濾波前的原始 vRel 在門檻附近反覆橫跳
+            self._vrel_filtered = (EARLY_COAST_VREL_LPF_ALPHA * float(lead_one.vRel)
+                                    + (1.0 - EARLY_COAST_VREL_LPF_ALPHA) * self._vrel_filtered)
+
+            # 1. 判斷是否為「持續逼近」且在有效範圍內 (10m ~ 依車速動態延伸的上限)
+            if self._vrel_filtered < -v_rel_thresh and EARLY_COAST_MIN_DIST < lead_one.dRel < early_coast_max_dist:
               self._approach_frames += 1
             else:
               # 若未達逼近閾值或超出距離範圍，中斷連續計數
               self._approach_frames = 0
 
-            # 2. 觸發條件：雷達必須連續確認前車逼近達設定時間 (約 0.5s)
+            # 2. 觸發條件：必須連續確認前車逼近達設定時間 (約 0.5s)
             if self._approach_frames >= EARLY_COAST_TRIGGER_FRAMES:
               self._force_early_coast = True
+              self._release_frames = 0  # 重新觸發後，解除計數器歸零
 
-            # 3. 立即解除條件：前車不再逼近 (vRel >= 0 代表前車速度等於或快於本車)
-            # 這裡形成了 Hysteresis (遲滯區間)：觸發需小於 -v_rel_thresh，但解除只需大於等於 0
-            if lead_one.vRel >= 0.0:
+            # 3. 解除條件：前車不再逼近 (濾波後 vRel >= 0)，同樣改為連續 0.5s 才解除，
+            # 避免濾波後的 vRel 在 0 附近瞬間跨線就立刻解除，形成對稱的進出 debounce
+            if self._vrel_filtered >= 0.0:
+              self._release_frames += 1
+            else:
+              self._release_frames = 0
+
+            if self._release_frames >= EARLY_COAST_RELEASE_FRAMES:
               self._force_early_coast = False
               self._approach_frames = 0
-              
+              self._release_frames = 0
+
           else:
-            # 4. Fail-safe: 雷達未鎖定前車，重設所有滑行狀態
+            # 4. Fail-safe: 未鎖定前車，立即重設所有滑行狀態 (不套用濾波與計數器)
             self._force_early_coast = False
             self._approach_frames = 0
+            self._release_frames = 0
+            self._vrel_filtered = 0.0
           # ==============================================================================
 
       except Exception:
@@ -159,6 +189,8 @@ class AccelPersonalityController:
         # ==============================================================================
         self._force_early_coast = False
         self._approach_frames = 0
+        self._release_frames = 0
+        self._vrel_filtered = 0.0
 
     # 定期刷新外部參數，避免每幀讀取 Params 造成 I/O 負擔
     if self.frame % PARAM_REFRESH_FRAMES == 0:
@@ -208,6 +240,8 @@ class AccelPersonalityController:
     self._cache_v_cruise = None
     self._force_early_coast = False
     self._approach_frames = 0
+    self._release_frames = 0
+    self._vrel_filtered = 0.0
 
   def get_accel_limits(self, v_ego: float) -> tuple[float, float]:
     v_ego = max(0.0, v_ego)
