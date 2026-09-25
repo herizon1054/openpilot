@@ -1,27 +1,5 @@
 版權是dragonpilot  
-
-以下是本分支亂搞項目
-
 修改項目 限Toyota Corolla Altis與Toyota Corolla Cross
-
-加入車道線置中模式
-
-方向盤動態角度   低速使用扭力控制  高速使用角度控制
-
-修改實驗模式加速意願  目前已修改類似一般模式油門加速方式    0.2
-
-AEM修改項目 
-         
-         追加車速開關 20KM以下切實驗模式 30KM以上切一般模式   側向G力超過0.15G 切換一般模式過彎減速 
-
-
-         追加遇到紅綠燈 10米就切換0.3加速意圖
-
-
-
-
-
-
 
 ![](dragonpilot/selfdrive/assets/dragonpilot.png)
 
