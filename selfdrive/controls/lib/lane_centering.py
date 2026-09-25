@@ -1,0 +1,366 @@
+# 移植自 StarPilot (firestar5683/StarPilot) 的車道置中 (Lane Centering) 控制器。
+#
+# 來源比對基準：
+#   - StarPilot: selfdrive/controls/lib/lane_centering.py
+#   - 參考 PR（sunnypilot 分支上的等價移植）：
+#       dsa302010/openpilot@96bc5a77dfbbe5df7bb05f34ac11557c86a3d0b8
+#       "controls: port confidence-gated lane centering from StarPilot"
+#
+# =====================================================================
+# 【與 cp 的刻意分歧，請注意】
+# 本檔案原本是逐行忠實移植、不做任何邏輯修改的「純演算法」層。以下五處
+# 是後續依實際路測回饋（方向盤在車道置中/模型路徑混合的邊界附近會有
+# 「一直修正、忽左忽右」的抖動）刻意修改過的地方，之後若要跟 StarPilot
+# 上游重新比對/移植，請特別注意這幾處已經不是逐字一致：
+#
+#   1. `_MIN_V_EGO`：從 StarPilot 原本的 5.0 m/s（18 km/h）改為 15 km/h
+#      （約 4.17 m/s），後續依需求再改為 **20 km/h**（約 5.56 m/s）。
+#   2. e2e 路徑信心度的混合方式：原本是硬門檻（`path_std` 只要沒超過
+#      `_E2E_MAX_PATH_STD` 就 100% 套用 e2e 折抵，超過就完全不折抵），
+#      因為 `path_std` 本身逐幀會有雜訊、常常在門檻附近抖動，導致修正量
+#      忽有忽無。現在改成 `_E2E_CONFIDENCE_RAMP_START` ~
+#      `_E2E_MAX_PATH_STD` 之間的連續斜坡權重，不再有斷崖。
+#   3. 新增車速平滑加權，且低速端刻意信任模型較多：`dp_lane_centering_e2e_authority`
+#      這個 UI 上的數值代表**高速（60 km/h 以上）時**模型可以覆蓋車道置中的
+#      上限；車速從 0 km/h 到 60 km/h 之間，這個「上限」會用線性內插從
+#      100%（低速端，車道線在低速下常常反而不如模型可靠，市區路況也更需要
+#      模型判斷）平滑過渡到 UI 設定值（高速端）。這跟一般直覺「低速更該信任
+#      車道置中」是反過來的，是刻意的設計決策，不是筆誤：
+#          effective_authority(v) = 100% * (1-r) + e2e_authority * r
+#          r = clip((v - 0) / (60km/h - 0), 0, 1)
+#      注意這兩個端點目前刻意選得很近（UI 預設 85% 時只有 100%~85% 的
+#      15 個百分點振幅），所以車速對覆蓋程度的影響本來就不會很大，這是端點
+#      選擇的必然結果，不是線性內插算錯。
+#   4. 新增「突發偏移＝模型正在避讓」判斷：追蹤修正量的慢速基準值
+#      （`_AVOIDANCE_EMA_TAU` 秒的一階低通），如果當下修正量跟基準值差距
+#      超過 `_AVOIDANCE_JUMP_SPAN`，視為模型路徑「突然」偏移（例如避讓其他
+#      車輛），車道置中會平滑地讓出（不硬拉回車道中心）；如果這個偏移持續
+#      存在夠久，基準值會逐漸追上，車道置中才會恢復正常介入（代表這其實是
+#      需要修正的長期偏移，而不是短暫避讓）。跟第 2、3 點一樣是連續權重，
+#      不是「偵測到就整個關掉幾秒」的開關式判斷。
+#      【已撤銷的實驗，留紀錄】曾經加過第二層判斷，額外參考
+#      `model_curvature` 有沒有明顯變化來排除「這其實是真轉彎，不是避讓」
+#      （新增過 `_TURN_CURVATURE_JUMP_SPAN` 常數）。實測發現彎道時（即使是
+#      很輕微的彎道）幾乎必然觸發「曲率也在動」，導致這個排除機制在彎道
+#      全程幾乎永遠成立，等於彎道時避讓機制原本該有的雜訊抑制完全失效——
+#      車道線/模型路徑的橫向估計雜訊在彎道會被 lookahead 平方放大（見演算法
+#      概述），原本被避讓機制濾掉的雜訊在彎道時直接透出，變成方向盤持續
+#      小幅擺動（實測回報：直線輕微，彎道像喝醉）。已確認拿掉這個排除機制
+#      後只留 model_curvature 無關的單純避讓判斷；如果之後真的需要恢復
+#      「真轉彎不該被避讓機制誤傷」這個功能，要用不同的判斷方式（不能只看
+#      「曲率有沒有變化」，因為彎道中曲率本來就會持續變化）。
+#      【實測調整】`_AVOIDANCE_EMA_TAU` 原本是 2.0 秒，後續依需求改為
+#      **0.5 秒**，讓避讓機制在偵測到「突然」偏移後，恢復正常出力的速度
+#      加快到約原本的四分之一（一階低通收斂到接近 100% 約需要 5×tau，
+#      2.0 秒對應約 10 秒、0.5 秒對應約 2.5 秒）。這是純邏輯推導出的
+#      調整，沒有實測數據驗證過：好處是懷疑能改善「變道後恢復置中不穩定
+#      （最長接近 5 秒）」跟「連續轉彎反應跟不上」這兩個已知限制（見對應
+#      章節）；代價是真正需要避讓的情境，車道置中恢復介入、開始跟模型的
+#      避讓路徑打架的時間也跟著提前，如果實際避讓動作需要 2 秒以上才能
+#      完成，這個縮短後的 tau 可能來不及撐完整個避讓過程。
+#   5. `_CENTER_ERROR_DEADBAND`：從 0.08 逐步加大到 **0.15**（中間試過
+#      0.10，實測仍不夠、方向盤還會輕微左右搖擺，最後定案 0.15 才真正
+#      穩定）。實測驗證：拿掉第 4 點的 model_curvature 排除機制後，彎道
+#      的「像喝醉」現象大幅改善，但還沒完全消失，加大死區之後方向盤在
+#      彎道不再左右拉扯——代表「已知限制」章節提到的根因 A（車道線/模型
+#      路徑橫向估計雜訊在彎道被 lookahead 平方放大）確實存在，死區加大
+#      是直接針對它的濾波。
+#      【後續用真實 log 驗證，並回退 _SMOOTH_TAU】拿實際行車 log 分析發現，
+#      「車道正中央」跟「模型自己選擇的路徑」之間的橫向誤差，中位數落在
+#      0.09~0.18m 之間，且大部分是緩慢漂移（1 秒內滾動平均可變化 ±0.3m
+#      以上），不是逐幀雜訊（逐幀抖動標準差只有約 0.01m）——這代表死區
+#      加大到 0.15，效果是讓車道置中不再糾正「模型自己系統性選擇的
+#      路線」，只處理明顯更大的偏移，這正是解決搖擺問題所需要的取捨，
+#      跟實際路測「0.10 不夠、0.15 才穩定」的回饋一致。用同一份 log 做
+#      A/B 比較（原始 StarPilot 邏輯 vs 修改版，e2e_authority 固定同一個
+#      值排除干擾）並逐項拆解常數後確認：**拉扯問題幾乎全部是死區這一項
+#      造成**（單獨把死區退回 0.08、其餘不動，就能還原掉平均修正量九成
+#      以上的差距）；`_SMOOTH_TAU` 從 0.4 加大到 0.6 這件事，對抗晃動的
+#      實際貢獻小到可以忽略。同時，`_SMOOTH_TAU` 加大有明確代價：它會讓
+#      「持續、穩定介入」時修正量從目前值爬升到目標值的速度變慢，在
+#      變換車道剛結束、車子確實需要修正的情境下，容易讓人感覺「置中變
+#      遲鈍、好像消失了」（見「已知限制」章節「重新啟用瞬間方向盤自行
+#      偏移」的討論）。**權衡「晃動抑制的貢獻幾乎為零」跟「拖慢真正需要
+#      出力時的反應速度」這兩點後，已把 `_SMOOTH_TAU` 退回原值 0.4**，
+#      死區維持在 0.15（死區才是真正解決晃動問題的關鍵）。
+#      **【已修正的錯誤診斷】**：曾經以為時速 80 過彎「反應變慢」是死區／
+#      `_SMOOTH_TAU` 加大的副作用，後來確認那次測試其實是
+#      `dp_lane_centering_e2e_authority` 還設 75%、模型混合比例較高造成的，
+#      跟死區／`_SMOOTH_TAU` 無關（詳見移植文件第 8 節的更正說明）。
+#
+# 除了以上五處，其餘邏輯（車道線信心門檻、方向燈/變換車道暫停等）仍與
+# StarPilot 原始碼一致，未做修改。
+# 【dptest 移植時的差異】dplcc 那邊後續還有第 6 點「重新啟用觀察期」跟
+# 第 7 點「高速修正量補償」，依需求**這次移植到 dptest 不加入這兩項**，
+# 詳細內容跟撤銷理由請見 dplcc 自己的 `lane_centering.py`／
+# `lane_centering_port.md`，這裡不重複。
+# dp_ 參數讀取、啟用條件等 glue 邏輯，請見：
+#   dragonpilot/selfdrive/controls/lib/dp_lane_centering.py
+# =====================================================================
+#
+# 演算法概述：
+#   利用 modelV2 的左右車道線 (laneLines[1], laneLines[2]) 與模型路徑
+#   (position)，在依車速決定的前視距離 (lookahead) 上，計算「車道中心」與
+#   「模型路徑」的橫向誤差，轉換成一個曲率修正量，疊加到原本的
+#   model_curvature 上。修正量會：
+#     - 要求兩側車道線機率/標準差達到信心門檻，否則直接回退為 0（不介入）
+#     - 進入/離開時以一階低通 (smooth_value) 平滑，避免方向盤突兀跳動
+#     - 可設定車道內的置中偏移量 (offset)，並依車道寬度自動限縮到安全範圍
+#     - 可依「端到端 (e2e) 模型路徑」的信心程度與目前車速，平滑地讓模型
+#       路徑逐漸取得主導權（e2e_authority 越高、模型路徑標準差越小、車速
+#       越快，車道置中修正量會被壓得越低；三者都是連續加權，不是門檻切換）
+#     - 偵測到修正量「突然」大幅變化時（相對於自己的慢速基準值），視為
+#       模型正在避讓車輛，平滑讓出、不與模型拉扯；如果偏移持續存在夠久，
+#       才會被視為需要修正的長期偏移，車道置中會逐漸恢復介入
+#     - 變換車道 (laneChangeState != off) 或方向燈閃爍時可暫停/淡出介入
+from cereal import log
+import numpy as np
+
+from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.controls.lib.drive_helpers import smooth_value
+
+
+_KPH_TO_MS = 1.0 / 3.6
+
+_MIN_V_EGO = 20.0 * _KPH_TO_MS  # 20 km/h（原 StarPilot 為 5.0 m/s ≈ 18 km/h，後續 dplcc 曾定案 15 km/h，見檔頭說明）
+_MIN_LANE_PROB = 0.6
+_MAX_LANE_STD = 0.3
+_MIN_LANE_WIDTH = 2.6
+_MAX_LANE_WIDTH = 4.8
+_MAX_OFFSET = 0.3
+_MIN_CENTER_TO_LINE = 1.1
+_MAX_RAW_CORRECTION = 0.004
+_MAX_GAIN = 0.30
+_VISUAL_CORRECTION_EPSILON = 1e-6
+_SMOOTH_TAU = 0.4  # 退回原值：用真實 log 做 A/B/拆解分析後確認，拉扯問題幾乎全部是死區造成的，_SMOOTH_TAU 加大對抗晃動的貢獻可忽略不計，但會拖慢「該出力時」的反應速度（見檔頭第 5 點）
+_SIGNAL_RELEASE_TAU = 0.20
+_CONFIDENCE_RELEASE_TAU = 0.20
+_CENTER_ERROR_DEADBAND = 0.15  # 實測調整：0.08 會殘留左右拉扯，0.10 仍不夠，加大到 0.15 才真正穩定（見檔頭第 5 點）
+
+_E2E_MAX_PATH_STD = 0.35
+_E2E_CONFIDENCE_RAMP_START = 0.25  # path_std 在這之下，信心權重視為滿分 1.0
+_E2E_BREAK_IN_START = 0.15
+_E2E_BREAK_IN_FULL = 0.50
+_E2E_SPEED_RAMP_START_MS = 0.0 * _KPH_TO_MS   # 0 km/h：覆蓋上限視為 100%（低速端刻意信任模型）
+_E2E_SPEED_RAMP_END_MS = 60.0 * _KPH_TO_MS    # 60 km/h：覆蓋上限視為 UI 設定值（e2e_authority）
+
+# 「突發偏移＝模型正在避讓」判斷用的常數。
+# _AVOIDANCE_EMA_TAU：修正量慢速基準值的一階低通時間常數，用來區分「突然」
+# 跟「長期」偏移；偏移若在這個時間尺度內持續存在，基準值會逐漸追上，
+# 車道置中才會恢復正常介入。
+# _AVOIDANCE_JUMP_SPAN：修正量跟基準值的差距達到這個量級時，視為完全是
+# 突發避讓；中間平滑爬升，不是門檻式開關。單位跟 _MAX_RAW_CORRECTION 一樣
+# 是曲率，量級刻意抓得跟 _MAX_RAW_CORRECTION 接近。
+_AVOIDANCE_EMA_TAU = 0.5  # 實測調整：從 2.0 改為 0.5，讓避讓機制更快恢復正常出力（見檔頭說明）
+_AVOIDANCE_JUMP_SPAN = 0.003
+
+
+class LaneCenteringController:
+  def __init__(self) -> None:
+    self._correction = 0.0
+    self._raw_correction_ema = None    # None 代表「還沒有基準值」，下一幀會直接拿當下值當基準，不會被誤判為突發
+
+  def reset(self) -> None:
+    self._correction = 0.0
+    self._raw_correction_ema = None
+
+  def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
+             pause_on_signal=False, turn_signal_active=False, driver_override=False) -> float:
+    model_curvature = float(model_curvature)
+
+    try:
+      v_ego = float(v_ego)
+      offset = float(offset)
+      e2e_authority = float(e2e_authority)
+    except (TypeError, ValueError):
+      self.reset()
+      return model_curvature
+
+    if not np.isfinite([v_ego, offset, e2e_authority]).all():
+      self.reset()
+      return model_curvature
+
+    if not model_valid or not enabled or not lat_active or v_ego < _MIN_V_EGO:
+      self.reset()
+      return model_curvature
+
+    if driver_override:
+      self.reset()
+      return model_curvature
+
+    if pause_on_signal and turn_signal_active:
+      self._correction = float(smooth_value(0.0, self._correction, _SIGNAL_RELEASE_TAU, dt=DT_CTRL))
+      return model_curvature + self._correction
+
+    try:
+      if model_v2.meta.laneChangeState != log.LaneChangeState.off:
+        self.reset()
+        return model_curvature
+    except (AttributeError, TypeError, ValueError):
+      self.reset()
+      return model_curvature
+
+    valid, raw_correction = self._raw_correction(
+      model_v2,
+      v_ego,
+      float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
+      float(np.clip(e2e_authority, 0.0, 1.0)),
+    )
+    if not valid:
+      self._correction = float(smooth_value(0.0, self._correction, _CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
+      return model_curvature + self._correction
+
+    # 避讓偵測：把這一幀的修正量拿去跟自己的慢速基準值比較，差距越大代表
+    # 「越突然」，車道置中就越讓出。基準值用 smooth_value 慢慢追上目前值，
+    # 所以只要偏移撐得夠久（久到基準值追上來），權重就會回到 1.0，恢復正常
+    # 介入。第一次呼叫（reset 之後）直接把基準值設成當下值，避免從 0 開始
+    # 的冷啟動被誤判成「突然」。
+    #
+    # 這裡刻意不再額外參考 model_curvature 來排除「真轉彎」（見檔頭第 4 點
+    # 的完整說明）：實測發現彎道時只要一有曲率變化，這個排除機制幾乎永遠
+    # 判定成立，等於彎道全程都失去避讓機制原本該提供的雜訊抑制，反而讓
+    # 彎道時的車道線/模型路徑估計雜訊（在彎道會被 lookahead 平方放大）
+    # 直接透出，造成方向盤持續小幅擺動。移除後彎道時修正量會比較保守（
+    # 更容易被判定成短暫偏移而壓低），這是刻意接受的取捨。
+    if self._raw_correction_ema is None:
+      self._raw_correction_ema = raw_correction
+    deviation = raw_correction - self._raw_correction_ema
+    avoidance_weight = float(np.clip(1.0 - abs(deviation) / _AVOIDANCE_JUMP_SPAN, 0.0, 1.0))
+    self._raw_correction_ema = float(smooth_value(raw_correction, self._raw_correction_ema, _AVOIDANCE_EMA_TAU, dt=DT_CTRL))
+    raw_correction *= avoidance_weight
+
+    target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
+    self._correction = float(smooth_value(target, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
+    return model_curvature + self._correction
+
+  @staticmethod
+  def _valid_path(x, y) -> bool:
+    return x.size >= 2 and x.size == y.size and np.isfinite(x).all() and np.isfinite(y).all() and np.all(np.diff(x) > 0)
+
+  @staticmethod
+  def _covers(x, distance: float) -> bool:
+    return bool(x[0] <= distance <= x[-1])
+
+  @staticmethod
+  def _raw_correction(model_v2, v_ego: float, offset: float, e2e_authority: float) -> tuple[bool, float]:
+    try:
+      lane_lines = model_v2.laneLines
+      probs = np.asarray(model_v2.laneLineProbs, dtype=float)
+      stds = np.asarray(model_v2.laneLineStds, dtype=float)
+      if len(lane_lines) < 3 or probs.size < 3 or stds.size < 3:
+        return False, 0.0
+      if not np.isfinite(probs[[1, 2]]).all() or not np.isfinite(stds[[1, 2]]).all():
+        return False, 0.0
+      if np.any(probs[[1, 2]] < _MIN_LANE_PROB) or np.any(probs[[1, 2]] > 1.0):
+        return False, 0.0
+      if np.any(stds[[1, 2]] < 0.0) or np.any(stds[[1, 2]] > _MAX_LANE_STD):
+        return False, 0.0
+
+      left_x = np.asarray(lane_lines[1].x, dtype=float)
+      left_y = np.asarray(lane_lines[1].y, dtype=float)
+      right_x = np.asarray(lane_lines[2].x, dtype=float)
+      right_y = np.asarray(lane_lines[2].y, dtype=float)
+      pos_x = np.asarray(model_v2.position.x, dtype=float)
+      pos_y = np.asarray(model_v2.position.y, dtype=float)
+      if not (LaneCenteringController._valid_path(left_x, left_y) and
+              LaneCenteringController._valid_path(right_x, right_y) and
+              LaneCenteringController._valid_path(pos_x, pos_y)):
+        return False, 0.0
+
+      lookahead = float(np.clip(v_ego, 8.0, 35.0))
+      if not all(LaneCenteringController._covers(x, lookahead) for x in (left_x, right_x, pos_x)):
+        return False, 0.0
+
+      left = float(np.interp(lookahead, left_x, left_y))
+      right = float(np.interp(lookahead, right_x, right_y))
+      width = right - left
+      if not _MIN_LANE_WIDTH <= width <= _MAX_LANE_WIDTH:
+        return False, 0.0
+
+      max_safe_offset = min(_MAX_OFFSET, max(0.0, width * 0.5 - _MIN_CENTER_TO_LINE))
+      target_y = 0.5 * (left + right) + float(np.clip(offset, -max_safe_offset, max_safe_offset))
+      model_y = float(np.interp(lookahead, pos_x, pos_y))
+      error = target_y - model_y
+      error_abs = abs(error)
+      if error_abs <= _CENTER_ERROR_DEADBAND:
+        error = 0.0
+      else:
+        error = np.copysign(error_abs - _CENTER_ERROR_DEADBAND, error)
+
+      try:
+        pos_y_std = np.asarray(model_v2.position.yStd, dtype=float)
+        if LaneCenteringController._valid_path(pos_x, pos_y_std):
+          path_std = float(np.interp(lookahead, pos_x, pos_y_std))
+          if path_std >= 0.0:
+            # 信心權重：path_std 在 _E2E_CONFIDENCE_RAMP_START 以下視為滿分 1.0，
+            # 到 _E2E_MAX_PATH_STD 平滑降到 0，取代原本「超過門檻就整個關閉」的斷崖
+            confidence_weight = 1.0 - float(np.clip(
+              (path_std - _E2E_CONFIDENCE_RAMP_START) / (_E2E_MAX_PATH_STD - _E2E_CONFIDENCE_RAMP_START),
+              0.0,
+              1.0,
+            ))
+            # 車速覆蓋上限：0 km/h 時上限視為 100%（低速信任模型），
+            # 60 km/h 時上限視為 e2e_authority（UI 設定值），中間線性內插；
+            # 這是刻意選擇「低速端更信任模型」，跟一般直覺相反，見檔頭說明
+            speed_ratio = float(np.clip(
+              (v_ego - _E2E_SPEED_RAMP_START_MS) / (_E2E_SPEED_RAMP_END_MS - _E2E_SPEED_RAMP_START_MS),
+              0.0,
+              1.0,
+            ))
+            effective_authority = 1.0 * (1.0 - speed_ratio) + e2e_authority * speed_ratio
+            break_in = np.clip(
+              (error_abs - _E2E_BREAK_IN_START) / (_E2E_BREAK_IN_FULL - _E2E_BREAK_IN_START),
+              0.0,
+              1.0,
+            )
+            error *= 1.0 - effective_authority * float(break_in) * confidence_weight
+      except (AttributeError, TypeError, ValueError):
+        pass
+
+      return True, float(2.0 * error / lookahead ** 2)
+    except (AttributeError, IndexError, TypeError, ValueError):
+      return False, 0.0
+
+
+def get_raw_lane_centering_correction(model_v2, v_ego: float, offset: float,
+                                      e2e_authority: float) -> tuple[bool, float]:
+  """回傳未經 LaneCenteringController 濾波的瞬時車道置中修正量。"""
+  return LaneCenteringController._raw_correction(model_v2, v_ego, offset, e2e_authority)
+
+
+def get_lane_centering_visual_direction(model_v2, v_ego: float, offset: float, e2e_authority: float,
+                                        enabled: bool, lat_active: bool, pause_on_signal: bool = False,
+                                        turn_signal_active: bool = False,
+                                        applied_correction: float | None = None) -> int:
+  """回傳 1 表示向右修正、-1 表示向左修正、0 表示目前沒有修正在作用中。
+
+  目前 openpilot-dplcc 尚未接上任何畫面渲染（車道線高亮）邏輯使用這個函式，
+  純粹隨核心演算法一併移植過來，供未來若要做路面視覺化時使用。"""
+  if not enabled or not lat_active or (pause_on_signal and turn_signal_active):
+    return 0
+
+  try:
+    v_ego = float(v_ego)
+    offset = float(offset)
+    e2e_authority = float(e2e_authority)
+    if not np.isfinite([v_ego, offset, e2e_authority]).all() or v_ego < _MIN_V_EGO:
+      return 0
+    if model_v2.meta.laneChangeState != log.LaneChangeState.off:
+      return 0
+  except (AttributeError, TypeError, ValueError):
+    return 0
+
+  valid, correction = get_raw_lane_centering_correction(
+    model_v2,
+    v_ego,
+    float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
+    float(np.clip(e2e_authority, 0.0, 1.0)),
+  )
+  if not valid or not np.isfinite(correction):
+    return 0
+  if applied_correction is not None and np.isfinite(applied_correction) and \
+      abs(applied_correction) > _VISUAL_CORRECTION_EPSILON:
+    correction = float(applied_correction)
+  if abs(correction) <= _VISUAL_CORRECTION_EPSILON:
+    return 0
+  return 1 if correction > 0.0 else -1
