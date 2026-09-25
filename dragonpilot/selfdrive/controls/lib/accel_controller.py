@@ -70,7 +70,12 @@ PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 # ==============================================================================
 EARLY_COAST_TRIGGER_FRAMES = max(1, int(0.5 / DT_MDL))  # 觸發持續時間 (約 0.5 秒)
 EARLY_COAST_MIN_DIST = 10.0                             # 最小觸發距離 (公尺)
-EARLY_COAST_MAX_DIST = 70.0                             # 最大觸發距離 (公尺)
+EARLY_COAST_MAX_DIST = 70.0                             # 最大觸發距離 (公尺，低速時的基準值)
+
+# 最大觸發距離依車速動態延伸的中斷點 (車速, 單位: m/s)
+# 60 km/h (16.7 m/s) 以下維持 70m；100 km/h (27.8 m/s) 以上放寬到 100m；中間線性內插
+EARLY_COAST_MAX_DIST_BP = [16.7, 27.8]
+EARLY_COAST_MAX_DIST_V = [EARLY_COAST_MAX_DIST, 100.0]
 
 
 class AccelPersonalityController:
@@ -129,9 +134,12 @@ class AccelPersonalityController:
           if lead_one.status:
             # 根據車速動態計算逼近速度閾值
             v_rel_thresh = float(np.interp(v_ego, [16.0, 22.0], [0.5, 1.0]))
-            
-            # 1. 判斷是否為「持續逼近」且在固定的有效範圍內 (10m ~ 70m)
-            if lead_one.vRel < -v_rel_thresh and EARLY_COAST_MIN_DIST < lead_one.dRel < EARLY_COAST_MAX_DIST:
+
+            # 根據車速動態計算最大觸發距離 (60km/h 以下 70m，100km/h 以上 100m)
+            early_coast_max_dist = float(np.interp(v_ego, EARLY_COAST_MAX_DIST_BP, EARLY_COAST_MAX_DIST_V))
+
+            # 1. 判斷是否為「持續逼近」且在有效範圍內 (10m ~ 依車速動態延伸的上限)
+            if lead_one.vRel < -v_rel_thresh and EARLY_COAST_MIN_DIST < lead_one.dRel < early_coast_max_dist:
               self._approach_frames += 1
             else:
               # 若未達逼近閾值或超出距離範圍，中斷連續計數
