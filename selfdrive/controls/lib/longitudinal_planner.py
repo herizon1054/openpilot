@@ -30,7 +30,7 @@ ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，�
 ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
 # mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
 # 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
-ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.2
+ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
@@ -180,15 +180,20 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
           allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
       else:
         allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+      # v10：throttle_prob 先做低通濾波，比較時再加遲滯，避免單幀雜訊讓 allow_throttle
+      # 每一幀反覆橫跳（見上方 THROTTLE_PROB_LPF_ALPHA 說明的實測數據）。
+      # 依需求，這組濾波+遲滯只套用在 blended 模式；acc 模式維持原廠寫法（見 else
+      # 分支），不干涉 acc 的 allow_throttle 判斷，加速行為跟原始檔逐字一致。
+      self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
+                                      + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
+      effective_threshold = (allow_throttle_threshold - ALLOW_THROTTLE_HYSTERESIS
+                              if self.allow_throttle else allow_throttle_threshold)
+      self.allow_throttle = self.throttle_prob_filtered > effective_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
     else:
+      # acc 模式：原廠寫法，直接拿原始 throttle_prob 比較，不做濾波、不做遲滯，
+      # 跟改動前的原始檔逐字相同，確保這次的修正完全不干涉 acc 模式的加速判斷
       allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
-    # v10：throttle_prob 先做低通濾波，比較時再加遲滯，避免單幀雜訊讓 allow_throttle
-    # 每一幀反覆橫跳（見上方 THROTTLE_PROB_LPF_ALPHA 說明的實測數據）
-    self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
-                                    + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
-    effective_threshold = (allow_throttle_threshold - ALLOW_THROTTLE_HYSTERESIS
-                            if self.allow_throttle else allow_throttle_threshold)
-    self.allow_throttle = self.throttle_prob_filtered > effective_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
+      self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
@@ -270,6 +275,23 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
                                                                         action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
+
+    # dp: 依需求，對 e2e 的正向加速度意圖做放大（×1.5），藉此補償 desired_accel 本身
+    # 偏保守的傾向（desired_accel 是從模型自己預測的 plan 軌跡微分算出來的「預期值」，
+    # 不是「意圖強度」，訓練資料是一般人類開車的溫和示範，先天就不激進——調
+    # LONG_SMOOTH_SECONDS/ALLOW_THROTTLE_THRESHOLD 這類下游參數並不會讓這個值本身變大，
+    # 因為它們動的是「這個值能不能、多快通過」，不是「這個值本身有多大」，這裡才是真正
+    # 改動數值大小的地方）。
+    # ⚠️ 刻意分歧：這一行會讓實際送進 min() 比較的 e2e 值，偏離模型原始預測值，
+    # 不是「模型原本的判斷」。刻意放在 min(mpc, e2e) 之前才做這個放大——放大後的值
+    # 只是拿去跟 mpc 比大小，比出來的仍取兩者中較保守的一個，並不會讓 e2e 真的贏過 mpc
+    # 的物理天花板，mpc 依然兜底；只有在 e2e 放大後仍然比 mpc 保守的情況下，才會讓原本
+    # 會被 e2e 扯得更低的 min() 結果，變得比較貼近 mpc（更積極一點），效果侷限在
+    # 「e2e 原本會比 mpc 更保守」的那些情境，不會讓最終輸出超過 mpc 認為安全的範圍。
+    # 只放大正值（想加速的方向），減速/煞車方向的 e2e 值不受影響。
+    E2E_ACCEL_BOOST_FACTOR = 1.5
+    if output_a_target_e2e > 0:
+      output_a_target_e2e = min(output_a_target_e2e * E2E_ACCEL_BOOST_FACTOR, ACCEL_MAX)
 
     if mode == 'acc':
       output_a_target = output_a_target_mpc
