@@ -21,7 +21,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
 # 速度門檻常數 (km/h 轉換為 m/s)
-APM_DEPARTURE_SPEED = 5 * 1000 / 3600   # 5 km/h：起步激烈模式上限
+APM_DEPARTURE_SPEED = 20 * 1000 / 3600   # 5 km/h：起步激烈模式上限
 
 # 完全靜止門檻
 V_EGO_STANDSTILL = 0.01                  # 低於 0.01 m/s 視為完全靜止，才準備起步
