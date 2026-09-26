@@ -105,7 +105,11 @@ VEL_SANE_FALLBACK_SCORE = 1.0       # 啟用後 score_v 的下限，1.0 = 完全
 # 92104 14.5s（88m 外 21 km/h 慢車，視覺 0.2~0.3）與 92102 33.6s（92m 外 16 km/h，
 # 視覺 0.14）為原邏輯遺漏、此規則可補回的本車道慢車。
 RADAR_RESCUE_MIN_PROB = 0.1         # 總視覺信心度門檻下限
-RADAR_RESCUE_CORRIDOR = 1.0         # 模型路徑左右各 1.0m
+RADAR_RESCUE_CORRIDOR = 1.0         # 模型路徑左右各 1.0m（進入條件）
+# dp(第八版): 進入與維持分開。已在救援中的目標，走廊放寬為 ±1.5m 才算出界，避免遠距離
+# 雷達橫向雜訊在 1.0m 邊緣（log：1.05m、1.12m）造成救援「鎖一下就放掉」。
+# 進入仍需在 ±1.0m 內連續 1 秒；其他條件（原始視覺機率、移動、量測、距離、角度）不放寬。
+RADAR_RESCUE_CORRIDOR_HOLD = 1.5    # 模型路徑左右各 1.5m（維持條件）
 RADAR_RESCUE_CONFIRM_FRAMES = int(1.0 / DT_MDL)   # 連續 1 秒
 RADAR_RESCUE_MIN_DIST = 5.0
 RADAR_RESCUE_MAX_DIST = 120.0
@@ -237,11 +241,14 @@ class TrackDP(Track):
       self.gate_flip_cnt[lead_idx] = 0
     return self.is_out_of_lane[lead_idx]
 
-  def update_radar_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float) -> None:
+  def update_radar_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float,
+                          is_active: bool = False) -> None:
     # dp: 每幀呼叫一次（只在 leadOne 那次呼叫時更新，避免一幀累加兩次）
+    # is_active：此目標是上一幀的救援前車，走廊用維持條件 RADAR_RESCUE_CORRIDOR_HOLD
+    corridor = RADAR_RESCUE_CORRIDOR_HOLD if is_active else RADAR_RESCUE_CORRIDOR
     eligible = (path_valid and bool(self.measured) and
                 RADAR_RESCUE_MIN_DIST < self.dRel < RADAR_RESCUE_MAX_DIST and
-                abs(self.yRel - path_y) < RADAR_RESCUE_CORRIDOR and
+                abs(self.yRel - path_y) < corridor and
                 (self.vRel + v_ego) > max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego) and
                 abs(steering_angle_deg) < RADAR_RESCUE_MAX_ANGLE)
     self.radar_rescue_frames = self.radar_rescue_frames + 1 if eligible else 0
@@ -390,8 +397,23 @@ def get_lead_ext(
   rescue_track = None
   rescue_prob = lead_prob if raw_lead_prob is None else raw_lead_prob
   if lead_idx == 0:
+    cache0 = _LEAD_STATE_CACHE[0]
+    active_rescue = cache0['track'] if cache0['rescue'] else None
+    # dp(第八版): 救援目標的雷達點消失、雷達改用新 ID 回報同一台車時（遠距離常見，
+    # log 92102 33.8s/35.4s），新 ID 繼承原本的連續幀數，不必重新等 1 秒。
+    # 判定沿用重複點的同一物體條件（_is_same_object），拿消失前最後一幀的位置比對。
+    if active_rescue is not None and tracks.get(active_rescue.identifier) is not active_rescue:
+      heirs = [t for t in tracks.values() if _is_same_object(active_rescue, t)]
+      if len(heirs) > 0:
+        heir = min(heirs, key=lambda t: abs(t.dRel - active_rescue.dRel) + abs(t.yRel - active_rescue.yRel))
+        heir.radar_rescue_frames = max(heir.radar_rescue_frames, active_rescue.radar_rescue_frames)
+        cache0['track'] = heir
+        active_rescue = heir
+      else:
+        active_rescue = None
     for track in tracks.values():
-      track.update_radar_rescue(v_ego, use_model_path, _path_y_at(track.dRel), steering_angle_deg)
+      track.update_radar_rescue(v_ego, use_model_path, _path_y_at(track.dRel), steering_angle_deg,
+                                is_active=track is active_rescue)
     rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
     if ready and rescue_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
       rescue_track = min(rescue_candidates, key=lambda t: t.dRel)
