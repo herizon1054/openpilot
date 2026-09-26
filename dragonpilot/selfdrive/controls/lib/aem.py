@@ -32,10 +32,11 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      過彎保護在這台車上會完全失效且沒有任何錯誤訊息——已用實際路測 rlog 驗證
 #      carState.yawRate 全程恆為 0.0，而 modelV2.orientationRate.z[0] 全程有非零值，
 #      因此改用模型訊號，與 dtsc.py 的資料來源一致，可跨品牌使用。
-#   2. 車速雙門檻 + 遲滯區間：
-#        v_ego <= SPEED_TO_EXPERIMENTAL (20 km/h) -> 切換為實驗模式 (blended)
-#        v_ego >= SPEED_TO_NORMAL       (30 km/h) -> 切換為一般模式 (acc)
-#      20~30 km/h 之間視為「過渡帶」，維持前一狀態、不切換，避免在單一門檻附近來回抖動。
+#   2. 車速門檻（兩層）：
+#        v_ego <= SPEED_FORCE_EXPERIMENTAL_KPH (20 km/h) -> 無條件、立即強制實驗模式，
+#          不經防彈跳，保證起步/低速一定是實驗模式，不會有防彈跳造成的空窗期
+#        20 km/h < v_ego < 30 km/h -> 過渡帶，維持前一狀態（含防彈跳）
+#        v_ego >= SPEED_TO_NORMAL (30 km/h) -> 切換為一般模式（含防彈跳）
 #   3. 接近模型停止線 + 車速閘門：near_stop_active 為 True 且車速通過
 #      STOP_MODE_SPEED_ENTER_KPH/EXIT_KPH 這組閘門（<=60km/h 開放、>=70km/h 關閉，
 #      60~70km/h 過渡帶維持前一狀態）時，強制切為實驗模式 (blended)。車速閘門的用意是
@@ -130,9 +131,20 @@ from openpilot.common.realtime import DT_MDL
 #   跟著切換。優先權排在過彎保護之後、車速雙門檻之前。near_stop_active 本身（節流門檻
 #   覆寫）不受影響，車速閘門只決定要不要「額外」讓 mode 也跟著切，兩者是獨立判斷。
 
-# 車速門檻（km/h 換算為 m/s），20~30 km/h 為遲滯 / 過渡帶
-SPEED_TO_EXPERIMENTAL = 20.0 / 3.6   # 車速 <= 20 km/h -> 切換為實驗模式 (blended)
-SPEED_TO_NORMAL       = 30.0 / 3.6   # 車速 >= 30 km/h -> 切換為一般模式 (acc)
+# 車速門檻：0~20 km/h 無條件強制實驗模式（不經防彈跳），20 以上才交給 20開/30關 的
+# 遲滯開關處理（含防彈跳）。
+SPEED_FORCE_EXPERIMENTAL_KPH = 20.0   # 車速 <= 這個值，無條件、立即強制實驗模式，不受
+                                       # CONFIRM_TIME_S/MIN_DWELL_TIME_S 影響，保證起步、
+                                       # 低速時一定是實驗模式，不會有防彈跳造成的空窗期
+                                       # （原本單一 30km/h 門檻的設計下，車速剛跌破門檻時，
+                                       # 因為還沒通過防彈跳，短暫仍可能顯示為一般模式；
+                                       # 這個無條件強制層就是為了徹底避免這個空窗期）
+SPEED_TO_EXPERIMENTAL = 20.0 / 3.6    # 車速 <= 20 km/h -> 候選為實驗模式（遲滯開關下緣，
+                                       # 實際上 <=20 已經被上面的無條件強制層接管，這裡保留
+                                       # 純粹是防禦，理論上不會被用到）
+SPEED_TO_NORMAL       = 30.0 / 3.6    # 車速 >= 30 km/h -> 切換為一般模式（含防彈跳）
+# 20~30 km/h 之間視為「過渡帶」，維持前一狀態不切換；加上 CONFIRM_TIME_S/MIN_DWELL_TIME_S
+# 的防彈跳，避免車速在 30 附近小幅波動時頻繁切換 acc/blended。
 
 # 過彎判斷門檻：側向加速度 a_y = |v_ego * yaw_rate|（m/s²，yaw_rate 取自 modelV2），含遲滯避免臨界值抖動
 # 只在「大彎道」才切手，輕微彎道交給實驗模式自行處理（詳見上方 DECEL_BP/DECEL_V 對照說明）
@@ -225,12 +237,22 @@ class AEM:
     self._update_base_throttle(v_ego)
 
   def _update_speed_mode(self, v_ego):
+    if v_ego * 3.6 <= SPEED_FORCE_EXPERIMENTAL_KPH:
+      # 無條件強制層：不經防彈跳，直接讓狀態、pending、confirm 全部同步成 experimental，
+      # 這樣車速之後升高、進入 20~30 遲滯區間時，pending/confirm 是乾淨的起點，
+      # 不會殘留舊的計時進度
+      self._speed_mode = 'experimental'
+      self._speed_pending = 'experimental'
+      self._speed_confirm_t = 0.0
+      self._speed_dwell_t = MIN_DWELL_TIME_S
+      return
+
     if v_ego <= SPEED_TO_EXPERIMENTAL:
       candidate = 'experimental'
     elif v_ego >= SPEED_TO_NORMAL:
       candidate = 'normal'
     else:
-      candidate = self._speed_mode   # 50~60 km/h 過渡帶：維持前一狀態，不切換
+      candidate = self._speed_mode   # 20~30 km/h 過渡帶：維持前一狀態，不切換
 
     if candidate == self._speed_pending:
       self._speed_confirm_t += DT_MDL
