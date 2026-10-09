@@ -17,7 +17,7 @@ from openpilot.common.swaglog import cloudlog
 
 from dragonpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerDP
 from dragonpilot.selfdrive.controls.lib.ocm import OCM
-from dragonpilot.selfdrive.controls.lib.aem import AEM, MODE_HYBRID as AEM_MODE_HYBRID
+from dragonpilot.selfdrive.controls.lib.aem import AEM
 from dragonpilot.selfdrive.controls.lib.apm import APM
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -25,7 +25,6 @@ A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
-THROTTLE_BLOCK_CONFIRM_S = 0.3
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -61,7 +60,6 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
-    self._throttle_block_elapsed = 0.0
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -73,21 +71,8 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
     self.ocm = OCM()
-    self.aem = AEM(dt=self.dt)
+    self.aem = AEM()
     self.apm = APM()
-
-  def update_allow_throttle(self, throttle_prob, v_ego, reset_state):
-    # B: debounce only the throttle-intent restriction, shared by all modes.
-    # Low speed keeps the original immediate bypass. While disengaged, use the
-    # original decision but clear history so it cannot carry into engagement.
-    allow_raw = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
-    if reset_state or allow_raw:
-      self._throttle_block_elapsed = 0.0
-      self.allow_throttle = allow_raw
-    else:
-      self._throttle_block_elapsed = min(THROTTLE_BLOCK_CONFIRM_S,
-                                         self._throttle_block_elapsed + self.dt)
-      self.allow_throttle = self._throttle_block_elapsed + 1e-9 < THROTTLE_BLOCK_CONFIRM_S
 
   @staticmethod
   def parse_model(model_msg):
@@ -117,8 +102,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     if dp_flags & DPFlags.AEM:
       # 已修正：將 sm 拆解並傳入正確的 model_msg, radar_msg 與 v_ego
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
-      # dp: AEM 混合模式（ACC 優先、e2e 明確多煞才介入），設定與邏輯集中在 aem.py
-      mode = self.aem.get_planner_mode(mode)
+      mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -137,11 +121,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     reset_state = reset_state or not v_cruise_initialized
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    # dp: AEM 混合模式的加速上限與 ACC 相同（accel_controller 開啟時用其上限，否則 get_max_accel + 彎道限制）
-    clip_mode = 'acc' if mode == AEM_MODE_HYBRID else mode
-    if dp_accel_clip := LongitudinalPlannerDP.get_accel_clip(self, v_ego, clip_mode):
+    if dp_accel_clip := LongitudinalPlannerDP.get_accel_clip(self, v_ego, mode):
       accel_clip = dp_accel_clip
-    elif clip_mode == 'acc':
+    elif mode == 'acc':
       accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
       steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
       accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
@@ -154,7 +136,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
-    self.update_allow_throttle(throttle_prob, v_ego, reset_state)
+    self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
@@ -237,22 +219,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if mode != AEM_MODE_HYBRID or reset_state:
-      self.aem.reset_hybrid()  # dp: 離開 AEM 混合模式時重設遲滯狀態
-
     if mode == 'acc':
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
-    elif mode == AEM_MODE_HYBRID:
-      # dp: AEM 混合模式——平常用 MPC，e2e 明確要多煞時取 min(MPC, e2e)（見 aem.py）
-      output_a_target, e2e_braking = self.aem.get_hybrid_accel(output_a_target_mpc, output_a_target_e2e)
-      self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
-      if e2e_braking:
-        try:
-          from cereal import log
-          self.mpc.source = log.LongitudinalPlan.LongitudinalPlanSource.e2e
-        except ImportError:
-          pass
     else:
       output_a_target = min(output_a_target_mpc, output_a_target_e2e)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
@@ -268,11 +237,6 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
-    if mode == AEM_MODE_HYBRID:
-      if reset_state:
-        self.aem.reset_hybrid()
-      else:
-        self.aem.observe_output(self.output_a_target)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
