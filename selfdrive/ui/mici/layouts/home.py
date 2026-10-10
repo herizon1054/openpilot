@@ -1,4 +1,5 @@
 import datetime
+import math
 import time
 
 from cereal import log
@@ -9,7 +10,7 @@ from openpilot.system.ui.widgets.layouts import HBoxLayout
 from openpilot.system.ui.widgets.icon_widget import IconWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel, gui_label
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
-from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.ui_state import ui_state, JetlinkState
 from openpilot.system.version import RELEASE_BRANCHES
 
 HEAD_BUTTON_FONT_SIZE = 40
@@ -141,6 +142,10 @@ class MiciHomeLayout(Widget):
     self._experimental_icon = IconWidget("icons_mici/experimental_mode.png", (48, 48))
     self._egpu_icon = IconWidget("icons_mici/egpu.png", (50, 37))
     self._egpu_icon_gray = IconWidget("icons_mici/egpu_gray.png", (50, 37))
+    # dp - jetlink: the attached big-model device, beside the eGPU icons (zoompilot's mici home chestnut icons)
+    self._jetlink_icon = IconWidget("../../dragonpilot/selfdrive/assets/icons/jetlink_green.png", (68, 40))
+    self._jetlink_loading_icon = IconWidget("../../dragonpilot/selfdrive/assets/icons/jetlink.png", (68, 40))
+    self._jetlink_failed_icon = IconWidget("../../dragonpilot/selfdrive/assets/icons/jetlink_orange.png", (68, 40))
     self._mic_icon = IconWidget("icons_mici/microphone.png", (32, 46))
     self._body_icon = IconWidget("icons_mici/body.png", (54, 37))
 
@@ -152,6 +157,9 @@ class MiciHomeLayout(Widget):
       self._experimental_icon,
       self._egpu_icon,
       self._egpu_icon_gray,
+      self._jetlink_icon,
+      self._jetlink_loading_icon,
+      self._jetlink_failed_icon,
       self._body_icon,
       self._mic_icon,
     ], spacing=18)
@@ -250,6 +258,14 @@ class MiciHomeLayout(Widget):
     self._experimental_icon.set_visible(ui_state.experimental_mode)
     self._egpu_icon.set_visible(ui_state.usbgpu and ui_state.usbgpu_compiled)
     self._egpu_icon_gray.set_visible(ui_state.usbgpu and not ui_state.usbgpu_compiled)
+    # dp - jetlink
+    jl_state = ui_state.jetlink_state
+    jl_loading = jl_state == JetlinkState.LOADING
+    self._jetlink_loading_icon.set_opacity(0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0)))
+    self._jetlink_loading_icon.set_visible(jl_loading)
+    self._jetlink_icon.set_opacity(0.5 if jl_state == JetlinkState.WAITING else 1.0)
+    self._jetlink_icon.set_visible(jl_state in (JetlinkState.READY, JetlinkState.ACTIVE, JetlinkState.WAITING))
+    self._jetlink_failed_icon.set_visible(jl_state in (JetlinkState.UNCOMPILED, JetlinkState.FAILED))
     self._mic_icon.set_visible(ui_state.recording_audio)
     self._body_icon.set_visible(ui_state.is_body)
 

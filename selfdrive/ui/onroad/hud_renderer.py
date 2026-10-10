@@ -1,3 +1,4 @@
+from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -8,11 +9,18 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.ui_state import JetlinkState
+from dragonpilot.selfdrive.ui import jetlink_ui
 
 # Constants
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+
+# dp - jetlink: onroad badge under the experimental-mode button
+JETLINK_BADGE_W = 120
+JETLINK_BADGE_H = 89
+JETLINK_LABEL_SIZE = 40
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,7 @@ class HudRenderer(Widget):
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
 
     self._torque_bar = TorqueBar(scale=4.0)
+    self._jetlink_icons = jetlink_ui.JetlinkIcons(JETLINK_BADGE_W, JETLINK_BADGE_H)
 
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
@@ -126,6 +135,26 @@ class HudRenderer(Widget):
 
     if ui_state.sm['controlsState'].lateralControlState.which() != 'angleState':
       self._torque_bar.render(rect)
+    self._draw_jetlink_badge(button_x + UI_CONFIG.button_size / 2, button_y + UI_CONFIG.button_size + 24)
+
+  def _draw_jetlink_badge(self, center_x: float, top_y: float) -> None:
+    """dp - jetlink: the icon (pulsing while it joins, dim green while it waits for a
+    window to switch, solid green while the big model drives, orange when it cannot)
+    and one word under it. Nothing without a link."""
+    state = ui_state.jetlink_state
+    icon, opacity = self._jetlink_icons.for_state(state)
+    if icon is None:
+      return
+    bg = rl.Rectangle(center_x - JETLINK_BADGE_W / 2 - 14, top_y - 10, JETLINK_BADGE_W + 28, JETLINK_BADGE_H + JETLINK_LABEL_SIZE + 30)
+    rl.draw_rectangle_rounded(bg, 0.25, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_texture_ex(icon, rl.Vector2(center_x - icon.width / 2, top_y), 0.0, 1.0, jetlink_ui.tint(opacity))
+    label = jetlink_tr(jetlink_ui.STATE_TEXT[state])
+    color = jetlink_ui.STATE_COLOR[state]
+    if state == JetlinkState.LOADING:
+      color = rl.Color(color.r, color.g, color.b, int(255 * max(0.5, opacity)))
+    size = measure_text_cached(self._font_semi_bold, label, JETLINK_LABEL_SIZE)
+    rl.draw_text_ex(self._font_semi_bold, label, rl.Vector2(center_x - size.x / 2, top_y + JETLINK_BADGE_H + 8),
+                    JETLINK_LABEL_SIZE, 0, color)
 
   def user_interacting(self) -> bool:
     return self._exp_button.is_pressed

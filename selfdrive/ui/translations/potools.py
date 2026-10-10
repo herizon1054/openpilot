@@ -312,7 +312,7 @@ def merge_po(po_path: str | Path, pot_path: str | Path) -> None:
   """Update a .po file with entries from a .pot template (replaces msgmerge --update)."""
   _, po_entries = parse_po(po_path)
   _, pot_entries = parse_po(pot_path)
-  language = Path(po_path).stem.removeprefix("app_")
+  language = Path(po_path).stem.removeprefix("app_").removeprefix("dragonpilot_")
 
   existing = {e.msgid: e for e in po_entries}
   merged = []
@@ -329,5 +329,11 @@ def merge_po(po_path: str | Path, pot_path: str | Path) -> None:
     else:
       merged.append(pot_e)
 
+  # Match the language's plural count, including newly extracted entries.
+  forms = PLURAL_FORMS.get(language, 'nplurals=2; plural=(n != 1);')
+  count = int(re.search(r'nplurals=(\d+)', forms).group(1))
+  for entry in merged:
+    if entry.is_plural:
+      entry.msgstr_plural = {i: entry.msgstr_plural.get(i, '') for i in range(count)}
   merged.sort(key=lambda e: e.msgid)
   write_po(po_path, _build_po_header(language), merged)

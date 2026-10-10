@@ -1,3 +1,4 @@
+from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 import time
 from enum import StrEnum
 from typing import NamedTuple
@@ -143,7 +144,7 @@ class AlertRenderer(Widget):
       return None
 
     # Return current alert
-    ret = Alert(text1=ss.alertText1, text2=ss.alertText2, size=ss.alertSize.raw, status=ss.alertStatus.raw,
+    ret = Alert(text1=jetlink_tr(ss.alertText1), text2=jetlink_tr(ss.alertText2), size=ss.alertSize.raw, status=ss.alertStatus.raw,
                 visual_alert=ss.alertHudVisual, alert_type=ss.alertType)
     self._prev_alert = ret
     return ret

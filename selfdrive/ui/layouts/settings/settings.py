@@ -14,6 +14,7 @@ from openpilot.system.ui.lib.wifi_manager import WifiManager
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NetworkUI
 from dragonpilot.selfdrive.ui.layouts.settings.dragonpilot import DragonpilotLayout
+from dragonpilot.selfdrive.ui.layouts.settings.jetlink import JetlinkLayout
 
 # Constants
 SIDEBAR_WIDTH = 500
@@ -39,6 +40,7 @@ class PanelType(IntEnum):
   FIREHOSE = 4
   DEVELOPER = 5
   DRAGONPILOT = 6
+  JETLINK = 7  # dp - jetlink
 
 
 @dataclass
@@ -65,6 +67,7 @@ class SettingsLayout(Widget):
       PanelType.FIREHOSE: PanelInfo(tr_noop("Firehose"), FirehoseLayout()),
       PanelType.DEVELOPER: PanelInfo(tr_noop("Developer"), DeveloperLayout()),
       PanelType.DRAGONPILOT: PanelInfo("dp", DragonpilotLayout()),
+      PanelType.JETLINK: PanelInfo("Jetlink", JetlinkLayout()),
     }
 
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
@@ -119,8 +122,10 @@ class SettingsLayout(Widget):
 
     # Navigation buttons
     y = rect.y + 300
+    # dp - jetlink: an eighth panel no longer fits at NAV_BTN_HEIGHT; shrink the rows to fit
+    nav_btn_height = min(NAV_BTN_HEIGHT, (rect.height - 300 - 20) / max(1, len(self._panels)))
     for panel_type, panel_info in self._panels.items():
-      button_rect = rl.Rectangle(rect.x + 50, y, rect.width - 150, NAV_BTN_HEIGHT)
+      button_rect = rl.Rectangle(rect.x + 50, y, rect.width - 150, nav_btn_height)
 
       # Button styling
       is_selected = panel_type == self._current_panel
@@ -136,7 +141,7 @@ class SettingsLayout(Widget):
       # Store button rect for click detection
       panel_info.button_rect = button_rect
 
-      y += NAV_BTN_HEIGHT
+      y += nav_btn_height
 
   def _draw_current_panel(self, rect: rl.Rectangle):
     rl.draw_rectangle_rounded(

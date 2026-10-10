@@ -1,3 +1,4 @@
+from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 import time
 import pyray as rl
 from dataclasses import dataclass
@@ -112,7 +113,7 @@ class AlertRenderer(Widget):
       return None
 
     # Return current alert
-    return Alert(text1=ss.alertText1, text2=ss.alertText2, size=ss.alertSize.raw, status=ss.alertStatus.raw)
+    return Alert(text1=jetlink_tr(ss.alertText1), text2=jetlink_tr(ss.alertText2), size=ss.alertSize.raw, status=ss.alertStatus.raw)
 
   def _render(self, rect: rl.Rectangle):
     alert = self.get_alert(ui_state.sm)

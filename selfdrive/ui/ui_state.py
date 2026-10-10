@@ -12,6 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.prime_state import PrimeState
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.hardware import HARDWARE, PC
+from dragonpilot import jetlink_adapter
 
 BACKLIGHT_OFFROAD = 65 if HARDWARE.get_device_type() == "mici" else 50
 PARAM_UPDATE_TIME = 1 / 5.0
@@ -22,6 +23,19 @@ class UIStatus(Enum):
   ENGAGED = "engaged"
   OVERRIDE = "override"
   ALKA = "alka"
+
+
+class JetlinkState(Enum):
+  """dp - jetlink: zoompilot's ChestnutState, the icon's states for the link
+  (the values are jetlink.openpilot.Status.icon's)."""
+  DISCONNECTED = "disconnected"
+  UNCOMPILED = "uncompiled"
+  READY = "ready"
+  LOADING = "loading"
+  ACTIVE = "active"
+  FAILED = "failed"
+  # onroad: loaded and waiting for a window to switch (nothing in control)
+  WAITING = "waiting"
 
 
 class UIState:
@@ -61,6 +75,7 @@ class UIState:
         "rawAudioData",
         "controlsStateExt",
         "liveTracks", # dp - for dp_ui_lead
+        "modelExt",  # Jetlink runtime state
       ]
     )
 
@@ -99,6 +114,15 @@ class UIState:
 
     # dp - ALKA
     self.dp_alka_active: bool = False
+
+    # dp - jetlink: jetlink's snapshot (jetlink.openpilot.Status) from the params pass; None
+    # beside a USB GPU or without jetlink on this device
+    self.jetlink = None
+    # the icon's state for the link, from the snapshot offroad and modelExt onroad
+    self.jetlink_state = JetlinkState.DISCONNECTED
+    # Jetlink holds the USB port, so ADB is off and its toggle greyed out
+    self.adb_blocked: bool = False
+    self._accelerator_state_name: str = 'none'
 
 
     # dp
@@ -189,6 +213,10 @@ class UIState:
       for callback in self._on_body_changed_callbacks:
         callback()
 
+    # dp - jetlink: read where sm is updated, so the params thread never touches a message
+    self._accelerator_state_name = str(self.sm['modelExt'].acceleratorState)
+    self._update_jetlink_state()
+
     # dp - ALKA
     if self.sm.updated["controlsStateExt"]:
       self.dp_alka_active = self.sm["controlsStateExt"].alkaActive
@@ -248,6 +276,40 @@ class UIState:
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
     self.usbgpu = self.params.get_bool("UsbGpuPresent")
     self.usbgpu_compiled = self.params.get_bool("UsbGpuCompiled")
+
+    # dp - jetlink: on the 5 Hz params pass, not per frame in a layout; a fitted USB GPU owns the big model
+    self.jetlink = None if self.usbgpu else jetlink_adapter.status()
+    self._enforce_usb_port()
+
+  # dp - jetlink -----------------------------------------------------------------
+
+  @property
+  def jetlink_view(self):
+    """jetlink's snapshot when there is something to show: the link is on, a
+    host is on the gadget, or something is provisioning."""
+    s = self.jetlink
+    return s if s is not None and (s.enabled or s.present or s.progress is not None) else None
+
+  def _update_jetlink_state(self) -> None:
+    view = self.jetlink_view
+    if view is None:
+      self.jetlink_state = JetlinkState.DISCONNECTED
+      return
+    model_seen = self.sm.recv_frame["modelV2"] > self.started_frame
+    running_big = self.sm.alive["modelExt"] and self.sm["modelExt"].bigModel
+    try:
+      self.jetlink_state = JetlinkState(view.icon(self.started, model_seen, running_big, self._accelerator_state_name))
+    except Exception:
+      self.jetlink_state = JetlinkState.FAILED
+
+  def _enforce_usb_port(self) -> None:
+    """ADB and Jetlink both need the comma's USB port: the link on turns ADB
+    off, and the developer panel greys its toggle out. Here, not in the
+    panels, so a link set from anywhere counts too. jetlink's owner retries
+    the port in seconds while ADB's gadget still holds it."""
+    self.adb_blocked = self.jetlink is not None and self.jetlink.enabled
+    if self.adb_blocked and self.params.get_bool("AdbEnabled"):
+      self.params.put_bool("AdbEnabled", False, block=True)
 
 
 class Device:

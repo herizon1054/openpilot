@@ -1,3 +1,4 @@
+from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 from cereal import log
 
 from openpilot.system.ui.widgets.scroller import NavScroller
@@ -7,6 +8,15 @@ from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callba
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
+
+
+class JetlinkModeToggle(BigMultiParamToggle):
+  """Keep parameter values stable; localize only the displayed option."""
+
+  def _draw_content(self, btn_y: float):
+    label = jetlink_tr("Off") if self.value == "off" else {"usb": "USB", "ios": "iOS"}.get(self.value, self.value)
+    self._sub_label.set_text(label)
+    super()._draw_content(btn_y)
 
 
 class TogglesLayoutMici(NavScroller):
@@ -21,6 +31,9 @@ class TogglesLayoutMici(NavScroller):
     record_front = BigParamControl("record & upload driver camera", "RecordFront", toggle_callback=restart_needed_callback)
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
     enable_openpilot = BigParamControl("enable openpilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback)
+    # dp - jetlink: zoompilot's mici AcceleratorLinkToggle, as a plain param toggle (off / usb / ios); parked only
+    self._jetlink_toggle = JetlinkModeToggle("Jetlink", "JetlinkLink", ["off", "usb", "ios"])
+    self._jetlink_toggle.set_enabled(lambda: ui_state.is_offroad())
 
     self._scroller.add_widgets([
       self._personality_toggle,
@@ -31,6 +44,7 @@ class TogglesLayoutMici(NavScroller):
       record_front,
       record_mic,
       enable_openpilot,
+      self._jetlink_toggle,
     ])
 
     # Toggle lists
@@ -69,6 +83,7 @@ class TogglesLayoutMici(NavScroller):
 
   def _update_toggles(self):
     ui_state.update_params()
+    self._jetlink_toggle._load_value()  # dp - jetlink
 
     # CP gating for experimental mode
     if ui_state.CP is not None:

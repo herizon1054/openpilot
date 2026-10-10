@@ -1,3 +1,4 @@
+from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 import pyray as rl
 import time
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from dragonpilot.selfdrive.ui.dashy_qr import DashyQR
+from dragonpilot.selfdrive.ui import jetlink_ui
 
 SIDEBAR_WIDTH = 300
 METRIC_HEIGHT = 126
@@ -18,6 +20,10 @@ FONT_SIZE = 35
 
 SETTINGS_BTN = rl.Rectangle(50, 35, 200, 117)
 HOME_BTN = rl.Rectangle(60, 860, 180, 180)
+# dp - jetlink: zoompilot's sidebar chestnut icon size, in place of the home/flag button
+JETLINK_ICON_WIDTH = 180
+JETLINK_ICON_HEIGHT = 133
+METRIC_START_Y = 300  # zoompilot sidebar: four cards fit above the home button from here
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -80,6 +86,10 @@ class Sidebar(Widget):
     self._mic_img = gui_app.texture("icons/microphone.png", 30, 30)
     self._mic_indicator_rect = rl.Rectangle(0, 0, 0, 0)
 
+    # dp - jetlink
+    self._jetlink_status = MetricData("JETLINK", "未連線", Colors.GRAY)
+    self._jetlink_icons = jetlink_ui.JetlinkIcons(JETLINK_ICON_WIDTH, JETLINK_ICON_HEIGHT)
+
     # QR code for dashy
     self._qr = DashyQR()
 
@@ -118,6 +128,12 @@ class Sidebar(Widget):
     if not ui_state.dp_dev_disable_connect:
       self._update_connection_status(device_state)
     self._update_panda_status()
+    self._update_jetlink_status()
+
+  def _update_jetlink_status(self):
+    # dp - jetlink: the card is shown only while there is a link to show (ui_state.jetlink_view)
+    state = ui_state.jetlink_state
+    self._jetlink_status.update("JETLINK", jetlink_tr(jetlink_ui.STATE_TEXT[state]), jetlink_ui.STATE_COLOR[state])
 
   def _update_network_status(self, device_state):
     self._net_type = NETWORK_TYPES.get(device_state.networkType.raw, tr_noop("Unknown"))
@@ -179,7 +195,14 @@ class Sidebar(Widget):
       button_img = self._flag_img if ui_state.started else self._home_img
 
       tint = Colors.BUTTON_PRESSED if (ui_state.started and flag_pressed) else Colors.BUTTON_NORMAL
-      rl.draw_texture_ex(button_img, rl.Vector2(HOME_BTN.x, HOME_BTN.y), 0.0, 1.0, tint)
+      # dp - jetlink: as zoompilot, the link's icon takes the home/flag button's place while there is a link
+      icon, opacity = self._jetlink_icons.for_state(ui_state.jetlink_state)
+      if icon is not None:
+        pos = rl.Vector2(HOME_BTN.x + (HOME_BTN.width - icon.width) / 2, HOME_BTN.y + (HOME_BTN.height - icon.height) / 2)
+        tint = jetlink_ui.tint(opacity * (0.65 if (ui_state.started and flag_pressed) else 1.0))
+        rl.draw_texture_ex(icon, pos, 0.0, 1.0, tint)
+      else:
+        rl.draw_texture_ex(button_img, rl.Vector2(HOME_BTN.x, HOME_BTN.y), 0.0, 1.0, tint)
 
     # Microphone button
     if self._recording_audio:
@@ -214,6 +237,13 @@ class Sidebar(Widget):
     metrics = [(self._temp_status, 338), (self._panda_status, 496)]
     if not ui_state.dp_dev_disable_connect:
       metrics.append((self._connect_status, 654))
+
+    # dp - jetlink: a JETLINK card while there is a link; the cards share the space above the home button
+    if ui_state.jetlink_view is not None:
+      cards = [m for m, _ in metrics] + [self._jetlink_status]
+      available = max(0, int(HOME_BTN.y) - METRIC_MARGIN - METRIC_HEIGHT - METRIC_START_Y)
+      spacing = min(158, available / max(1, len(cards) - 1))
+      metrics = [(m, METRIC_START_Y + i * spacing) for i, m in enumerate(cards)]
 
     for metric, y_offset in metrics:
       self._draw_metric(rect, metric, rect.y + y_offset)

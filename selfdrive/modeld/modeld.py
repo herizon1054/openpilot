@@ -26,6 +26,7 @@ from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 from dragonpilot.selfdrive.controls.lib.road_edge_detector import RoadEdgeDetector
+from dragonpilot import jetlink_adapter
 
 LITE = os.getenv("LITE") is not None
 
@@ -67,6 +68,39 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                   desiredAcceleration=float(desired_accel),
                                   shouldStop=bool(should_stop))
 
+def get_action_from_model_jetlink(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
+                                  lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+  """dp - jetlink: zoompilot's get_action_from_model (selfdrive/modeld/modeld.py), verbatim
+  in behavior, for frames the large model drove. A model with an action head ('action',
+  [lateral accel, accel]) is read directly; without one it falls back to the plan, with
+  zoompilot's should_stop on v_ego (dp's plan path tests the plan's own v[0]). No
+  dp_lat_offset_cm here: zoompilot has none."""
+  if 'action' not in model_output:
+    plan = model_output['plan'][0]
+    desired_accel, _ = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
+                                           plan[:,Plan.ACCELERATION][:,0],
+                                           ModelConstants.T_IDXS,
+                                           action_t=long_action_t)
+    desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
+                                                plan[:,Plan.ORIENTATION_RATE][:,2],
+                                                ModelConstants.T_IDXS,
+                                                v_ego,
+                                                lat_action_t)
+  else:
+    desired_accel = model_output['action'][0,1]
+    desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
+  stop = bool(v_ego < 0.3 and desired_accel < 0.1)  # zoompilot drive_helpers.should_stop
+  desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
+  if v_ego > MIN_LAT_CONTROL_SPEED:
+    desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, LAT_SMOOTH_SECONDS)
+  else:
+    desired_curvature = prev_action.desiredCurvature
+
+  return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature),
+                                desiredAcceleration=float(desired_accel),
+                                shouldStop=bool(stop))
+
+
 class FrameMeta:
   frame_id: int = 0
   timestamp_sof: int = 0
@@ -94,6 +128,10 @@ class ModelState:
     self.policy_output_slices = policy_metadata['output_slices']
 
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
+    # dp - jetlink: the joining model writes these onto the small model every frame
+    self.lat_delay = 0.0
+    self.frame_drop_ratio = 0.0
+    self.in_control = True
 
     self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
     self.input_queues, self.npy = make_input_queues(self.vision_input_shapes, self.policy_input_shapes, self.frame_skip, device=self.QUEUE_DEV)
@@ -108,8 +146,10 @@ class ModelState:
     parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
     return parsed_model_outputs
 
+  # dp - jetlink: jetlink's joining model calls run(bufs, transforms, inputs, after_enqueue), as
+  # upstream's newer ModelState takes it; dp's prepare_only moves to a keyword
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
-                inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
+                inputs: dict[str, np.ndarray], after_enqueue=None, *, prepare_only: bool = False) -> dict[str, np.ndarray] | None:
     for key in bufs.keys():
       ptr = np.frombuffer(bufs[key].data, dtype=np.uint8).ctypes.data
       yuv_size = self.frame_buf_params[key][3]
@@ -135,6 +175,8 @@ class ModelState:
     vision_output, policy_output = self.run_policy(
       **{k: self.input_queues[k] for k in POLICY_INPUTS}, img=img, big_img=big_img
     )
+    if after_enqueue is not None:
+      after_enqueue()
 
     vision_output = vision_output.numpy().flatten()
     policy_output = policy_output.numpy().flatten()
@@ -158,6 +200,9 @@ def main(demo=False):
   params.put_bool("UsbGpuCompiled", _compiled)
 
   if not USBGPU:
+    # dp - jetlink: before going realtime: prepare() starts tinygrad's device thread, which would
+    # inherit FIFO 54 on core 7. Never beside a USB GPU, which runs the big model natively
+    jetlink_adapter.prepare()
     # USB GPU currently saturates a core so can't do this yet,
     # also need to move the aux USB interrupts for good timings
     config_realtime_process(7, 54)
@@ -187,12 +232,18 @@ def main(demo=False):
 
   st = time.monotonic()
   cloudlog.warning("loading model")
-  model = ModelState(vipc_client_main.width, vipc_client_main.height, USBGPU)
+  small_model = ModelState(vipc_client_main.width, vipc_client_main.height, USBGPU)
+  model = small_model
+  # dp - jetlink: the small model drives until the attached device has joined, then it is swapped
+  # in underneath (only while nothing is in control) and handed back on a lost or lagging link
+  if not USBGPU and (joined := jetlink_adapter.attach(small_model, vipc_client_main.width, vipc_client_main.height)) is not None:
+    model = joined
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry", "modelExt"])
-  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
+  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay",
+                  *[s for s in jetlink_adapter.IN_CONTROL if s not in ("carState", "carControl")]])
 
   publish_state = PublishState()
   params = Params()
@@ -270,6 +321,7 @@ def main(demo=False):
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     lat_delay = sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    model.lat_delay = lat_delay
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
@@ -299,25 +351,51 @@ def main(demo=False):
 
     bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
     transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
+    frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
+    action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
+    lat_action_t = lat_delay + frame_delay + action_delay
+    long_action_t = long_delay + frame_delay + action_delay
     inputs:dict[str, np.ndarray] = {
       'desire_pulse': vec_desire,
       'traffic_convention': traffic_convention,
+      # dp - jetlink: comma's large model takes action_t as an input (dp's small model ignores it)
+      'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
 
+    # dp - jetlink: a model can change which model drives inside run() (the joining model counts its
+    # handovers); the stall of one is not lag, and nor are the drops of the frame it happens on. The
+    # joining model hands a large model back on this share of dropped frames, and swaps one in only
+    # while nothing is in control
+    model.in_control = jetlink_adapter.in_control(sm)
+    model.frame_drop_ratio = frame_drop_ratio
+    handovers = getattr(model, 'handovers', 0)
+    big_driving = model is not small_model and getattr(model, 'chestnut', False)
     mt1 = time.perf_counter()
-    model_output = model.run(bufs, transforms, inputs, prepare_only)
+    if prepare_only and not big_driving:
+      # dp's dropped-frame path: keep the small model's queues moving, publish nothing
+      model_output = small_model.run(bufs, transforms, inputs, prepare_only=True)
+    else:
+      # the large model keeps its history on the far end and runs every frame, as upstream's newer modeld does
+      model_output = model.run(bufs, transforms, inputs)
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+    if getattr(model, 'handovers', 0) != handovers:
+      run_count = 0
+      frame_drop_ratio = 0.
+      frame_dropped_filter.x = 0.
 
     if model_output is not None:
       modelv2_send = messaging.new_message('modelV2')
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
-      model_ext_send = messaging.new_message('modelExt')
+      model_ext_send = messaging.new_message('modelExt', valid=True)
 
-      frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
-      action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-      action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego, dp_lat_offset_cm)
+      # dp - jetlink: a frame the large model drove takes zoompilot's action function (action head
+      # when the model has one); the small model keeps dp's, lateral offset included
+      if model is not small_model and getattr(model, 'chestnut', False):
+        action = get_action_from_model_jetlink(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      else:
+        action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego, dp_lat_offset_cm)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
@@ -330,6 +408,9 @@ def main(demo=False):
       RED.update(modelv2_send.modelV2.roadEdgeStds, modelv2_send.modelV2.laneLineProbs)
       model_ext_send.modelExt.leftEdgeDetected = RED.left_edge_detected
       model_ext_send.modelExt.rightEdgeDetected = RED.right_edge_detected
+      # dp - jetlink: zoompilot's modelDataV2SP.acceleratorState and modelV2.big
+      model_ext_send.modelExt.acceleratorState = getattr(model, 'big_model_state', 'none')
+      model_ext_send.modelExt.bigModel = bool(getattr(model, 'chestnut', False)) and model is not small_model
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, RED.left_edge_detected, RED.right_edge_detected)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

@@ -21,6 +21,7 @@ from openpilot.system.hardware import HARDWARE, TICI, AGNOS, PC
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.system.statsd import statlog
 from openpilot.common.swaglog import cloudlog
+from dragonpilot import jetlink_adapter
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.version import terms_version, training_version
@@ -169,6 +170,8 @@ def hardware_thread(end_event, hw_queue) -> None:
   started_ts: float | None = None
   started_seen = False
   startup_blocked_ts: float | None = None
+  # dp - jetlink: when the attached device was asked to power off with the comma; see the shutdown check
+  accelerator_off_ts: float | None = None
   thermal_status = ThermalStatus.ok
 
   last_hw_state = HardwareState(
@@ -293,6 +296,8 @@ def hardware_thread(end_event, hw_queue) -> None:
     startup_conditions["up_to_date"] = params.get("Offroad_ConnectivityNeeded") is None or params.get_bool("DisableUpdates") or params.get_bool("SnoozeUpdate")
     startup_conditions["no_excessive_actuation"] = params.get("Offroad_ExcessiveActuation") is None
     startup_conditions["not_uninstalling"] = not params.get_bool("DoUninstall")
+    # dp - jetlink: the accelerator was asked to power off with the comma: no drive may start under the power-off that follows
+    startup_conditions["not_powering_off"] = accelerator_off_ts is None
     startup_conditions["accepted_terms"] = params.get("HasAcceptedTerms") == terms_version
 
     # with 2% left, we killall, otherwise the phone will take a long time to boot
@@ -315,6 +320,11 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
+
+    # dp - jetlink: an enabled accelerator that cannot come up is otherwise silently absent. Files only
+    accelerator_error = jetlink_adapter.reason()
+    set_offroad_alert_if_changed("Offroad_AcceleratorUnavailable", accelerator_error is not None,
+                                 extra_text=accelerator_error)
 
     # *** registration check ***
     # if not PC:
@@ -384,9 +394,14 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.somPowerDrawW = som_power_draw
 
     # Check if we need to shut down
-    if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
-      cloudlog.warning(f"shutting device down, offroad since {off_ts}")
-      params.put_bool("DoShutdown", True, block=True)
+    if accelerator_off_ts is not None or power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
+      if accelerator_off_ts is None:
+        cloudlog.warning(f"shutting device down, offroad since {off_ts}")
+        # dp - jetlink: an accelerator on its own supply outlives us: ask it once, and keep publishing while it powers off
+        jetlink_adapter.request_shutdown(f"comma shutting down, offroad since {off_ts}")
+        accelerator_off_ts = time.monotonic()
+      if not jetlink_adapter.shutdown_pending() or time.monotonic() - accelerator_off_ts >= 25.0:
+        params.put_bool("DoShutdown", True, block=True)
 
     msg.deviceState.started = started_ts is not None
     msg.deviceState.startedMonoTime = int(1e9*(started_ts or 0))

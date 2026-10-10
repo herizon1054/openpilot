@@ -1,11 +1,14 @@
 import os
 import operator
 import platform
+import time
 
 from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.common.swaglog import cloudlog
+from dragonpilot import jetlink_adapter
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 LITE = os.getenv("LITE") is not None
@@ -79,6 +82,46 @@ def or_(*fns):
 def and_(*fns):
   return lambda *args: operator.and_(*(fn(*args) for fn in fns))
 
+class RestartingPythonProcess(PythonProcess):
+  """dp - jetlink (ported from zoompilot): a PythonProcess that manager starts again
+  after it dies; start() would leave a proc that has exited in place for good.
+  For jetlinkd, which holds the USB gadget for as long as the link is on;
+  jetlink's owner adopts what a dead one left and holds a crash loop back itself.
+
+  One that dies within QUICK_DEATH of its start never got that far (an import
+  error, a raise before the owner's loop, a second owner stepping aside for a
+  live one), so the next start waits BACKOFF, doubling to BACKOFF_MAX, rather
+  than forking manager twice a second for a whole drive. One that ran longer is
+  started again on the next loop."""
+  QUICK_DEATH = 10.0
+  BACKOFF = 10.0
+  BACKOFF_MAX = 300.0
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.started_at = 0.0
+    self.backoff = 0.0
+    self.next_start = 0.0
+
+  def now(self) -> float:
+    return time.monotonic()
+
+  def start(self) -> None:
+    now = self.now()
+    if self.proc is not None and self.proc.exitcode is not None:
+      if now - self.started_at < self.QUICK_DEATH:
+        self.backoff = min(self.BACKOFF_MAX, 2 * self.backoff or self.BACKOFF)
+        self.next_start = now + self.backoff
+        cloudlog.warning(f"{self.name} died {now - self.started_at:.1f} s after it started, starting it again in {self.backoff:.0f} s")
+      else:
+        self.backoff = 0.0
+      self.stop()  # reaps it, logs the exit code and clears proc
+    if self.proc is None:
+      if now < self.next_start:
+        return
+      self.started_at = now
+    super().start()
+
 procs = [
   DaemonProcess("manage_athenad", "system.athena.manage_athenad", "AthenadPid"),
 
@@ -95,6 +138,9 @@ procs = [
   PythonProcess("timed", "system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "selfdrive.modeld.modeld", only_onroad),
+  # dp - jetlink: always_run, jetlinkd holds the USB gadget open for as long as the link is enabled,
+  # onroad included. A gadget whose owner exits leaves the bus: an unplug at every ignition edge
+  RestartingPythonProcess(jetlink_adapter.OWNER, jetlink_adapter.__name__, and_(always_run, jetlink_adapter.should_run), enabled=not PC),
   PythonProcess("dmonitoringmodeld", "selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC) and not LITE),
 
   PythonProcess("sensord", "system.sensord.sensord", only_onroad, enabled=not PC),

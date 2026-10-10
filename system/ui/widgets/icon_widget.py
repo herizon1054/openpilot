@@ -11,6 +11,10 @@ class IconWidget(Widget):
     self.set_rect(rl.Rectangle(0, 0, float(size[0]), float(size[1])))
     self.set_enabled(False)
 
+  def set_opacity(self, opacity: float) -> None:
+    # dp - jetlink: the link icon pulses while it joins (as upstream's chestnut icon)
+    self._opacity = max(0.0, min(1.0, opacity))
+
   def _render(self, _) -> None:
     color = rl.Color(255, 255, 255, int(self._opacity * 255))
     rl.draw_texture_ex(self._texture, rl.Vector2(self._rect.x, self._rect.y), 0.0, 1.0, color)

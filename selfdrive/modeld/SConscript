@@ -81,6 +81,10 @@ compile_modeld_script = [
   File("#system/camerad/cameras/nv12_info.py"),
   File("#system/hardware/hw.py"),
 ]
+# dp - jetlink: the comma-side warp for an attached big-model device, keyed by camera like dm_warp
+SConscript('#dragonpilot/jetlink_adapter/SConscript',
+           exports={'env': env, 'arch': arch, 'camera_configs': CAMERA_CONFIGS})
+
 model_w, model_h = MEDMODEL_INPUT_SIZE
 frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
 

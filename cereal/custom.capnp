@@ -22,6 +22,22 @@ struct CarStateExt @0xaedffd8f31e7b55d {
 struct ModelExt @0xf35cc4560bbf6ec2 {
   leftEdgeDetected @0 :Bool;
   rightEdgeDetected @1 :Bool;
+
+  # dp - jetlink (ported from zoompilot's modelDataV2SP.acceleratorState):
+  # runtime state of the off-board accelerator. Offroad progress stays in the
+  # AcceleratorProgress param.
+  acceleratorState @2 :AcceleratorState;
+  # the large model (jetlink) produced this frame; zoompilot's modelV2.big
+  bigModel @3 :Bool;
+
+  enum AcceleratorState {
+    none @0;
+    joining @1;
+    running @2;
+    retrying @3;
+    unavailable @4;
+    ready @5;      # link up, engine loaded, waiting for a window to switch
+  }
 }
 
 struct DashyState @0xda96579883444c35 {

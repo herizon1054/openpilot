@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 from numbers import Number
 
 from cereal import car, log
@@ -21,6 +22,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
+from dragonpilot import jetlink_adapter
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
@@ -39,7 +41,7 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'carStateExt'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'carStateExt', 'modelExt'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState', 'controlsStateExt'])
 
     self.steer_limited_by_safety = False
@@ -62,6 +64,9 @@ class Controls:
     # dp - ALKA: cache enabled state (CP doesn't change after init)
     self.alka_enabled = bool(self.CP.alternativeExperience & ALTERNATIVE_EXPERIENCE.ALKA)
     self.alka_active = False
+    # dp - jetlink: when the large model last swapped in (modelExt.bigModel rising), see state_control
+    self.big_model_prev = False
+    self.big_model_since = -1e9
 
   def update(self):
     self.sm.update(15)
@@ -105,7 +110,19 @@ class Controls:
       # Conditions: lkas_on, gear not in P/N/R, calibration complete, seatbelt latched, doors closed
       calibrated = self.sm['liveCalibration'].calStatus == log.LiveCalibrationData.Status.calibrated
       gear_ok = CS.gearShifter not in (car.CarState.GearShifter.park, car.CarState.GearShifter.neutral, car.CarState.GearShifter.reverse)
-      self.alka_active = lkas_on and gear_ok and calibrated and not CS.seatbeltUnlatched and not CS.doorOpen
+      alka_ok = lkas_on and gear_ok and calibrated and not CS.seatbeltUnlatched and not CS.doorOpen
+      # dp - jetlink: the large model swaps in only while nothing steers, then proves itself for a second.
+      # ALKA does not START steering inside that second (it keeps steering if it already was), as
+      # zoompilot holds MADS paused through bigModelLoading
+      big = self.sm['modelExt'].bigModel and self.sm.alive['modelExt']
+      now = time.monotonic()
+      if big and not self.big_model_prev:
+        self.big_model_since = now
+      self.big_model_prev = big
+      if alka_ok and not self.alka_active and big and now - self.big_model_since < jetlink_adapter.ALKA_HOLD_SECONDS:
+        alka_ok = False
+      self.alka_active = alka_ok
+
     CC.latActive = (self.sm['selfdriveState'].active or self.alka_active) and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl

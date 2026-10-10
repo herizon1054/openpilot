@@ -24,6 +24,8 @@ from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroa
 from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware import HARDWARE
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
+from dragonpilot.selfdrive.selfdrived.accelerator_events import AcceleratorEvents
+from dragonpilot import jetlink_adapter
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ or os.getenv("LITE") is not None
@@ -80,7 +82,7 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelExt']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelExt', 'carStateExt']
     if SIMULATION:
       ignore += ['driverMonitoringState', 'driverCameraState', 'managerState']
     if REPLAY:
@@ -89,7 +91,7 @@ class SelfdriveD:
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
-                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback', 'modelExt',
+                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback', 'modelExt', 'carStateExt',
                                    'lateralManeuverPlan'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
@@ -129,6 +131,8 @@ class SelfdriveD:
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
     self.state_machine = StateMachine(self.alka)
+    # dp - jetlink: onroad events for the large model on an attached device
+    self.accelerator_events = AcceleratorEvents()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
     # dp
@@ -326,6 +330,7 @@ class SelfdriveD:
     num_events = len(self.events)
 
     not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
+    not_running -= AcceleratorEvents.OPTIONAL_PROCESSES  # dp - jetlink: optional, never blocks engagement
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
@@ -356,7 +361,15 @@ class SelfdriveD:
     # generic catch-all. ideally, a more specific event should be added above instead
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors:
+    # dp - jetlink: a switch either way costs modeld a frame or two, which must not read as a comm or localizer fault
+    # the adapter's swap gate (jetlink_adapter.in_control): openpilot enabled, ALKA steering, or ALKA on with
+    # ACC main on (dp's lkasOn), as zoompilot counts MADS enabled, paused included
+    # (ALKA paused by P/N/R does not count: jetlink_adapter.SWAP_WHILE_PARKED)
+    in_control = self.enabled or self.sm['carControl'].latActive or \
+      (self.alka and self.sm['carStateExt'].lkasOn and not jetlink_adapter.parked(CS))
+    self.accelerator_events.update(self.sm, in_control, self.events)
+    big_model_settling = self.accelerator_events.settling
+    if not self.sm.all_checks() and no_system_errors and not big_model_settling:
       if not self.sm.all_alive():
         self.events.add(EventName.commIssue)
       elif not self.sm.all_freq_ok():
@@ -375,7 +388,7 @@ class SelfdriveD:
     else:
       self.logged_comm_issue = None
 
-    if not self.CP.notCar:
+    if not self.CP.notCar and not big_model_settling:
       if not self.sm['livePose'].posenetOK:
         self.events.add(EventName.posenetInvalid)
       if not self.sm['livePose'].inputsOK:

@@ -671,3 +671,304 @@ msgstr ""
 #, python-format
 #~ msgid "dashy HUD"
 #~ msgstr "dashy HUD"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "None"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Disconnected"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Not ready"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Ready"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Connecting"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Failed"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Waiting to switch"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Switching large model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model active"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model ready"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Turn cruise main off, then re-enable to switch"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model disconnected"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Using the small model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "No device on the USB port."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Device on USB port (not responding to Jetlink yet)."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model unavailable. Using the small model."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Using the small model until the large model is ready."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Check the cable or app"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Check the cable"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0}; automatically fall back to the small model if disconnected, then switch back after recovery."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Jetlink connected: {v0}."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{v0}, {v1} ({v2} disconnects)"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{v0} is ready. Turn cruise main off (also disables ALKA) to switch; re-enable after about 1 second."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0} once Jetlink is ready."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Large model unavailable: {v0}. Using the small model."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0} until {v1} is ready."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Run the large model on a device connected to comma USB-C (USB for Jetson / Linux PC / Mac; iOS for iPhone). Enabling disables ADB. Change modes only while offroad. If the link drops or lags, comma falls back to its small model."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Downloading"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Uploading"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Building"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Yes"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "No"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "No device"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Device present"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Follow the external device: use the model selected in the phone (or Jetson / Mac) app. No separate download on comma."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Select large model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Updating..."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid " (Jetlink package not found on this device)"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Connection status"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Transport"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "External device online"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "USB port"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Driving model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "External engine built"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Progress"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Unavailable reason"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Power iPhone from comma"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Power a directly connected iPhone from comma. Off by default: some phones disconnect when powered."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Large model source"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Select"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "External device model"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Refresh model list"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Not reported"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "The external device has not reported built models (shown after connecting)."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+#, python-brace-format
+msgid "Selected on comma: {v0}. If missing on the external device, comma downloads and uploads it for building while parked."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+#, python-brace-format
+msgid "Follow external device (current: {v0})"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Disabled by Jetlink"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Refresh"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Built on external device: "
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Unknown"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "On"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Fetch the sunnypilot model list (same as the Jetlink app) to identify models on the phone."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Loaded"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Built on external device"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+msgid "Downloaded on comma"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+#, python-brace-format
+msgid "Updated: {v0} large models."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/layouts/settings/jetlink.py
+#, python-brace-format
+msgid "Refresh failed: {v0}"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "ALKA on: turn cruise main off or shift to P to switch"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Cancel cruise to switch"
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{model} is ready. With ALKA on, cancelling cruise will not switch: turn cruise main off for about 1 second, or stop and shift to P/N/R."
+msgstr ""
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{model} is ready. Cancel cruise to switch, then re-enable after about 1 second."
+msgstr ""

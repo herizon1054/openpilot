@@ -1,0 +1,51 @@
+# The comma-side warp JIT jetlink's large model runs, as a build product.
+#
+# Ported from zoompilot's openpilot/sunnypilot/jetlink_adapter/SConscript.
+# jetlink runs `warp` on the comma and `run_policy` on the far end. dp's modeld
+# fuses the warp into its own queueing warp_enqueue JIT, so a standalone warp is
+# compiled here like dm_warp_*.pkl in selfdrive/modeld/SConscript. Nothing
+# compiles one at runtime; a device without a warp runs the small model.
+import glob
+import os
+
+from SCons.Script import Action
+
+Import('env', 'arch', 'camera_configs')
+
+basedir = env.Dir("#").abspath
+jetlink_repo = env.Dir("#jetlink_repo").abspath
+capture = os.path.join(jetlink_repo, 'jetlink', 'openpilot', 'warp.py')
+
+# comma GPU only (dp names the comma's arch larch64): the pickle is captured
+# against Device.DEFAULT and only modeld on the device loads one. And only with
+# jetlink present: a tree without it builds nothing here
+if arch == 'larch64' and os.path.isfile(capture):
+  from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE
+  from dragonpilot import jetlink_adapter
+
+  # jetlink on the build's path by its checkout, last, so nothing in it shadows the tree's own modules
+  lenv = env.Clone(ENV={**env['ENV'], 'PYTHONPATH': os.pathsep.join([env['ENV']['PYTHONPATH'], jetlink_repo])})
+
+  model_w, model_h = MEDMODEL_INPUT_SIZE
+
+  tinygrad_files = ["#" + x for x in glob.glob(env.Dir("#tinygrad_repo").relpath + "/**",
+                                               recursive=True, root_dir=basedir)
+                    if 'pycache' not in x and os.path.isfile(os.path.join(basedir, x))]
+  script_files = [
+    File(capture),                                         # the capture, and call_warp, which names the inputs
+    File("#dragonpilot/jetlink_adapter/__init__.py"),      # make_warp, and where the warp goes
+    File("#selfdrive/modeld/compile_modeld.py"),           # dp's frame_prepare graph
+    File("#system/camerad/cameras/nv12_info.py"),          # the frame layout the graph indexes
+  ]
+
+  # camera_configs is modeld/SConscript's CAMERA_CONFIGS: dp builds every camera
+  for cam_w, cam_h in camera_configs:
+    pkl = str(jetlink_adapter.warp_path(cam_w, cam_h, model_w, model_h))
+    # no tinygrad flags, unlike dm_warp: the bare-environment warp is what jetlink's
+    # parity and timing numbers were measured against. '-' ignores the exit status:
+    # every device builds this, link on or not, so a failed compile must not fail
+    # the build. It leaves no pickle, modeld stays on the small model and the
+    # offroad alert says why ("no warp built for this camera")
+    cmd = (f'-python3 -m jetlink.openpilot.warp --adapter {jetlink_adapter.__name__} '
+           f'--camera {cam_w}x{cam_h} --model {model_w}x{model_h} --output {pkl}')
+    lenv.Command(pkl, tinygrad_files + script_files, Action(cmd, "  [JETLINK WARP] $TARGET"))

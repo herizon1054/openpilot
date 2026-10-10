@@ -684,3 +684,304 @@ msgstr "秒"
 #, python-format
 #~ msgid "dashy HUD"
 #~ msgstr "dashy HUD"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "None"
+msgstr "無"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Disconnected"
+msgstr "未連線"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Not ready"
+msgstr "未就緒"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Ready"
+msgstr "就緒"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Connecting"
+msgstr "連線"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model"
+msgstr "大模型"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Failed"
+msgstr "失敗"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Waiting to switch"
+msgstr "待切換"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Jetlink connected: {v0}."
+msgstr "Jetlink 已連線：{v0}。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "No device on the USB port."
+msgstr "USB 埠上沒有裝置。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Device on USB port (not responding to Jetlink yet)."
+msgstr "USB 埠上有裝置（尚未回應 Jetlink）。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Check the cable or app"
+msgstr "請檢查線材或 App"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Check the cable"
+msgstr "請檢查線材"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{v0}, {v1} ({v2} disconnects)"
+msgstr "{v0}，{v1}（斷線 {v2} 次）"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Large model unavailable: {v0}. Using the small model."
+msgstr "大模型無法使用：{v0}。由小模型駕駛。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model unavailable. Using the small model."
+msgstr "大模型無法使用，由小模型駕駛。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{v0} is ready. Turn cruise main off (also disables ALKA) to switch; re-enable after about 1 second."
+msgstr "{v0} 已就緒。關閉巡航主開關（ALKA 隨之關閉）即切換，約 1 秒後再開啟啟用。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Using the small model until the large model is ready."
+msgstr "大模型就緒前由小模型駕駛。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0} until {v1} is ready."
+msgstr "{v0} 先行駕駛，直到 {v1} 準備完成。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0} once Jetlink is ready."
+msgstr "Jetlink 就緒後將由 {v0} 駕駛。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Using {v0}; automatically fall back to the small model if disconnected, then switch back after recovery."
+msgstr "將由 {v0} 駕駛；連線中斷時自動改用小模型，恢復後再切回。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Run the large model on a device connected to comma USB-C (USB for Jetson / Linux PC / Mac; iOS for iPhone). Enabling disables ADB. Change modes only while offroad. If the link drops or lags, comma falls back to its small model."
+msgstr "在連接於 comma USB-C 埠的外部裝置（Jetson / Linux PC / Mac 走 USB，iPhone 走 iOS）上運算大模型。開啟後會關閉 ADB；只能在熄火（offroad）時切換。連線中斷或延遲時，comma 會立刻改回自己的小模型繼續駕駛。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Downloading"
+msgstr "下載"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Uploading"
+msgstr "上傳"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Building"
+msgstr "建置"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Yes"
+msgstr "是"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "No"
+msgstr "否"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Connection status"
+msgstr "連線狀態"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Transport"
+msgstr "傳輸方式"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "External device online"
+msgstr "外部裝置在線"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "USB port"
+msgstr "USB 埠"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Driving model"
+msgstr "行車將使用"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "External engine built"
+msgstr "外部裝置已建置引擎"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Progress"
+msgstr "進度"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Unavailable reason"
+msgstr "無法使用原因"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Disabled by Jetlink"
+msgstr "已由 Jetlink 關閉"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "On"
+msgstr "開啟"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Power iPhone from comma"
+msgstr "iPhone 由 comma 供電"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Power a directly connected iPhone from comma. Off by default: some phones disconnect when powered."
+msgstr "直接以線材連接 iPhone 時，請 comma 為手機供電。預設關閉：部分手機在供電後會斷開連線。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model source"
+msgstr "大模型來源"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Select"
+msgstr "選擇"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "External device model"
+msgstr "外部裝置目前模型"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Refresh model list"
+msgstr "更新模型清單"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Updating..."
+msgstr "更新中…"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Refresh"
+msgstr "更新"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Fetch the sunnypilot model list (same as the Jetlink app) to identify models on the phone."
+msgstr "從 sunnypilot 模型庫取得清單（與 Jetlink App 相同），用來為手機上的模型命名。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "No device"
+msgstr "無裝置"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Device present"
+msgstr "有裝置"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Not reported"
+msgstr "未回報"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Built on external device: "
+msgstr "外部裝置已建置："
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "The external device has not reported built models (shown after connecting)."
+msgstr "外部裝置尚未回報已建置的模型（連線一次後顯示）。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Follow the external device: use the model selected in the phone (or Jetson / Mac) app. No separate download on comma."
+msgstr "跟隨外部裝置：在手機（或 Jetson / Mac）App 上選的模型就是行車用的大模型，comma 不另外下載。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Selected on comma: {v0}. If missing on the external device, comma downloads and uploads it for building while parked."
+msgstr "由 comma 指定：{v0}。外部裝置沒有時，comma 會在停車時下載並上傳給它建置。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Unknown"
+msgstr "未知"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Follow external device (current: {v0})"
+msgstr "跟隨外部裝置（目前：{v0}）"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Loaded"
+msgstr "已載入"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Built on external device"
+msgstr "外部裝置已建置"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Downloaded on comma"
+msgstr "comma 已下載"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Select large model"
+msgstr "選擇大模型"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Updated: {v0} large models."
+msgstr "已更新：{v0} 個大模型。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "Refresh failed: {v0}"
+msgstr "更新失敗：{v0}"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid " (Jetlink package not found on this device)"
+msgstr " （此裝置上找不到 jetlink 套件）"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Switching large model"
+msgstr "大模型切換中"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model active"
+msgstr "大模型已啟用"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model ready"
+msgstr "大模型已就緒"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Turn cruise main off, then re-enable to switch"
+msgstr "關閉巡航主開關後重新啟用即可切換"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Large model disconnected"
+msgstr "大模型連線中斷"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Using the small model"
+msgstr "改用小模型駕駛"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "ALKA on: turn cruise main off or shift to P to switch"
+msgstr "ALKA 開啟中：關閉巡航主開關或排入 P 檔即切換"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+msgid "Cancel cruise to switch"
+msgstr "取消巡航即可切換"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{model} is ready. With ALKA on, cancelling cruise will not switch: turn cruise main off for about 1 second, or stop and shift to P/N/R."
+msgstr "{model} 已就緒。ALKA 開啟中，取消巡航不會切換：關閉巡航主開關約 1 秒，或停車排入 P／N／R 檔即切換。"
+
+#: dragonpilot/selfdrive/ui/jetlink_ui.py
+#, python-brace-format
+msgid "{model} is ready. Cancel cruise to switch, then re-enable after about 1 second."
+msgstr "{model} 已就緒。取消巡航即切換，約 1 秒後再啟用。"
