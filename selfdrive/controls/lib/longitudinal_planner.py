@@ -24,35 +24,40 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
-# mode=='blended'(e2e) 基準門檻，AEM 停用時固定用這個值。這個常數獨立設定，跟 aem.py 的
-# BASE_THROTTLE_LOW_SPEED_VALUE / BASE_THROTTLE_HIGH_SPEED_VALUE（AEM 啟用時依車速動態
-# 切換用的門檻）互不影響，各自調整不會牽動對方——AEM 啟用時完全不會用到這個常數
+# mode=='blended'(e2e) 且 AEM「停用」時的固定門檻。獨立常數，與 aem.py 的
+# BASE_THROTTLE_LOW_SPEED_VALUE / BASE_THROTTLE_HIGH_SPEED_VALUE 互不影響——
+# AEM 啟用時完全不會用到這個常數。
 ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
-# mode=='blended' 且是由 AEM 接近模型停止線觸發時使用：接近紅綠燈/停止標誌時，動態把
-# 節流門檻拉高到跟 ACC 一樣保守（0.4），避免 e2e 在這個情境下加速意願過高
+# mode=='blended' 且 AEM 判定接近模型停止線（aem.near_stop_active）時使用：比 e2e 基礎
+# 門檻保守、但仍低於 ACC 的 0.4。實際採用 max(AEM 基礎門檻, 本值)，只會讓門檻變高。
 ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
-# 用三份市區 40~50km/h 路測 rlog 實測過，同一次連續煞停過程中，這個值每 50ms 就可以在
-# 0.06~0.58 之間跳動，標準差可達 0.19~0.36。過去 allow_throttle 是直接拿這個原始值跟
-# 門檻比較，完全沒有平滑或遲滯，於是不管門檻設多少，只要 throttle_prob 剛好在門檻附近
-# 雜訊擺盪，allow_throttle 就會每一幀真的跟著在 True/False 之間反覆橫跳，反映到
-# accel_clip[1] 每一幀在「完全放開」和「夾到滑行曲線」之間跳動，就是使用者反映的
-# 「油門剎車頓挫感」的直接成因——這跟門檻本身該設 0.1 還是 0.2 無關，兩個值都一樣會被
-# 這個雜訊掃到。修法比照 aem.py 對側向加速度的處理：先做一次低通濾波，再加遲滯，兩者
-# 一起套用在 allow_throttle 的判斷上，而不只是套用在「門檻該選哪個值」這件事上。
-# 用同一份 rlog 驗證：加上這兩個機制後，三份 log 的 allow_throttle 切換次數從
-# 22~34 次/分鐘降到 0~4 次/分鐘，降幅 88%~100%。
-THROTTLE_PROB_LPF_ALPHA = 0.05   # 依需求調更強（原 0.2），讓濾波後的值更不容易掉，
-                                  # 加速時更不容易被單幀雜訊誤判成「該放油門」；
-                                  # 代價是追上一個新的、持續的訊號變化也會變慢
-                                  # （等效時間常數約 1 秒，原 0.2 約 0.22 秒）
-ALLOW_THROTTLE_HYSTERESIS = 0.15   # allow_throttle 為 True 時，門檻降低這麼多才會變回 False，
-                                    # 避免濾波後的值仍在門檻附近小幅擺盪時來回橫跳
+# 三份市區 40~50 km/h 路測 rlog 實測，同一次連續煞停過程中，這個值每 50 ms 可在
+# 0.06~0.58 之間跳動，標準差 0.19~0.36。原廠直接拿原始值比較門檻，allow_throttle 會
+# 每幀在 True/False 間橫跳，反映到 accel_clip[1] 在「完全放開」與「夾到滑行曲線」之間
+# 跳動，即「油門剎車頓挫感」的直接成因。修法：先低通濾波再加遲滯（僅套用在 blended）。
+# 驗證（門檻 0.2、遲滯 0.15 的組合）：三份 log 的 allow_throttle 切換次數從 22~34 次/分鐘
+# 降到 0~4 次/分鐘。
+THROTTLE_PROB_LPF_ALPHA = 0.05   # 等效時間常數約 1 秒（原 0.2 約 0.22 秒）；越小越不易被
+                                  # 單幀雜訊誤判，但追上持續的訊號變化也越慢
+ALLOW_THROTTLE_HYSTERESIS = 0.15  # allow_throttle 為 True 時，解除門檻 = 進入門檻 - 遲滯量
+# v11：遲滯量上限為進入門檻的這個比例，保證解除門檻 >= 0 且不會讓 allow_throttle 被永久鎖死。
+# v10 直接用固定 0.15，當 AEM 給的門檻是 0.1 或 0.0 時，解除門檻變成 -0.05 / -0.15，
+# 而 throttle_prob_filtered 不可能 < 0，一旦變成 True 就永遠不會再變回 False。
+# 0.75 的選擇是為了讓已用 rlog 驗證過的「門檻 0.2 / 遲滯 0.15 / 解除 0.05」組合完全不變：
+#   門檻 0.3（接近停止線） -> 遲滯 0.15  -> 解除 0.15
+#   門檻 0.2（AEM 停用）   -> 遲滯 0.15  -> 解除 0.05（與 v10 相同）
+#   門檻 0.1（AEM 低速）   -> 遲滯 0.075 -> 解除 0.025
+#   門檻 0.0（AEM 高速）   -> 遲滯 0     -> 解除 0.0（= 刻意設定的「不 coast」，見 aem.py）
+ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO = 0.75
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
+
+# dp：e2e 正向加速度放大係數（見 update() 內說明）
+E2E_ACCEL_BOOST_FACTOR = 1.5
 
 class DPFlags:
   OCM = 1
@@ -85,7 +90,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
-    self.throttle_prob_filtered = 1.0   # v10：throttle_prob 低通濾波狀態，見下方 THROTTLE_PROB_LPF_ALPHA 說明
+    self.throttle_prob_filtered = 1.0   # v10：throttle_prob 低通濾波狀態，見 THROTTLE_PROB_LPF_ALPHA
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -126,13 +131,13 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # v7：新增「接近模型停止線」節流保守化。⚠️ self.traffic_stop.stop_dist_m 要到本
-      # function 後段呼叫 LongitudinalPlannerDP.update_targets() 時才會刷新成這一幀的值，
-      # 這裡讀到的是上一幀（約 50ms 前）的結果——由於這一項只影響節流門檻、本身又有
-      # 0.5 秒防彈跳，一幀的落差可忽略；若要完全同步，需把 update_targets() 提前到
-      # 這裡之前呼叫，但那會牽動它目前使用 self.v_desired_filter.x/self.a_desired
-      # （上一幀平滑值）作為輸入參數的既有設計，改動風險較高，這裡先不動。
-      # 方向燈覆寫（blinker_on）依需求已整段移除，AEM 不再需要方向燈這個輸入。
+      # ⚠️ self.traffic_stop.stop_dist_m 要到後段 LongitudinalPlannerDP.update_targets()
+      # 才會刷新成這一幀的值，這裡讀到的是上一幀（約 50 ms 前）。near-stop 判斷本身有
+      # 0.5 秒防彈跳與 10 m 遲滯，一幀落差可忽略；若要完全同步需把 update_targets()
+      # 提前，但會牽動它使用 self.v_desired_filter.x / self.a_desired（上一幀平滑值）
+      # 作為輸入的既有設計，風險較高，暫不動。
+      # ⚠️ AEM 啟用時，get_mode() 預設忽略這裡傳入的 mode（即實驗模式開關），屬刻意分歧，
+      # 見 aem.py 檔頭與 AEM_EXPERIMENTAL_OFF_FORCES_ACC。
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
                               stop_dist_m=self.traffic_stop.stop_dist_m)
       mode = self.aem.get_mode(mode)
@@ -169,29 +174,30 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
+
+    # v11：濾波每一幀都更新（不分 mode）。v10 只在 blended 分支更新，從 acc 切回 blended
+    # 時會用到停留在 acc 期間凍結的過時值。acc 分支本身仍用原始值判斷，不受影響。
+    self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
+                                    + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
+
     if mode == 'blended':
-      # v9：基準門檻改由 AEM 依車速動態決定，AEM 未啟用時退回固定的
-      # ALLOW_THROTTLE_THRESHOLD_E2E（0.2）當後備值。
-      # 依需求取消方向燈對節流門檻的影響——方向燈仍會透過 aem.get_mode() 讓 AEM 強制
-      # 切為實驗模式，只是不再額外拉高這裡的節流門檻；接近停止線的覆寫維持不變。
+      # AEM 啟用：基礎門檻由 AEM 依車速決定，接近停止線時取較保守者；
+      # AEM 停用：固定 ALLOW_THROTTLE_THRESHOLD_E2E。方向燈不影響節流門檻（亦不影響 AEM）。
       if dp_flags & DPFlags.AEM:
         allow_throttle_threshold = self.aem.base_throttle_threshold
         if self.aem.near_stop_active:
           allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
       else:
         allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
-      # v10：throttle_prob 先做低通濾波，比較時再加遲滯，避免單幀雜訊讓 allow_throttle
-      # 每一幀反覆橫跳（見上方 THROTTLE_PROB_LPF_ALPHA 說明的實測數據）。
-      # 依需求，這組濾波+遲滯只套用在 blended 模式；acc 模式維持原廠寫法（見 else
-      # 分支），不干涉 acc 的 allow_throttle 判斷，加速行為跟原始檔逐字一致。
-      self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
-                                      + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
-      effective_threshold = (allow_throttle_threshold - ALLOW_THROTTLE_HYSTERESIS
+      # 濾波 + 遲滯（見常數區說明）。遲滯量受 ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO 限制，
+      # 解除門檻永遠 >= 0，避免 allow_throttle 被鎖死在 True。
+      hysteresis = min(ALLOW_THROTTLE_HYSTERESIS,
+                       max(allow_throttle_threshold, 0.0) * ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO)
+      effective_threshold = (allow_throttle_threshold - hysteresis
                               if self.allow_throttle else allow_throttle_threshold)
       self.allow_throttle = self.throttle_prob_filtered > effective_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
     else:
-      # acc 模式：原廠寫法，直接拿原始 throttle_prob 比較，不做濾波、不做遲滯，
-      # 跟改動前的原始檔逐字相同，確保這次的修正完全不干涉 acc 模式的加速判斷
+      # acc 模式：原廠寫法，直接拿原始 throttle_prob 比較，不濾波、不遲滯
       allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
       self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
@@ -276,20 +282,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    # dp: 依需求，對 e2e 的正向加速度意圖做放大（×1.5），藉此補償 desired_accel 本身
-    # 偏保守的傾向（desired_accel 是從模型自己預測的 plan 軌跡微分算出來的「預期值」，
-    # 不是「意圖強度」，訓練資料是一般人類開車的溫和示範，先天就不激進——調
-    # LONG_SMOOTH_SECONDS/ALLOW_THROTTLE_THRESHOLD 這類下游參數並不會讓這個值本身變大，
-    # 因為它們動的是「這個值能不能、多快通過」，不是「這個值本身有多大」，這裡才是真正
-    # 改動數值大小的地方）。
-    # ⚠️ 刻意分歧：這一行會讓實際送進 min() 比較的 e2e 值，偏離模型原始預測值，
-    # 不是「模型原本的判斷」。刻意放在 min(mpc, e2e) 之前才做這個放大——放大後的值
-    # 只是拿去跟 mpc 比大小，比出來的仍取兩者中較保守的一個，並不會讓 e2e 真的贏過 mpc
-    # 的物理天花板，mpc 依然兜底；只有在 e2e 放大後仍然比 mpc 保守的情況下，才會讓原本
-    # 會被 e2e 扯得更低的 min() 結果，變得比較貼近 mpc（更積極一點），效果侷限在
-    # 「e2e 原本會比 mpc 更保守」的那些情境，不會讓最終輸出超過 mpc 認為安全的範圍。
-    # 只放大正值（想加速的方向），減速/煞車方向的 e2e 值不受影響。
-    E2E_ACCEL_BOOST_FACTOR = 1.5
+    # dp: 對 e2e 的正向加速度意圖放大（×E2E_ACCEL_BOOST_FACTOR），補償 desired_accel 偏保守
+    # 的傾向（它是從模型預測的 plan 軌跡微分出來的「預期值」，訓練資料是一般人類的溫和
+    # 示範；調 LONG_SMOOTH_SECONDS / ALLOW_THROTTLE_THRESHOLD 等下游參數不會改變這個值的大小）。
+    # ⚠️ 刻意分歧：送進 min() 比較的 e2e 值偏離模型原始預測。放大後仍取 min(mpc, e2e)，
+    # mpc 依然兜底，最終輸出不會超過 mpc 認為安全的範圍；效果只在「e2e 原本比 mpc 保守」
+    # 的情境讓結果更貼近 mpc。只放大正值，減速／煞車方向不受影響。
     if output_a_target_e2e > 0:
       output_a_target_e2e = min(output_a_target_e2e * E2E_ACCEL_BOOST_FACTOR, ACCEL_MAX)
 
