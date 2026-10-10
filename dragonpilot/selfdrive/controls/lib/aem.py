@@ -41,16 +41,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 # 判斷優先權（由高到低，見 get_mode()）
 # ════════════════════════════════════════════════════════════════════════════
 #   0. （僅 AEM_EXPERIMENTAL_OFF_FORCES_ACC = True 時）實驗模式開關關閉 -> acc
-#   1. 方向燈覆寫（v12）：方向燈開啟且車速 <= BLINKER_MAX_SPEED_KPH（30 km/h）-> 強制 blended。
-#      方向燈關閉後保留 BLINKER_RELEASE_HOLD_S 秒才解除，涵蓋燈號閃爍間隔與剛回正撥桿；
-#      車速閘門經 CONFIRM_TIME_S 防彈跳，避免在 30 km/h 邊界來回切換。
-#      只影響 mode，不影響節流門檻（v6 的方向燈節流覆寫維持移除）。
-#      實際有作用的區間是 20~30 km/h（<= 20 km/h 本來就是實驗模式），以及低速路口轉彎時
-#      搶在過彎保護之前，避免轉彎途中由 blended 被切到 acc。
-#      ⚠️ 優先權刻意高於過彎保護：過彎保護的本意是讓 DTSC 接手減速，但 DTSC 約束
-#      （a_min_arr/a_max_arr）不分 mode 都會餵進 MPC，blended 的輸出又是 min(mpc, e2e)，
-#      所以在 blended 下彎道減速仍受 DTSC 約束兜底；限定 30 km/h 以下也讓側向 G 有上限。
-#   2. 過彎保護：濾波後側向加速度 > CURVE_LAT_ACCEL_ENTER（1.76 m/s²）強制 acc，
+#   1. 過彎保護：濾波後側向加速度 > CURVE_LAT_ACCEL_ENTER（1.76 m/s²）強制 acc，
 #      低於 CURVE_LAT_ACCEL_EXIT（1.30 m/s²）才解除。
 #      a_y = |v_ego * yaw_rate|，yaw_rate 取自 modelV2.orientationRate.z[0]（與 dtsc.py 同源）。
 #      ⚠️ 刻意不用 carState.yawRate：Toyota 等多數品牌 carstate.py 從未賦值，恆為 0.0，
@@ -58,10 +49,10 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #      modelV2.orientationRate.z[0] 全程非零）。
 #      ⚠️ 已知行為：a_y = v²/R，20 km/h 半徑 15 m 的一般路口轉彎約 2.06 m/s²，
 #      會超過 1.76 觸發本保護，因此低速路口轉彎途中可能由 blended 切到 acc。
-#   3. 接近停止線 + 車速閘門：near_stop_active 為 True（距停止線 <= NEAR_STOP_ENTER_M）
+#   2. 接近停止線 + 車速閘門：near_stop_active 為 True（距停止線 <= NEAR_STOP_ENTER_M）
 #      且車速閘門開放（<= 60 km/h 開、>= 70 km/h 關、中間維持前一狀態）時強制 blended。
 #      車速閘門避免快速道路等高速情境遠遠看到停止線就被拉進實驗模式。
-#   4. 車速（兩層）：
+#   3. 車速（兩層）：
 #        v_ego <= 20 km/h -> 無條件、立即強制實驗模式，不經防彈跳，起步／低速無空窗期
 #        20 < v_ego < 30 km/h -> 過渡帶，維持前一狀態
 #        v_ego >= 30 km/h -> 一般模式（含防彈跳）
@@ -87,7 +78,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #   v3  過彎門檻上移至 2.0/2.6 m/s²。
 #   v4  [bug fix] yawRate 改取 modelV2.orientationRate.z[0]（carState.yawRate 在 Toyota 恆為 0）。
 #   v5  過彎門檻下修為 1.96/1.50 m/s²（之後再依需求調為現值 1.76/1.30）。
-#   v6  方向燈覆寫（含節流門檻覆寫），後續版本整段移除；v12 重新加入 mode 覆寫（見下）。
+#   v6  方向燈覆寫，後續版本已整段移除，方向燈目前完全不影響 AEM。
 #   v7  新增 near_stop_active（只影響節流門檻）。
 #   v9  新增 base_throttle_threshold（依車速動態切換 blended 基礎節流門檻）。
 #   v10 接近停止線時 mode 也強制 blended（加車速閘門 60/70 km/h）。
@@ -98,10 +89,6 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #       - 修正所有與常數值不一致的註解／docstring。
 #       - 新增 AEM_EXPERIMENTAL_OFF_FORCES_ACC，並把「忽略實驗模式開關」明確列為刻意分歧；
 #         預設 False，行為與 v10 相同。
-#   v12 （本版）
-#       - 重新加入方向燈覆寫：方向燈開啟且車速 <= 30 km/h 強制 blended，優先權高於過彎保護。
-#         只影響 mode，不影響節流門檻。update_states 新增 blinker_on 參數（預設 False，
-#         未傳入時行為與 v11 相同）。
 
 from openpilot.common.realtime import DT_MDL
 
@@ -109,11 +96,6 @@ from openpilot.common.realtime import DT_MDL
 #   False（預設）：AEM 啟用時忽略開關，mode 完全由 AEM 決定（與 v10 行為相同）
 #   True         ：開關關閉時一律回傳 'acc'，AEM 只在開關打開時運作
 AEM_EXPERIMENTAL_OFF_FORCES_ACC = False
-
-# 方向燈覆寫（v12）
-BLINKER_MAX_SPEED_KPH  = 30.0   # 車速 <= 這個值才允許方向燈強制實驗模式（經 CONFIRM_TIME_S 防彈跳）
-BLINKER_RELEASE_HOLD_S = 1.0    # 方向燈訊號消失後保留這麼久（秒）才解除，涵蓋燈號閃爍
-                                 # 間隔（若該品牌回報的是燈泡狀態而非撥桿狀態）與撥桿回正瞬間
 
 # 車速門檻
 SPEED_FORCE_EXPERIMENTAL_KPH = 20.0   # <= 這個值：無條件、立即強制實驗模式，不經防彈跳
@@ -185,12 +167,6 @@ class AEM:
     self._base_throttle_pending = self._base_throttle_state
     self._base_throttle_confirm_t = 0.0
 
-    # 方向燈覆寫狀態（v12）
-    self._blinker_hold_t = 0.0          # 距離方向燈最後一次為 True 的剩餘保留時間（秒）
-    self._blinker_speed_ok = True       # 車速閘門（<= BLINKER_MAX_SPEED_KPH）
-    self._blinker_speed_pending = self._blinker_speed_ok
-    self._blinker_speed_confirm_t = 0.0
-
   @property
   def near_stop_active(self):
     """是否處於「接近模型停止線」狀態（距離 <= NEAR_STOP_ENTER_M，> NEAR_STOP_EXIT_M 解除）。
@@ -208,12 +184,7 @@ class AEM:
     return (BASE_THROTTLE_LOW_SPEED_VALUE if self._base_throttle_state == 'low'
             else BASE_THROTTLE_HIGH_SPEED_VALUE)
 
-  @property
-  def blinker_active(self):
-    """方向燈覆寫是否生效（方向燈開啟或仍在保留時間內，且車速閘門開放）。只影響 get_mode()。"""
-    return self._blinker_hold_t > 0.0 and self._blinker_speed_ok
-
-  def update_states(self, model_msg, radar_msg, v_ego, stop_dist_m=None, blinker_on=False):
+  def update_states(self, model_msg, radar_msg, v_ego, stop_dist_m=None):
     yaw_rate = model_msg.orientationRate.z[0] if len(model_msg.orientationRate.z) else 0.0
     self._speed_dwell_t += DT_MDL
     self._update_speed_mode(v_ego)
@@ -221,26 +192,6 @@ class AEM:
     self._update_near_stop(stop_dist_m)
     self._update_stop_mode_speed_gate(v_ego)
     self._update_base_throttle(v_ego)
-    self._update_blinker(v_ego, blinker_on)
-
-  def _update_blinker(self, v_ego, blinker_on):
-    # 方向燈訊號：開啟時立即生效（不經防彈跳，路口要盡早切），關閉後保留一段時間才解除
-    if blinker_on:
-      self._blinker_hold_t = BLINKER_RELEASE_HOLD_S
-    else:
-      self._blinker_hold_t = max(0.0, self._blinker_hold_t - DT_MDL)
-
-    # 車速閘門：<= 30 km/h 開放，> 30 km/h 關閉，兩個方向都經 CONFIRM_TIME_S 防彈跳
-    candidate = v_ego * 3.6 <= BLINKER_MAX_SPEED_KPH
-    if candidate == self._blinker_speed_pending:
-      self._blinker_speed_confirm_t += DT_MDL
-    else:
-      self._blinker_speed_pending = candidate
-      self._blinker_speed_confirm_t = 0.0
-
-    if (self._blinker_speed_pending != self._blinker_speed_ok
-        and self._blinker_speed_confirm_t >= CONFIRM_TIME_S):
-      self._blinker_speed_ok = self._blinker_speed_pending
 
   def _update_speed_mode(self, v_ego):
     if v_ego * 3.6 <= SPEED_FORCE_EXPERIMENTAL_KPH:
@@ -350,8 +301,6 @@ class AEM:
     # 預設忽略（刻意分歧 2）；AEM_EXPERIMENTAL_OFF_FORCES_ACC = True 時，開關關閉一律 acc。
     if AEM_EXPERIMENTAL_OFF_FORCES_ACC and mode == 'acc':
       return 'acc'
-    if self.blinker_active:   # v12：方向燈 + 車速 <= 30 km/h，優先權高於過彎保護（見檔頭說明）
-      return 'blended'
     if self._curve_active:
       return 'acc'
     if self._near_stop_active and self._stop_mode_speed_ok:
