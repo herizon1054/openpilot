@@ -83,7 +83,7 @@ def set_consistent_flag(consistent: bool) -> None:
 
 def parse_release_notes(basedir: str) -> bytes:
   try:
-    with open(os.path.join(basedir, "CHANGELOGS.md"), "rb") as f:
+    with open(os.path.join(basedir, "RELEASES.md"), "rb") as f:
       r = f.read().split(b'\n\n', 1)[0]  # Slice latest release notes
     try:
       return bytes(parse_markdown(r.decode("utf-8")), encoding="utf-8")
@@ -375,7 +375,7 @@ class Updater:
         # Logic:
         # 1. Allow exactly 'pre-build'
         # 2. OR Allow if it parses as a version AND that version is >= 0.9.8
-        if name in ('testing', 'pre-build') or (m and tuple(map(int, m.groups())) >= (0, 9, 8)):
+        if name.startswith('dp') or (m and tuple(map(int, m.groups())) >= (0, 9, 8)):
           self.branches[name] = x.group('commit_sha')
 
     cur_branch = self.get_branch(OVERLAY_MERGED)
