@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import gettext
 import json
 
 import pyray as rl
@@ -23,21 +22,16 @@ def _languages():
 
 
 def _dragonpilot_chars(code: str) -> set[str]:
-  """Characters used by dragonpilot's own translations (dragonpilot_{code}.mo).
+  """Bake the same PO source catalog that the dragonpilot UI loads.
 
-  dp settings translate via a separate catalog from openpilot's app_{code}.po,
-  so their glyphs must be baked too — otherwise translated dp settings render
-  as '?' (the catalog ships compiled, so we read the .mo, not a .po source)."""
-  mo_path = TRANSLATIONS_DIR / f"dragonpilot_{code}.mo"
-  if not mo_path.exists():
+  Reading the complete UTF-8 source also includes English fallback strings and
+  punctuation. Generated MO files may be absent or stale and are not inputs.
+  """
+  path = TRANSLATIONS_DIR / f"dragonpilot_{code}.po"
+  try:
+    return set(path.read_text(encoding="utf-8"))
+  except FileNotFoundError:
     return set()
-  with mo_path.open("rb") as fh:
-    catalog = gettext.GNUTranslations(fh)._catalog
-  chars: set[str] = set()
-  for value in catalog.values():
-    if isinstance(value, str):
-      chars |= set(value)
-  return chars
 
 
 def _char_sets():
