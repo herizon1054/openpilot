@@ -59,6 +59,42 @@ _A_TOTAL_MAX_BP = [20., 40.]
 # dp：e2e 正向加速度放大係數（見 update() 內說明）
 E2E_ACCEL_BOOST_FACTOR = 1.5
 
+# dp(v12.1): e2e 減速保險（e2e decel guard）
+# 用途：acc 模式下，模型（e2e）已經感知到應該減速，但 MPC 仍要加速／維持時，把輸出往 e2e 拉，
+# 當作一層保險。e2e 為負代表模型整體判斷「該減速了」，不依賴雷達前車選擇，因此能補到
+# 雷達／前車選擇還沒反應過來的時段。不切換 mode：accel_clip、allow_throttle、MPC 約束、
+# 彎道加速度限制、shouldStop 全部維持 acc 的設定，只修改最終輸出的加速度目標。
+# 只在 AEM 開啟（dp_flags & DPFlags.AEM）且 mode == 'acc' 時運作；AEM 關閉時行為與 v11 完全相同。
+# 進入（三項同時成立，連續 E2E_GUARD_CONFIRM_FRAMES 幀）：
+#   (1) e2e < E2E_GUARD_ENTER_ACCEL
+#   (2) e2e − mpc < E2E_GUARD_ENTER_DIFF
+#       只看差值時，「MPC 想加速、e2e 只是比較不想加速（兩者皆正）」也會觸發，等於讓 e2e 壓住
+#       加速（log 032 第 18 秒、033 第 12 秒，mpc +0.41/+0.45、e2e +0.11/+0.15）。
+#   (3) 模型油門機率 gasPressProbs[1]（原始值）< E2E_GUARD_ENTER_GAS_PROB
+#       v12.1 新增。跟車時 e2e 常長時間維持 -0.1~-0.3（模型偏好較大車距），只靠 (1)(2) 會在
+#       正常跟車加速時觸發：log 036 第 51~57 秒、037 第 46~50 秒，前車加速、MPC +0.3~+0.6，
+#       e2e 一直在 -0.12~-0.30，保險壓住加速各約 7 秒。這兩段油門機率 0.93~0.99；
+#       032 藍車切入時油門機率掉到 0.59~0.66（煞車機率升到 0.2~0.3），可以區分。
+# 退出（維持滿 E2E_GUARD_MIN_HOLD_S 後，任一成立）：e2e >= 0，或油門機率 >= E2E_GUARD_EXIT_GAS_PROB。
+#   另有 E2E_GUARD_MAX_HOLD_S 硬上限：保險是短時保護，不該長時間接管。
+# 輸出：mpc + w × (min(mpc, e2e) − mpc)，權重 w 在 E2E_GUARD_RAMP_S 秒內 0↔1 漸變，
+#   避免進出時輸出一幀跳 0.3~1 m/s²。只會讓輸出變小（更保守），不會讓輸出超過 MPC。
+# e2e 取模型原始值（不含 E2E_ACCEL_BOOST_FACTOR 放大）。
+# 驗證（log 030/032/033/034/035/036/037，約 390 秒 acc 行駛，63~108 km/h，mpc 由 longitudinalPlan 反推）：
+#   - 032 藍車切入：第 57.5 秒觸發（駕駛踩剎車前 0.3 秒），輸出 0.25 秒內由 +0.05 降到 -0.29。
+#   - 036 第 48 秒、037 第 54 秒：前車減速、MPC 本身也在減速時觸發，多減約 2 km/h。
+#   - 壓住 MPC 加速（MPC > +0.05 且輸出被拉低）的時間：0 秒（v12 為 13.7 秒）。
+# ⚠️ 只有國道 log 驗證過，市區低速情境尚未驗證。
+E2E_GUARD_ENABLED = True           # 總開關；實際運作還需要 AEM 開啟（dp_flags & DPFlags.AEM），AEM 關閉時完全不介入
+E2E_GUARD_ENTER_ACCEL = -0.2        # m/s²
+E2E_GUARD_ENTER_DIFF = -0.25        # m/s²（e2e − mpc）
+E2E_GUARD_ENTER_GAS_PROB = 0.8      # v12.1：油門機率低於此值才可進入
+E2E_GUARD_EXIT_GAS_PROB = 0.9       # v12.1：油門機率回到此值以上即可退出
+E2E_GUARD_CONFIRM_FRAMES = 4        # 0.2 秒
+E2E_GUARD_MIN_HOLD_S = 0.5          # 秒
+E2E_GUARD_MAX_HOLD_S = 3.0          # v12.1：秒，硬上限
+E2E_GUARD_RAMP_S = 0.3              # 秒
+
 class DPFlags:
   OCM = 1
   AEM = 2
@@ -91,6 +127,11 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.dt = dt
     self.allow_throttle = True
     self.throttle_prob_filtered = 1.0   # v10：throttle_prob 低通濾波狀態，見 THROTTLE_PROB_LPF_ALPHA
+    # dp(v12): e2e 減速保險狀態，見 E2E_GUARD_*
+    self.e2e_guard_active = False
+    self.e2e_guard_cnt = 0
+    self.e2e_guard_t = 0.0
+    self.e2e_guard_w = 0.0
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -281,6 +322,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
                                                                         action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
+    output_a_target_e2e_raw = output_a_target_e2e   # dp(v12): e2e 減速保險使用未放大的原始值
 
     # dp: 對 e2e 的正向加速度意圖放大（×E2E_ACCEL_BOOST_FACTOR），補償 desired_accel 偏保守
     # 的傾向（它是從模型預測的 plan 軌跡微分出來的「預期值」，訓練資料是一般人類的溫和
@@ -294,7 +336,22 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     if mode == 'acc':
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+      # dp(v12): e2e 減速保險（只改加速度目標，shouldStop 仍只看 MPC）
+      if E2E_GUARD_ENABLED and (dp_flags & DPFlags.AEM) and not reset_state:
+        self._update_e2e_guard(output_a_target_mpc, output_a_target_e2e_raw, throttle_prob)
+        if self.e2e_guard_w > 0.0:
+          guarded = min(output_a_target_mpc, output_a_target_e2e_raw)
+          output_a_target = output_a_target_mpc + self.e2e_guard_w * (guarded - output_a_target_mpc)
+          if output_a_target < output_a_target_mpc:
+            try:
+              from cereal import log
+              self.mpc.source = log.LongitudinalPlan.LongitudinalPlanSource.e2e
+            except ImportError:
+              pass
+      else:
+        self._reset_e2e_guard()
     else:
+      self._reset_e2e_guard()   # dp(v12): blended 本來就取 min(mpc, e2e)，保險不需要運作
       output_a_target = min(output_a_target_mpc, output_a_target_e2e)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       
@@ -309,6 +366,35 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
+
+  def _reset_e2e_guard(self):
+    self.e2e_guard_active = False
+    self.e2e_guard_cnt = 0
+    self.e2e_guard_t = 0.0
+    self.e2e_guard_w = 0.0
+
+  def _update_e2e_guard(self, a_mpc, a_e2e, gas_prob):
+    # dp(v12.1): e2e 減速保險狀態機，見 E2E_GUARD_*；gas_prob 為 gasPressProbs[1] 原始值
+    if not self.e2e_guard_active:
+      hit = (a_e2e < E2E_GUARD_ENTER_ACCEL and (a_e2e - a_mpc) < E2E_GUARD_ENTER_DIFF and
+             gas_prob < E2E_GUARD_ENTER_GAS_PROB)
+      self.e2e_guard_cnt = self.e2e_guard_cnt + 1 if hit else 0
+      if self.e2e_guard_cnt >= E2E_GUARD_CONFIRM_FRAMES:
+        self.e2e_guard_active = True
+        self.e2e_guard_t = 0.0
+        cloudlog.info(f"[E2EGuard_DP] enter mpc={a_mpc:.2f} e2e={a_e2e:.2f} gas={gas_prob:.2f}")
+    else:
+      self.e2e_guard_t += self.dt
+      released = a_e2e >= 0.0 or gas_prob >= E2E_GUARD_EXIT_GAS_PROB
+      if (released and self.e2e_guard_t >= E2E_GUARD_MIN_HOLD_S) or self.e2e_guard_t >= E2E_GUARD_MAX_HOLD_S:
+        self.e2e_guard_active = False
+        self.e2e_guard_cnt = 0
+        cloudlog.info(f"[E2EGuard_DP] exit after {self.e2e_guard_t:.2f}s mpc={a_mpc:.2f} e2e={a_e2e:.2f} gas={gas_prob:.2f}")
+    step = self.dt / E2E_GUARD_RAMP_S
+    if self.e2e_guard_active:
+      self.e2e_guard_w = min(1.0, self.e2e_guard_w + step)
+    else:
+      self.e2e_guard_w = max(0.0, self.e2e_guard_w - step)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
