@@ -18,7 +18,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan, MAX_LATERAL_ACCEL_NO_ROLL
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState
@@ -36,6 +36,118 @@ LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 
+# =====================================================================
+# 【與 cp 的刻意分歧】dp 彎道曲率增益 (curve curvature gain)
+#
+# 背景：cd210（cp 0.11.x 原廠 policy，checkpoint a27b3122…/100）彎道規劃的路徑偏寬，
+# 同一段路方向盤角度比其他模型小、轉得不夠。以 rlog 逐層確認：modeld 換算（反而 +6~14%）、
+# LCA（平均 -0.3%）、VehicleModel、latcontrol_torque（1.5 m/s² 以下達成 97~99%）都不是原因，
+# 曲率不足來自模型 plan 本身。
+#
+# 做法：只在彎道放大曲率要求，依「模型要求的側向加速度」連續加權（不是門檻切換）。
+# 所有分界點都依車型自動計算，以該車停止點 E 的百分比表示：
+#
+#   E（停止點）= min(該車 EPS 實測上限 × 95%,  cp 側向加速度上限 3.0 × 60%)
+#       該車 EPS 實測上限 = CP.maxLateralAccel（opendbc torque_data 的 MAX_LAT_ACCEL_MEASURED）
+#       cp 上限 = drive_helpers.MAX_LATERAL_ACCEL_NO_ROLL（直接 import，cp 改值時自動跟著變）
+#   |要求| <  E × 17%           → 增益 1.0（直線/車道維持，與 cp 完全相同）
+#   E × 17% ~ E × 55%         → 1.0 線性爬升到 DP_LAT_CURVE_GAIN
+#   E × 55% ~ E × 83%         → DP_LAT_CURVE_GAIN（全額）
+#   E × 83% ~ E               → 漸進收回 1.0（接近 EPS 上限，避免更快觸發 steerSaturated）
+#   >= E                      → 增益 1.0（不放大、不削減）
+#   例：Corolla TSS2（上限 1.87）→ E 1.78：0.30 / 0.98 / 1.47 / 1.78 m/s²
+#       Prius（上限 1.50）        → E 1.43：0.24 / 0.78 / 1.18 / 1.43 m/s²
+#       Ioniq 5（上限 2.71）      → E 1.80：0.31 / 0.99 / 1.49 / 1.80 m/s²（被 cp 60% 封頂）
+#   因為收回區寬度是 E 的 17%，只要 DP_LAT_CURVE_GAIN <= 1.17，任何車型的輸出都對輸入
+#   連續且單調（不會在上限附近「卡住」或反向）。
+#
+# 唯一保留的絕對值：直線雜訊下限 DP_LAT_CURVE_GAIN_STRAIGHT_FLOOR = 0.2 m/s²。
+#   直線上車道維持的小修正量取決於道路與模型，不取決於車的 EPS 強弱，所以不能跟車型縮放；
+#   若某車算出的起點（E × 17%）低於此值，代表增益會開始放大直線小修正，該車直接停用。
+#   等效於 E < 1.18 m/s² 停用（多數 Honda/部分 Subaru 等 EPS 很弱的車）。
+#
+# 停用條件（增益 = 1.0，行為與 cp 完全相同）：
+#   - 非 torque 控制車（angle 控制，如 TSS2.5 LTA、多數 Hyundai/Ford/Tesla；PID 控制，如 Honda）
+#   - maxLateralAccel 非有限值或明顯是佔位值
+#   - 該車的 EPS 上限不是實測值：只有車型（含 substitute.toml 對應後的車型）出現在 opendbc
+#     torque_data/params.toml（車隊實測）才啟用；出現在 override.toml 的是人工估計/新車預設值
+#     （例如 Honda Accord 11G、CR-V 6G、Pilot 4G、Acura MDX/RDX/TLX 等），停止點依據不可靠，停用。
+#     之後資料庫改成實測值時會自動啟用，不需改程式。
+#   - 起點低於直線雜訊下限（見上）
+# 增益套用在平滑之前、dp_lat_offset_cm 之前；車速 <= MIN_LAT_CONTROL_SPEED 時沿用
+#   prev_action（已含增益），不重複放大。
+# 發布到 modelV2.action.desiredCurvature 的是放大後的值，selfdrived 的 steerSaturated
+#   判斷、controlsd、LCA 都以放大後的值為準，彼此一致。
+#
+# 調整：只需動 DP_LAT_CURVE_GAIN。仍轉得不夠 → 1.10；切內線/轉太多 → 1.05；1.0 = 完全回到 cp。
+# =====================================================================
+DP_LAT_CURVE_GAIN = 1.10
+DP_LAT_CURVE_GAIN_EPS_RATIO = 0.95          # 停止點 = 該車 EPS 實測上限 × 95%
+DP_LAT_CURVE_GAIN_CP_LIMIT_RATIO = 0.60     # 停止點不超過 cp 側向加速度上限 × 60%
+DP_LAT_CURVE_GAIN_RAMP_START = 0.17         # 以停止點 E 的比例：開始放大
+DP_LAT_CURVE_GAIN_RAMP_FULL = 0.55          # 以停止點 E 的比例：放大到全額
+DP_LAT_CURVE_GAIN_TAPER_START = 0.83        # 以停止點 E 的比例：開始收回
+DP_LAT_CURVE_GAIN_STRAIGHT_FLOOR = 0.2      # m/s²，直線雜訊下限（道路特性，不隨車型縮放）
+
+# 由 dp_curve_gain_setup() 依 CarParams 設定；None = 停用
+# 內容：(放大起點, 全額點, 收回起點, 停止點)，單位 m/s²
+_dp_curve_gain_bp: tuple[float, float, float, float] | None = None
+
+
+def dp_torque_params_measured(fingerprint: str) -> bool:
+  """車型的 torque 參數（含 maxLateralAccel）是否來自 params.toml 的車隊實測值。
+  判斷邏輯與 opendbc interfaces.get_torque_params() 相同：先經 substitute.toml 對應，
+  對應後的車型在 params.toml → 實測；在 override.toml 或找不到 → 非實測。讀檔失敗一律視為非實測（停用）。"""
+  try:
+    import tomllib
+    from opendbc.car.interfaces import TORQUE_PARAMS_PATH, TORQUE_SUBSTITUTE_PATH
+    with open(TORQUE_SUBSTITUTE_PATH, 'rb') as f:
+      sub = tomllib.load(f)
+    with open(TORQUE_PARAMS_PATH, 'rb') as f:
+      measured = tomllib.load(f)
+    resolved = sub.get(fingerprint, fingerprint)
+    return resolved != 'legend' and resolved in measured
+  except Exception:
+    cloudlog.exception("dp curve gain: failed to read torque_data, disabling")
+    return False
+
+
+def dp_curve_gain_setup(CP) -> tuple[float, float, float, float] | None:
+  """依車型 EPS 能力算出四個分界點；回傳 None 代表此車停用彎道增益。"""
+  global _dp_curve_gain_bp
+  _dp_curve_gain_bp = None
+  if DP_LAT_CURVE_GAIN == 1.0:
+    return None
+  if CP.steerControlType != car.CarParams.SteerControlType.torque or CP.lateralTuning.which() != 'torque':
+    return None
+  max_lat = float(CP.maxLateralAccel)
+  if not np.isfinite(max_lat) or max_lat <= 0.0 or max_lat > 10.0:
+    return None
+  if not dp_torque_params_measured(str(CP.carFingerprint)):
+    return None
+  end = min(max_lat * DP_LAT_CURVE_GAIN_EPS_RATIO, MAX_LATERAL_ACCEL_NO_ROLL * DP_LAT_CURVE_GAIN_CP_LIMIT_RATIO)
+  bp = (end * DP_LAT_CURVE_GAIN_RAMP_START, end * DP_LAT_CURVE_GAIN_RAMP_FULL,
+        end * DP_LAT_CURVE_GAIN_TAPER_START, end)
+  if bp[0] < DP_LAT_CURVE_GAIN_STRAIGHT_FLOOR:
+    return None
+  _dp_curve_gain_bp = bp
+  return bp
+
+
+def dp_apply_curve_gain(desired_curvature: float, v_ego: float) -> float:
+  bp = _dp_curve_gain_bp
+  if bp is None:
+    return desired_curvature
+  ramp_start, ramp_full, taper_start, end = bp
+  v2 = max(v_ego, MIN_LAT_CONTROL_SPEED) ** 2
+  lat_accel = abs(desired_curvature) * v2
+  if lat_accel <= ramp_start or lat_accel >= end:
+    return desired_curvature
+  w_in = float(np.interp(lat_accel, [ramp_start, ramp_full], [0.0, 1.0]))
+  # 接近 EPS 上限時把增益漸進收回 1.0（不用硬夾制，避免輸出在上限附近「卡住不跟模型變化」）
+  w_out = float(np.interp(lat_accel, [taper_start, end], [1.0, 0.0]))
+  gain = 1.0 + (DP_LAT_CURVE_GAIN - 1.0) * w_in * w_out
+  return float(desired_curvature * gain)
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
@@ -53,6 +165,7 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                 v_ego,
                                                 lat_action_t)
     if v_ego > MIN_LAT_CONTROL_SPEED:
+      desired_curvature = dp_apply_curve_gain(desired_curvature, v_ego)  # dp: 彎道曲率增益（見檔頭說明）
       desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, LAT_SMOOTH_SECONDS)
     else:
       desired_curvature = prev_action.desiredCurvature
@@ -216,6 +329,14 @@ def main(demo=False):
   else:
     CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("modeld got CarParams: %s", CP.brand)
+
+  # dp: 彎道曲率增益依車型 EPS 能力自動計算分界點（見檔頭說明）
+  dp_gain_bp = dp_curve_gain_setup(CP)
+  if dp_gain_bp is None:
+    cloudlog.warning(f"dp curve gain: disabled for {CP.carFingerprint}")
+  else:
+    cloudlog.warning(f"dp curve gain: {DP_LAT_CURVE_GAIN:.2f}x, bp {dp_gain_bp[0]:.2f}/{dp_gain_bp[1]:.2f}/{dp_gain_bp[2]:.2f}/{dp_gain_bp[3]:.2f} m/s2 "
+                     f"(maxLateralAccel {CP.maxLateralAccel:.2f}) for {CP.carFingerprint}")
 
   # TODO this needs more thought, use .2s extra for now to estimate other delays
   # TODO Move smooth seconds to action function
