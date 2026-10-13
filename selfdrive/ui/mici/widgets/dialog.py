@@ -8,6 +8,7 @@ from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.mici_keyboard import MiciKeyboard
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets.slider import RedBigSlider, BigSlider
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.mici.widgets.button import BigCircleButton, BigButton, GreyBigButton
@@ -44,6 +45,8 @@ class BigConfirmationDialog(BigDialogBase):
     self._confirm_callback = confirm_callback
     self._exit_on_confirm = exit_on_confirm
 
+    # dp - mici zh-CHT: slider is shared with mici setup, so translate here (dialog is built per click)
+    title = tr(title)
     self._slider: BigSlider | RedBigSlider
     if red:
       self._slider = self._child(RedBigSlider(title, icon, confirm_callback=self._on_confirm))
@@ -78,7 +81,7 @@ class BigInputDialog(BigDialogBase):
                confirm_callback: Callable[[str], None] | None = None,
                auto_return_to_letters: str = ""):
     super().__init__()
-    self._hint_label = UnifiedLabel(hint, font_size=35, text_color=rl.Color(255, 255, 255, int(255 * 0.35)),
+    self._hint_label = UnifiedLabel(tr(hint) if hint else hint, font_size=35, text_color=rl.Color(255, 255, 255, int(255 * 0.35)),
                                     font_weight=FontWeight.MEDIUM)
     self._keyboard = MiciKeyboard(auto_return_to_letters=auto_return_to_letters)
     self._keyboard.set_text(default_text)

@@ -11,11 +11,11 @@ class DashyQRCode(Widget):
     super().__init__()
     self._qr = DashyQR()
 
-    self._title_label = UnifiedLabel(tr("scan to access"), font_size=32, font_weight=FontWeight.BOLD,
+    self._title_label = UnifiedLabel(lambda: tr("scan to access"), font_size=32, font_weight=FontWeight.BOLD,
                                   text_color=rl.WHITE, wrap_text=True)
     self._subtitle_label = UnifiedLabel("dashy", font_size=48, font_weight=FontWeight.DISPLAY,
                                      text_color=rl.WHITE)
-    self._or_label = UnifiedLabel(tr("or open browser"), font_size=24, font_weight=FontWeight.NORMAL,
+    self._or_label = UnifiedLabel(lambda: tr("or open browser"), font_size=24, font_weight=FontWeight.NORMAL,
                                text_color=rl.GRAY)
     self._url_label = UnifiedLabel("", font_size=20, font_weight=FontWeight.NORMAL,
                                 text_color=rl.GRAY, wrap_text=True)

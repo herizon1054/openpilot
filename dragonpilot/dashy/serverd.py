@@ -49,7 +49,7 @@ from cereal import messaging
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, HARDWARE
 from openpilot.system.ui.lib.multilang import multilang as base_multilang
-from dragonpilot.settings import SETTINGS
+from dragonpilot.settings import SETTINGS, tr
 
 try:
     from openpilot.system.version import get_build_metadata as _get_build_metadata
@@ -401,6 +401,8 @@ async def get_settings_config_api(request):
             continue
 
         section_copy = section.copy()
+        # dp - zh-CHT: translate the section header for display (raw title stays the identifier server-side)
+        section_copy['title'] = tr(section['title'])
         settings_list = []
 
         for setting in section.get('settings', []):
