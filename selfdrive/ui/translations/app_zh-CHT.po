@@ -2078,8 +2078,8 @@ msgstr "轉向角度"
 msgid "Auto Brake Hold (TSS2)"
 msgstr "自動煞車維持 (TSS2)"
 
-msgid "For vehicles without a factory Auto Hold. Holds the car at a standstill using the PCS brake once stopped for 2 seconds with cruise disengaged. Press the gas to release; press the brake again to release and restart the timer.<br>Off: Disabled.<br>On: Active whenever in Drive (D).<br>Speed: Active in Drive (D) only after exceeding 18 km/h (5 m/s) since shifting into D.<br>Requires a TSS2 camera-ACC vehicle with openpilot longitudinal control. Takes effect after the car is restarted."
-msgstr "適用於沒有原廠 Auto Hold 的車輛。停車且巡航未啟用時，靜止滿 2 秒後借用 PCS 煞車將車輛保持在原地。踩油門即解除；再次踩下煞車會解除並重新計時。<br>關閉：停用。<br>開啟：在 D 檔即可作動。<br>速度：進入 D 檔後車速曾超過 18 公里/時 (5 m/s) 才作動。<br>需為 TSS2 相機 ACC 車型並使用 openpilot 縱向控制，重新發動車輛後生效。"
+msgid "<b>Hybrid models only (not supported on gasoline models).</b><br>For vehicles without a factory Auto Hold. Holds the car at a standstill using the PCS brake once stopped for 2 seconds with cruise disengaged. Press the gas to release; press the brake again to release and restart the timer.<br>Off: Disabled.<br>On: Active whenever in Drive (D).<br>Speed: Active in Drive (D) only after exceeding 18 km/h (5 m/s) since shifting into D.<br>Requires a TSS2 camera-ACC vehicle with openpilot longitudinal control. Takes effect after the car is restarted."
+msgstr "<b>限油電車型（汽油版不支援）。</b><br>適用於沒有原廠 Auto Hold 的車輛。停車且巡航未啟用時，靜止滿 2 秒後借用 PCS 煞車將車輛保持在原地。踩油門即解除；再次踩下煞車會解除並重新計時。<br>關閉：停用。<br>開啟：在 D 檔即可作動。<br>速度：進入 D 檔後車速曾超過 18 公里/時 (5 m/s) 才作動。<br>需為 TSS2 相機 ACC 車型並使用 openpilot 縱向控制，重新發動車輛後生效。"
 
 msgid "On"
 msgstr "開啟"
