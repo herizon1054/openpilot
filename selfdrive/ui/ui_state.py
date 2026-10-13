@@ -104,6 +104,8 @@ class UIState:
 
     # dp
     self.dp_ui_display_mode = 0
+    # dp - 豐田自動煞車維持作動中：顯示模式關閉螢幕時，保持期間強制亮起（讓「自動煞車維持中」提示看得到）
+    self.dp_ui_auto_brake_hold_active: bool = False
 
 
     # dp
@@ -232,6 +234,12 @@ class UIState:
       self.dp_ui_display_mode_cruise_available = self.sm["carState"].cruiseState.available
       self.dp_ui_display_mode_cruise_enabled = self.sm["carState"].cruiseState.enabled
 
+    # dp - 豐田自動煞車維持：onroadEvents 在事件變化時立即發布（否則每秒一次），直接看是否含 autoBrakeHold
+    if not self.started:
+      self.dp_ui_auto_brake_hold_active = False
+    elif self.sm.updated["onroadEvents"]:
+      self.dp_ui_auto_brake_hold_active = any(str(e.name) == "autoBrakeHold" for e in self.sm["onroadEvents"])
+
   def update_params(self) -> None:
     # For slower operations
     # Update longitudinal control state
@@ -350,6 +358,10 @@ class Device:
     # 0 stock behaviour or ignition is off
     if ui_state.dp_ui_display_mode == 0 or not ignition:
       return ignition
+
+    # dp - 豐田自動煞車維持作動中：不論顯示模式，強制亮起螢幕；放開後回到顯示模式原本的狀態
+    if ui_state.dp_ui_auto_brake_hold_active:
+      return True
 
     # 1 MAIN+ - ACC MAIN on = Display ON
     if ui_state.dp_ui_display_mode == 1:
