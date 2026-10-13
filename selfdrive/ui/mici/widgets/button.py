@@ -7,6 +7,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import DO_ZOOM
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.common.filter_simple import BounceFilter
 
 try:
@@ -19,6 +20,13 @@ COMPLICATION_SIZE    = 36
 LABEL_COLOR          = rl.Color(255, 255, 255, int(255 * 0.9))
 COMPLICATION_GREY    = rl.Color(0xAA, 0xAA, 0xAA, 255)
 PRESSED_SCALE = 1.15 if DO_ZOOM else 1.07
+
+
+def _tr(text: str) -> str:
+  # dp - mici zh-CHT: translate at display time only. self.text / self.value keep the
+  # English msgid so callers that compare values (BigMultiToggle options, updater state,
+  # param-backed toggles) keep working, and a language switch re-renders without rebuild.
+  return tr(text) if text else text
 
 
 class ScrollState(Enum):
@@ -122,10 +130,11 @@ class BigButton(Widget):
 
     self._rotate_icon_t: float | None = None
 
-    self._label = UnifiedLabel(text, font_size=self._get_label_font_size(), font_weight=FontWeight.BOLD,
+    # dp - labels resolve their text lazily so a language change is picked up on the next frame
+    self._label = UnifiedLabel(lambda: _tr(self.text), font_size=self._get_label_font_size(), font_weight=FontWeight.BOLD,
                                text_color=LABEL_COLOR, alignment_vertical=rl.GuiTextAlignmentVertical.TEXT_ALIGN_BOTTOM, scroll=scroll,
                                line_height=0.9)
-    self._sub_label = UnifiedLabel(value, font_size=COMPLICATION_SIZE, font_weight=FontWeight.ROMAN,
+    self._sub_label = UnifiedLabel(lambda: _tr(self.value), font_size=COMPLICATION_SIZE, font_weight=FontWeight.ROMAN,
                                    text_color=COMPLICATION_GREY, alignment_vertical=rl.GuiTextAlignmentVertical.TEXT_ALIGN_BOTTOM)
     self._update_label_layout()
 
@@ -153,7 +162,7 @@ class BigButton(Widget):
     return int(self._rect.width - self.LABEL_HORIZONTAL_PADDING * 2 - icon_size)
 
   def _get_label_font_size(self):
-    if len(self.text) <= 18:
+    if len(_tr(self.text)) <= 18:
       return 48
     else:
       return 42
@@ -166,14 +175,19 @@ class BigButton(Widget):
       self._label.set_alignment_vertical(rl.GuiTextAlignmentVertical.TEXT_ALIGN_BOTTOM)
 
   def set_text(self, text: str):
+    # dp - label text is a lambda over self.text (see __init__), only relayout here
     self.text = text
-    self._label.set_text(text)
     self._update_label_layout()
 
   def set_value(self, value: str):
     self.value = value
-    self._sub_label.set_text(value)
     self._update_label_layout()
+
+  def _update_state(self):
+    super()._update_state()
+    # dp - translated text length can change after a language switch, which changes the font size
+    if self._label.font_size != self._get_label_font_size():
+      self._update_label_layout()
 
   def get_value(self) -> str:
     return self.value

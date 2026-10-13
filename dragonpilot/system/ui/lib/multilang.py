@@ -3,7 +3,28 @@ from openpilot.system.ui.lib.multilang import (
   multilang as base_multilang,
   TRANSLATIONS_DIR,
   tr_noop,
+  load_translations,
 )
+
+
+class _PoTranslations(gettext.NullTranslations):
+  """dp - fallback when dragonpilot_<lang>.mo was never compiled (*.mo is gitignored and nothing in
+  SCons builds it), so a fresh checkout still shows translated dp settings. Parses the .po directly
+  with the same parser the base UI uses for app_<lang>.po."""
+  def __init__(self, po_path):
+    super().__init__()
+    self._translations, self._plurals = load_translations(po_path)
+
+  def gettext(self, message):
+    return self._translations.get(message) or message
+
+  def ngettext(self, msgid1, msgid2, n):
+    forms = self._plurals.get(msgid1)
+    if forms:
+      idx = base_multilang._plural_selector(n) if hasattr(base_multilang, "_plural_selector") else 0
+      if 0 <= idx < len(forms) and forms[idx]:
+        return forms[idx]
+    return msgid1 if n == 1 else msgid2
 
 
 class DpMultilang:
@@ -32,7 +53,11 @@ class DpMultilang:
         with TRANSLATIONS_DIR.joinpath(f'dragonpilot_{current_lang}.mo').open('rb') as fh:
           self._dragon_translation = gettext.GNUTranslations(fh)
       except FileNotFoundError:
-        self._dragon_translation = gettext.NullTranslations()
+        po_path = TRANSLATIONS_DIR.joinpath(f'dragonpilot_{current_lang}.po')
+        try:
+          self._dragon_translation = _PoTranslations(po_path) if po_path.is_file() else gettext.NullTranslations()
+        except Exception:
+          self._dragon_translation = gettext.NullTranslations()
 
   def tr(self, text: str) -> str:
     self._ensure_loaded()

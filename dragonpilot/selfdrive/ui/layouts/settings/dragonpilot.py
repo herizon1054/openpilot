@@ -73,7 +73,8 @@ class DragonpilotLayout(Widget):
         continue
 
       title_key = f"title_{i}"
-      self._toggles[title_key] = simple_item(title=f"### {section['title']} ###")
+      # dp - zh-CHT: ListItem resolves callables, so the header follows language changes
+      self._toggles[title_key] = simple_item(title=lambda t=section['title']: f"### {tr(t)} ###")
       count_after_title = len(self._toggles)
 
       for setting in section.get("settings", []):

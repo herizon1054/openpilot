@@ -14,7 +14,7 @@ from openpilot.selfdrive.ui.mici.widgets.pairing_dialog import PairingDialog
 from openpilot.selfdrive.ui.mici.onroad.driver_camera_dialog import DriverCameraDialog
 from openpilot.selfdrive.ui.mici.layouts.onboarding import TrainingGuide, TermsPage
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
-from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.multilang import multilang, tr, tr_noop
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.system.ui.widgets.label import UnifiedLabel
@@ -72,9 +72,17 @@ def _engaged_confirmation_click(callback: Callable, action_text: str, icon: rl.T
       if not ui_state.engaged:
         callback()
 
+    # dp - mici zh-CHT: the composed string is the msgid (translated in BigConfirmationDialog), see _CONFIRM_MSGIDS
     gui_app.push_widget(BigConfirmationDialog(f"slide to\n{action_text.lower()}", icon, confirm_callback, exit_on_confirm=exit_on_confirm, red=red))
   else:
-    gui_app.push_widget(BigDialog("", f"Disengage to {action_text}"))
+    gui_app.push_widget(BigDialog("", tr(f"Disengage to {action_text}")))
+
+
+# dp - mici zh-CHT: composed confirmation strings above, listed so potools keeps them in app.pot
+_CONFIRM_MSGIDS = (
+  tr_noop("slide to\nreset"), tr_noop("slide to\nuninstall"), tr_noop("slide to\nreboot"), tr_noop("slide to\npower off"),
+  tr_noop("Disengage to reset"), tr_noop("Disengage to uninstall"), tr_noop("Disengage to reboot"), tr_noop("Disengage to power off"),
+)
 
 
 class EngagedConfirmationCircleButton(BigCircleButton):
@@ -100,11 +108,11 @@ class DeviceInfoLayoutMici(Widget):
     params = Params()
     subheader_color = rl.Color(255, 255, 255, int(255 * 0.9 * 0.65))
     max_width = int(self._rect.width - 20)
-    self._dongle_id_label = UnifiedLabel("device ID", 48, max_width=max_width, font_weight=FontWeight.DISPLAY, wrap_text=False)
+    self._dongle_id_label = UnifiedLabel(lambda: tr("device ID"), 48, max_width=max_width, font_weight=FontWeight.DISPLAY, wrap_text=False)
     self._dongle_id_text_label = UnifiedLabel(params.get("DongleId") or 'N/A', 32, max_width=max_width, text_color=subheader_color,
                                               font_weight=FontWeight.ROMAN, wrap_text=False)
 
-    self._serial_number_label = UnifiedLabel("serial", 48, max_width=max_width, font_weight=FontWeight.DISPLAY, wrap_text=False)
+    self._serial_number_label = UnifiedLabel(lambda: tr("serial"), 48, max_width=max_width, font_weight=FontWeight.DISPLAY, wrap_text=False)
     self._serial_number_text_label = UnifiedLabel(params.get("HardwareSerial") or 'N/A', 32, max_width=max_width, text_color=subheader_color,
                                                   font_weight=FontWeight.ROMAN, wrap_text=False)
 
@@ -285,6 +293,49 @@ class UpdateOpenpilotBigButton(BigButton):
       self._waiting_for_updater_t = None
 
 
+class LanguageLayoutMici(NavScroller):
+  """dp - mici language picker (mici upstream has none). Mirrors the comma3 device panel flow:
+  change_language() + gui_app.on_language_changed() so OpFont atlases are swapped."""
+  def __init__(self):
+    super().__init__()
+    self._buttons: dict[str, BigButton] = {}
+    for name, code in multilang.languages.items():
+      button = BigButton(name)
+      # language names are only guaranteed in the labels font (OpFont-Regular-Labels.fnt)
+      button._label.set_font_weight(FontWeight.UNIFONT)
+      button.set_click_callback(lambda selected=code: self._select_language(selected))
+      button.set_enabled(lambda: ui_state.is_offroad())
+      self._scroller.add_widget(button)
+      self._buttons[code] = button
+
+  def _select_language(self, code: str):
+    # offroad only: on_language_changed reloads every font atlas, avoid the hitch while driving
+    if not ui_state.is_offroad() or code == multilang.language:
+      return
+    multilang.change_language(code)
+    gui_app.on_language_changed(code)
+
+  def _update_state(self):
+    super()._update_state()
+    for code, button in self._buttons.items():
+      button.set_value("selected" if code == multilang.language else "")
+
+
+class LanguageBigButton(BigButton):
+  """dp - entry point for LanguageLayoutMici; value shows the current language name."""
+  def __init__(self):
+    super().__init__("language", "", gui_app.texture("icons_mici/settings/device/info.png", 64, 64))
+    self._sub_label.set_font_weight(FontWeight.UNIFONT)
+    self._language_panel = LanguageLayoutMici()
+    self.set_click_callback(lambda: gui_app.push_widget(self._language_panel))
+
+  def _update_state(self):
+    super()._update_state()
+    name = multilang.codes.get(multilang.language, "English")
+    if self.value != name:
+      self.set_value(name)
+
+
 class DeviceLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
@@ -341,6 +392,7 @@ class DeviceLayoutMici(NavScroller):
       DeviceInfoLayoutMici(),
       UpdateOpenpilotBigButton(),
       PairBigButton(),
+      LanguageBigButton(),  # dp - mici zh-CHT
       review_training_guide_btn,
       driver_cam_btn,
       terms_btn,

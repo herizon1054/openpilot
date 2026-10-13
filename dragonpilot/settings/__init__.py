@@ -39,9 +39,9 @@ import sys
 from pathlib import Path
 
 try:
-  from dragonpilot.system.ui.lib.multilang import tr  # noqa: F401  (re-export for feature files)
+  from dragonpilot.system.ui.lib.multilang import tr, tr_noop  # noqa: F401  (re-export for feature files)
 except ImportError:
-  from openpilot.system.ui.lib.multilang import tr  # noqa: F401
+  from openpilot.system.ui.lib.multilang import tr, tr_noop  # noqa: F401
 
 SECTION_ORDER = [
   "Toyota / Lexus",
@@ -57,6 +57,14 @@ SECTION_ORDER = [
   "Openpilot",
   "Developer",
 ]
+
+# dp - zh-CHT: section titles stay English as identifiers (SECTION_CONDITIONS keys, ordering);
+# consumers translate them at display time with tr(). Listed here so xgettext picks them up.
+_SECTION_TITLE_MSGIDS = (
+  tr_noop("Toyota / Lexus"), tr_noop("Honda"), tr_noop("HKG"), tr_noop("VAG"), tr_noop("Mazda"),
+  tr_noop("Lateral"), tr_noop("Longitudinal"), tr_noop("UI"), tr_noop("Device"), tr_noop("Openpilot"),
+  tr_noop("Developer"),
+)
 
 # Brand-gated sections: the whole header + its items are hidden when the
 # current car's brand doesn't match. Generic sections (Lateral/UI/...) are
