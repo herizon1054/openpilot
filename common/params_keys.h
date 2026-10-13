@@ -175,4 +175,5 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_lane_centering", {PERSISTENT, BOOL, "0"}},
     {"dp_lane_centering_e2e_authority", {PERSISTENT, INT, "80"}},
     {"dp_lane_centering_pause_on_signal", {PERSISTENT, BOOL, "0"}},
+    {"dp_toyota_auto_brake_hold", {PERSISTENT, INT, "0"}},
 };

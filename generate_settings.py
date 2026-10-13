@@ -142,7 +142,9 @@ def render_param_line(param: dict) -> str:
 
 def update_params_keys_h(params: dict[str, dict]) -> None:
   content = PARAMS_KEYS_H.read_text()
-  existing = set(re.findall(r'\{"(dp_[^"]+)"', content))
+  # dp - 比對所有已存在的 key（不只 dp_ 開頭）。原本只認 dp_ 前綴，導致 settings 內宣告的非 dp_ key
+  # （例如 min-feat.lon.acc.py 的 AccelPersonalityEnabled / AccelPersonality）每次執行都被重複附加。
+  existing = set(re.findall(r'^\s*\{"([^"]+)",', content, re.MULTILINE))
 
   new_lines = [render_param_line(p) for k, p in params.items() if k not in existing]
   if not new_lines:

@@ -58,6 +58,7 @@ class ToyotaSafetyFlags(IntFlag):
   SECOC = (8 << 8)
   UNSUPPORTED_DSU = (16 << 8)  # dp - use DSU_CRUISE (0x365) for ACC main instead of PCM_CRUISE_2 (0x1D3)
   LOCK_CTRL = (32 << 8)
+  AUTO_BRAKE_HOLD = (64 << 8)  # dp - 自動煞車維持（PRE_COLLISION_2 攔截），ported from sunnypilot-candy
 
 
 class ToyotaFlags(IntFlag):
@@ -89,6 +90,9 @@ class ToyotaFlags(IntFlag):
   RADAR_FILTER = 2 ** 15
   DSU_BYPASS = 2 ** 16
   ZSS = 2 ** 17
+  # dp - 自動煞車維持 (Auto Brake Hold, ported from sunnypilot-candy SP_AUTO_BRAKE_HOLD / SP_AUTO_BRAKE_HOLD_SPEED)
+  AUTO_BRAKE_HOLD = 2 ** 18
+  AUTO_BRAKE_HOLD_SPEED = 2 ** 19
 
 def dbc_dict(pt, radar):
   return {Bus.pt: pt, Bus.radar: radar}

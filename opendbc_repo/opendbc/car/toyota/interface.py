@@ -177,6 +177,23 @@ class CarInterface(CarInterfaceBase):
     if dp_params & structs.DPFlags.ToyotaTSS1SnG:
       ret.flags |= ToyotaFlags.TSS1_SNG.value
 
+    # dp - 自動煞車維持 (Auto Brake Hold), ported from sunnypilot-candy (ToyotaEnableAutoHold / SP_AUTO_BRAKE_HOLD)
+    # 原理：停車時由 panda 攔截 ADAS 相機 (bus 2) 送出的 PRE_COLLISION_2 (0x344)，改由 openpilot 轉送並在需要時
+    # 寫入 DSS1GDRV=-2.0 / PBRTRGR 觸發 PCS 煞車保持。
+    # 與 candy 的刻意差異（安全收斂）：只在以下條件同時成立時才啟用，否則整個功能（含 panda 攔截）都不生效：
+    #   - TSS2 相機 ACC 車型（PRE_COLLISION_2 由 bus 2 相機發出，panda 才攔得到；RADAR_ACC 車型的 0x344 在 bus 0）
+    #   - 非 SecOC（SecOC 的 PRE_COLLISION_2 為帶 MAC 的格式，無法偽造）
+    #   - openpilot 縱向控制（0x344 僅在 LONG TX 白名單內）
+    auto_brake_hold_eligible = (candidate in (TSS2_CAR - RADAR_ACC_CAR) and
+                                not (ret.flags & ToyotaFlags.SECOC.value) and
+                                not (ret.flags & ToyotaFlags.DISABLE_RADAR.value) and
+                                ret.openpilotLongitudinalControl)
+    if (dp_params & structs.DPFlags.ToyotaAutoBrakeHold) and auto_brake_hold_eligible:
+      ret.flags |= ToyotaFlags.AUTO_BRAKE_HOLD.value
+      ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.AUTO_BRAKE_HOLD.value
+      if dp_params & structs.DPFlags.ToyotaAutoBrakeHoldSpeed:
+        ret.flags |= ToyotaFlags.AUTO_BRAKE_HOLD_SPEED.value
+
     return ret
 
   @staticmethod

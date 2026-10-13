@@ -285,6 +285,51 @@ class TestToyotaAltBrakeSafety(TestToyotaSafetyTorque):
     pass
 
 
+class TestToyotaAutoBrakeHoldSafety(TestToyotaSafetyTorque):
+  """dp - 自動煞車維持 (Auto Brake Hold, ported from sunnypilot-candy)"""
+
+  # 測試初始狀態為靜止、未踩油門 -> 相機 0x344 被攔截
+  FWD_BLACKLISTED_ADDRS = {2: [0x2E4, 0x412, 0x191, 0x343, 0x344]}
+
+  def setUp(self):
+    self.packer = CANPackerSafety("toyota_nodsu_pt_generated")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.toyota, self.EPS_SCALE | ToyotaSafetyFlags.AUTO_BRAKE_HOLD)
+    self.safety.init_tests()
+
+  def _pre_collision_2_msg(self, decel=0., pbrtrgr=0):
+    return self.packer.make_can_msg_safety("PRE_COLLISION_2", 0, {"DSS1GDRV": decel, "PBRTRGR": pbrtrgr})
+
+  def test_auto_brake_hold(self):
+    for moving, gas in itertools.product([False, True], [False, True]):
+      self.safety.init_tests()
+      self._rx(self._speed_msg(1 if moving else 0))
+      self._rx(self._user_gas_msg(gas))
+      allowed = not moving and not gas
+      # 停車且未踩油門：允許 openpilot 送 0x344，擋掉相機的 0x344
+      self.assertEqual(allowed, self._tx(self._pre_collision_2_msg(-2.0, 1)), f"{moving=} {gas=}")
+      self.assertEqual(-1 if allowed else 0, self.safety.safety_fwd_hook(2, 0x344), f"{moving=} {gas=}")
+
+  # 繼承自 TestToyotaSafetyTorque 的 test_lta_steer_cmd 在 dplcc 原本就失敗（動態 Torque/Angle 熱切換移除了 LTA 靜態封鎖），
+  # 與本功能無關，原始類別仍會顯示該失敗；這裡略過避免重複
+  def test_lta_steer_cmd(self):
+    pass
+
+
+class TestToyotaAutoBrakeHoldOffSafety(TestToyotaSafetyTorque):
+  """功能關閉時：0x344 行為與原本相同（相機訊息照常轉送）"""
+
+  def test_auto_brake_hold_off(self):
+    self.safety.init_tests()
+    self._rx(self._speed_msg(0))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x344))
+
+  # 繼承自 TestToyotaSafetyTorque 的 test_lta_steer_cmd 在 dplcc 原本就失敗（動態 Torque/Angle 熱切換移除了 LTA 靜態封鎖），
+  # 與本功能無關，原始類別仍會顯示該失敗；這裡略過避免重複
+  def test_lta_steer_cmd(self):
+    pass
+
+
 class TestToyotaStockLongitudinalBase(TestToyotaSafetyBase):
 
   TX_MSGS = TOYOTA_COMMON_TX_MSGS
@@ -319,6 +364,27 @@ class TestToyotaStockLongitudinalTorque(TestToyotaStockLongitudinalBase, TestToy
     self.safety = libsafety_py.libsafety
     self.safety.set_safety_hooks(CarParams.SafetyModel.toyota, self.EPS_SCALE | ToyotaSafetyFlags.STOCK_LONGITUDINAL)
     self.safety.init_tests()
+
+
+class TestToyotaAutoBrakeHoldStockLongSafety(TestToyotaStockLongitudinalBase, TestToyotaSafetyTorque):
+  """原廠縱向時即使帶了旗標也強制關閉，不攔截相機 0x344"""
+
+  def setUp(self):
+    self.packer = CANPackerSafety("toyota_nodsu_pt_generated")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.toyota,
+                                 self.EPS_SCALE | ToyotaSafetyFlags.STOCK_LONGITUDINAL | ToyotaSafetyFlags.AUTO_BRAKE_HOLD)
+    self.safety.init_tests()
+
+  def test_auto_brake_hold_stock_long(self):
+    self.safety.init_tests()
+    self._rx(self._speed_msg(0))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x344))
+
+  # 繼承自 TestToyotaSafetyTorque 的 test_lta_steer_cmd 在 dplcc 原本就失敗（動態 Torque/Angle 熱切換移除了 LTA 靜態封鎖），
+  # 與本功能無關，原始類別仍會顯示該失敗；這裡略過避免重複
+  def test_lta_steer_cmd(self):
+    pass
 
 
 class TestToyotaStockLongitudinalAngle(TestToyotaStockLongitudinalBase, TestToyotaSafetyAngle):

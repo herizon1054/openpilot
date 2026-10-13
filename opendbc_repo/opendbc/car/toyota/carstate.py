@@ -22,6 +22,9 @@ TEMP_STEER_FAULTS = (0, 9, 11, 21, 25)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
 
+# dp - 自動煞車維持：PRE_COLLISION_2 超過此週期數 (100Hz, 0.2s) 未更新即視為失效，停止轉送
+PRE_COLLISION_2_MAX_AGE = 20
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -68,6 +71,15 @@ class CarState(CarStateBase):
 
     from opendbc.car.toyota.zss import ZSS
     self.zss = ZSS(CP.flags)
+
+    # dp - 自動煞車維持 (Auto Brake Hold, ported from sunnypilot-candy)
+    # 相機 (bus 2) 的 PRE_COLLISION_2 原始內容；功能啟用時由 carcontroller 轉送（並在保持時覆寫煞車欄位）
+    self.auto_brake_hold_enabled = bool(CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value)
+    self.pre_collision_2 = {}
+    self.pre_collision_2_valid = False
+    self._pre_collision_2_age = PRE_COLLISION_2_MAX_AGE  # 距上次收到 PRE_COLLISION_2 的 card 週期數 (100Hz)
+    # 由 carcontroller（AutoBrakeHold）寫回，card 經 carStateExt 發布給 selfdrived 產生 autoBrakeHold 事件
+    self.auto_brake_hold_active = False
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -245,6 +257,18 @@ class CarState(CarStateBase):
 
     ret.buttonEvents = buttonEvents
 
+    # dp - 自動煞車維持：只有功能啟用時才讀取 PRE_COLLISION_2
+    # （candy 為所有 TSS2 皆讀取；RADAR_ACC 車型 bus 2 上沒有此訊息，會造成 can_valid 失效）
+    if self.auto_brake_hold_enabled:
+      if len(cp_cam.vl_all["PRE_COLLISION_2"]["CHECKSUM"]):
+        # 本週期有收到新的 PRE_COLLISION_2
+        self._pre_collision_2_age = 0
+        self.pre_collision_2 = copy.copy(cp_cam.vl["PRE_COLLISION_2"])
+      else:
+        self._pre_collision_2_age = min(self._pre_collision_2_age + 1, PRE_COLLISION_2_MAX_AGE)
+      # 新鮮度保護（candy 無此保護）：開機尚未收到、或相機停止送出時不轉送，避免轉送全 0 或過期的 PCS 內容
+      self.pre_collision_2_valid = self._pre_collision_2_age < PRE_COLLISION_2_MAX_AGE
+
     # dp - ALKA: Toyota requires main ON to use ACC/LKA, use main as switch
     self.lkas_on = ret.cruiseState.available
 
@@ -263,6 +287,10 @@ class CarState(CarStateBase):
 
     if CP.flags & ToyotaFlags.SDSU:
       parsers[Bus.sdsu] = CANParser("toyota_sdsu", [("SDSU", 100)], 0)
+
+    # dp - 自動煞車維持：相機 (bus 2) 的 PRE_COLLISION_2，需轉送給車輛
+    if CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD:
+      parsers[Bus.cam] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("PRE_COLLISION_2", float('nan'))], 2)
 
     if CP.flags & ToyotaFlags.ZSS:
       parsers[Bus.zss] = CANParser("toyota_zss", [("SECONDARY_STEER_ANGLE", float('nan'))], 0)

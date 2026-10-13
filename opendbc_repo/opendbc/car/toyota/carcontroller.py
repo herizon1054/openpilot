@@ -9,6 +9,7 @@ from opendbc.car.common.pid import PIDController
 from opendbc.car.secoc import add_mac, build_sync_mac
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.toyota import toyotacan
+from opendbc.car.toyota.auto_brake_hold import AutoBrakeHold
 from opendbc.car.toyota.values import CAR, TSS2_CAR, UNSUPPORTED_DSU_CAR, CarControllerParams, ToyotaFlags
 from opendbc.can import CANPacker
 
@@ -90,6 +91,9 @@ class CarController(CarControllerBase):
     self.secoc_prev_reset_counter = 0
 
     self.doors_locked = False
+
+    # dp - 自動煞車維持 (Auto Brake Hold, ported from sunnypilot-candy)
+    self.auto_brake_hold = AutoBrakeHold(self.CP)
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -304,6 +308,11 @@ class CarController(CarControllerBase):
           can_sends.append(toyotacan.create_acc_cancel_command(self.packer))
         else:
           can_sends.append(toyotacan.create_accel_command(self.packer, 0, pcm_cancel_cmd, True, False, lead, CS.acc_type, False, self.distance_button))
+
+    # dp - 自動煞車維持 (Auto Brake Hold)：50Hz 轉送/覆寫 PRE_COLLISION_2
+    # 只有 interface 判定合格（TSS2 相機 ACC、非 SecOC、openpilot 縱向）時 AUTO_BRAKE_HOLD flag 才會存在
+    if self.frame % 2 == 0:
+      can_sends.extend(self.auto_brake_hold.update(self.packer, self.frame, CS))
 
     # *** hud ui ***
     if self.CP.carFingerprint != CAR.TOYOTA_PRIUS_V:

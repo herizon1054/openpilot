@@ -28,4 +28,6 @@ class DPFlags:
   VagA0SnG = 2 ** 5
   VagAvoidEPSLockout = 2 ** 6
   HondaNidecStockLong = 2 ** 7
+  ToyotaAutoBrakeHold = 2 ** 8       # dp_toyota_auto_brake_hold >= 1 (ON / SPEED)
+  ToyotaAutoBrakeHoldSpeed = 2 ** 9  # dp_toyota_auto_brake_hold == 2 (SPEED)
   pass

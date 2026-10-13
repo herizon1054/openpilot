@@ -68,6 +68,11 @@ static bool toyota_unsupported_dsu = false;
 // lock ctrl
 static bool toyota_lock_ctrl = false;
 
+// dp - 自動煞車維持 (Auto Brake Hold), ported from sunnypilot-candy (AleSato's automatic brakehold)
+// 停車且未踩油門時：擋掉相機 (bus 2) 的 PRE_COLLISION_2 (0x344)，只允許 openpilot 送出的 0x344
+// 車輪轉動或踩油門時：恢復轉送相機原始 0x344，並拒絕 openpilot 送出的 0x344
+static bool toyota_auto_brake_hold = false;
+
 static uint32_t toyota_compute_checksum(const CANPacket_t *msg) {
   int len = GET_LEN(msg);
   uint8_t checksum = (uint8_t)(msg->addr) + (uint8_t)((unsigned int)(msg->addr) >> 8U) + (uint8_t)(len);
@@ -324,6 +329,15 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
       }
     }
 
+    // dp - 自動煞車維持：只有停車且未踩油門時才允許 openpilot 送出 PRE_COLLISION_2
+    // 與 candy 的差異：candy 不論功能開關都套用此限制；這裡只在 toyota_auto_brake_hold 時套用，
+    // 未啟用時 0x344 的行為與 dplcc 原本完全相同
+    if (toyota_auto_brake_hold && (msg->addr == 0x344U)) {
+      if (vehicle_moving || gas_pressed) {
+        tx = false;
+      }
+    }
+
     // STEER: safety check on bytes 2-3
     if (msg->addr == 0x2E4U) {
       int desired_torque = (msg->data[1] << 8) | msg->data[2];
@@ -390,10 +404,19 @@ static safety_config toyota_init(uint16_t param) {
   const uint32_t TOYOTA_PARAM_LOCK_CTRL = 32UL << TOYOTA_PARAM_OFFSET;
   toyota_lock_ctrl = GET_FLAG(param, TOYOTA_PARAM_LOCK_CTRL);
 
+  // dp - 自動煞車維持
+  const uint32_t TOYOTA_PARAM_AUTO_BRAKE_HOLD = 64UL << TOYOTA_PARAM_OFFSET;
+  toyota_auto_brake_hold = GET_FLAG(param, TOYOTA_PARAM_AUTO_BRAKE_HOLD);
+
   toyota_alt_brake = GET_FLAG(param, TOYOTA_PARAM_ALT_BRAKE);
   toyota_stock_longitudinal = GET_FLAG(param, TOYOTA_PARAM_STOCK_LONGITUDINAL);
   toyota_lta = GET_FLAG(param, TOYOTA_PARAM_LTA);
   toyota_dbc_eps_torque_factor = param & TOYOTA_EPS_FACTOR;
+
+  // dp - 自動煞車維持：0x344 只在 LONG TX 白名單內；縱向/SecOC 不符時強制關閉，panda 端不攔截相機訊息
+  if (toyota_stock_longitudinal || toyota_secoc) {
+    toyota_auto_brake_hold = false;
+  }
 
   // upstream TX selection + dp features via tx_ext (lock_ctrl, long_filter)
   safety_config ret;
@@ -474,12 +497,25 @@ static void toyota_rx_ext_hook(const CANPacket_t *msg) {
   }
 }
 
+// dp - 自動煞車維持：停車且未踩油門時擋掉相機 (bus 2) 的 PRE_COLLISION_2，改由 openpilot 送出
+// 與 candy 的差異：candy 的 fwd hook 對所有豐田無條件生效（即使功能關閉、甚至原廠縱向），
+// 這裡只在 toyota_auto_brake_hold 時才攔截，功能關閉時相機 0x344 永遠照常轉送
+static bool toyota_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+  if (toyota_auto_brake_hold && (bus_num == 2)) {
+    bool is_aeb_msg = (addr == 0x344);
+    block_msg = is_aeb_msg && !vehicle_moving && !gas_pressed;
+  }
+  return block_msg;
+}
+
 const safety_hooks toyota_hooks = {
   .init = toyota_init,
   .rx = toyota_rx_hook,
   .rx_ext = toyota_rx_ext_hook,
   .tx = toyota_tx_hook,
   .tx_ext = toyota_tx_ext_hook,
+  .fwd = toyota_fwd_hook,
   .get_checksum = toyota_get_checksum,
   .compute_checksum = toyota_compute_checksum,
   .get_quality_flag_valid = toyota_get_quality_flag_valid,

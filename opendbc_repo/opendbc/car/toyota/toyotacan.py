@@ -86,6 +86,27 @@ def create_pcs_commands(packer, accel, active, mass):
   return [msg1, msg2]
 
 
+# dp - 自動煞車維持 (Auto Brake Hold), ported from sunnypilot-candy (originally AlexandreSato/openpilot)
+PRE_COLLISION_2_FWD_SIGNALS = (
+  "DSS1GDRV", "DS1STAT2", "DS1STBK2", "PCSWAR", "PCSALM", "PCSOPR", "PCSABK", "PBATRGR", "PPTRGR", "IBTRGR",
+  "CLEXTRGR", "IRLT_REQ", "BRKHLD", "AVSTRGR", "VGRSTRGR", "PREFILL", "PBRTRGR", "PCSDIS", "PBPREPMP",
+)
+BRAKE_HOLD_DECEL = -2.0  # m/s^2，與 candy 相同
+
+
+def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active):
+  # 未保持時：原封不動轉送相機的 PRE_COLLISION_2（panda 停車時會擋掉相機原始訊息，由這裡補送）
+  values = {s: pre_collision_2[s] for s in PRE_COLLISION_2_FWD_SIGNALS}
+
+  if brake_hold_active:
+    values.update({
+      "DSS1GDRV": BRAKE_HOLD_DECEL,
+      "PBRTRGR": frame % 730 < 727,  # cut actuation for 3 frames（與 candy 相同）
+    })
+
+  return packer.make_can_msg("PRE_COLLISION_2", 0, values)
+
+
 def create_acc_cancel_command(packer):
   values = {
     "GAS_RELEASED": 0,
