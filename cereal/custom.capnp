@@ -94,24 +94,27 @@ struct LiveGPS @0xa5cd762cd951a455 {
 # ==========================================
 # TDX 高公局路況預警系統資料結構
 # ==========================================
-struct TdxTrafficStatus @0xaa44ffe4db2f8247 {
-  sectionId @0 :Text;
-  speed @1 :Int32;
-  nextSectionId @2 :Text;
-  nextSpeed @3 :Int32;
-  status @4 :Text;
-}
-
-struct TdxRoadEvent @0xe079369bb181a0ac {
-  sectionId @0 :Text;
-  description @1 :Text;
-  distance @2 :Float32;
-  isActive @3 :Bool;
-}
-
+# 佔用 CustomReserved6 槽位（Event @113），ID 沿用原保留 ID
 struct Tdx @0xf98d843bfd7004a3 {
-  trafficStatus @0 :TdxTrafficStatus;
-  roadEvent @1 :TdxRoadEvent;
+  sectionId @0 :Text;           # 目前路段 SectionID，空字串 = 未匹配
+  speed @1 :Int16;              # 目前路段旅行車速 (km/h)，-1 = 無資料
+  nextSectionId @2 :Text;       # 前方約 3 km 處所在路段 SectionID
+  nextSpeed @3 :Int16;          # 前方路段旅行車速 (km/h)，-1 = 無資料
+  congestion @4 :Congestion;    # 依 nextSpeed 分級
+  events @5 :List(Event);       # 本週期要顯示的事件（目前/前方每 10 秒輪替，空 = 無事件）
+
+  struct Event {
+    eventType @0 :UInt8;        # 高公局 LiveEvent EventType，無法解析時為 0
+    description @1 :Text;
+    isCurrentSection @2 :Bool;  # true = 目前路段，false = 前方
+  }
+
+  enum Congestion {
+    unknown @0;    # 無車速資料
+    smooth @1;     # >= 80 km/h
+    slow @2;       # 40 ~ 79 km/h
+    congested @3;  # < 40 km/h
+  }
 }
 # ==========================================
 

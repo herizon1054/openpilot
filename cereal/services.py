@@ -99,7 +99,7 @@ _services: dict[str, tuple] = {
   "modelExt": (True, 20.),
   "dashyState": (True, 0.),    # Aggregated dashy UI state (optional)
   "liveGPS": (True, 0.),       # GPS fusion from gpsd (optional)
-  "tdx": (True, 0., 1),
+  "tdx": (True, 1., 1),        # 1Hz；需 >0 才有 SubMaster.alive 判斷，UI 依此隱藏過期資料
 }
 SERVICE_LIST = {name: Service(*vals) for
                 idx, (name, vals) in enumerate(_services.items())}

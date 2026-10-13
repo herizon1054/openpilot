@@ -184,7 +184,9 @@ class CarInterface(CarInterfaceBase):
     #   - TSS2 相機 ACC 車型（PRE_COLLISION_2 由 bus 2 相機發出，panda 才攔得到；RADAR_ACC 車型的 0x344 在 bus 0）
     #   - 非 SecOC（SecOC 的 PRE_COLLISION_2 為帶 MAC 的格式，無法偽造）
     #   - openpilot 縱向控制（0x344 僅在 LONG TX 白名單內）
+    #   - 油電車型（HYBRID 為偵測旗標，上方已依指紋設定）：汽油版路測無法保持，避免顯示「保持中」但車輛實際蠕行
     auto_brake_hold_eligible = (candidate in (TSS2_CAR - RADAR_ACC_CAR) and
+                                bool(ret.flags & ToyotaFlags.HYBRID.value) and
                                 not (ret.flags & ToyotaFlags.SECOC.value) and
                                 not (ret.flags & ToyotaFlags.DISABLE_RADAR.value) and
                                 ret.openpilotLongitudinalControl)

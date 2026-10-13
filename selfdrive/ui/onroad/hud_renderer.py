@@ -4,6 +4,7 @@ import threading
 import time
 import pyray as rl
 from dataclasses import dataclass
+from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -17,6 +18,7 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+Congestion = custom.Tdx.Congestion
 
 # DP Perf Constants (字體恢復為 50)
 PERF_FONT_SIZE = 50
@@ -86,9 +88,8 @@ class HudRenderer(Widget):
     self.steering_angle_deg: float = 0.0
 
     # --- TDX 路況預警變數 ---
-    self.tdx_speed: int = -1
     self.tdx_next_speed: int = -1
-    self.tdx_status: str = "UNKNOWN"
+    self.tdx_congestion = Congestion.unknown
     self.tdx_event_active: bool = False
     self.tdx_event_desc: str = ""
 
@@ -120,11 +121,7 @@ class HudRenderer(Widget):
       self.steering_angle_deg = 0.0
 
       # 重置 TDX 變數，避免殘留上次熄火前的資料
-      self.tdx_speed = -1
-      self.tdx_next_speed = -1
-      self.tdx_status = "UNKNOWN"
-      self.tdx_event_active = False
-      self.tdx_event_desc = ""
+      self._reset_tdx()
       return
 
     controls_state = sm['controlsState']
@@ -140,29 +137,20 @@ class HudRenderer(Widget):
       self.lead_dist = "-"
 
     # --- 讀取 TDX 狀態 ---
-    try:
+    # 只採用本次上路後收到、且仍在更新中的資料（tdxd 1Hz；GPS 失效 / 隧道 / 啟動中不會發布）
+    if sm.recv_frame['tdx'] >= ui_state.started_frame and sm.alive['tdx']:
       tdx = sm['tdx']
-      self.tdx_speed = tdx.trafficStatus.speed
-      self.tdx_next_speed = tdx.trafficStatus.nextSpeed
-      self.tdx_status = str(tdx.trafficStatus.status)
-      self.tdx_event_active = tdx.roadEvent.isActive
-      
-      raw_desc = str(tdx.roadEvent.description)
-      # 解碼並只取純文字
-      if raw_desc and ":" in raw_desc:
-          loc_part, events_part = raw_desc.split(":", 1)
-          clean_events = []
-          for evt in events_part.split("/"):
-              parts = evt.split("|")
-              # 如果有代碼，就只取 | 後面的文字；否則保留原樣
-              clean_events.append(parts[1] if len(parts) > 1 else evt)
-          # 重新組裝為純文字供畫面繪製
-          self.tdx_event_desc = f"{loc_part}: {' / '.join(clean_events)}"
+      self.tdx_next_speed = tdx.nextSpeed
+      self.tdx_congestion = tdx.congestion
+      events = tdx.events
+      self.tdx_event_active = len(events) > 0
+      if self.tdx_event_active:
+        loc_part = "目前" if events[0].isCurrentSection else "前方"
+        self.tdx_event_desc = f"{loc_part}: {' / '.join(str(e.description) for e in events)}"
       else:
-          self.tdx_event_desc = raw_desc
-
-    except Exception:
-      pass
+        self.tdx_event_desc = ""
+    else:
+      self._reset_tdx()
 
     v_cruise_cluster = car_state.vCruiseCluster
     self.set_speed = (
@@ -182,6 +170,12 @@ class HudRenderer(Widget):
 
     # dp: 右下角資訊列 - 方向盤角度
     self.steering_angle_deg = car_state.steeringAngleDeg
+
+  def _reset_tdx(self) -> None:
+    self.tdx_next_speed = -1
+    self.tdx_congestion = Congestion.unknown
+    self.tdx_event_active = False
+    self.tdx_event_desc = ""
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -225,11 +219,11 @@ class HudRenderer(Widget):
     bg_padding_y = 20
 
     # 1. 決定車速的文字顏色
-    if self.tdx_status == "GREEN":
+    if self.tdx_congestion == Congestion.smooth:
       speed_color = rl.Color(128, 216, 166, 255)
-    elif self.tdx_status == "YELLOW":
+    elif self.tdx_congestion == Congestion.slow:
       speed_color = rl.Color(255, 204, 0, 255)
-    elif self.tdx_status == "RED":
+    elif self.tdx_congestion == Congestion.congested:
       speed_color = rl.Color(255, 100, 100, 255)
     else:
       speed_color = rl.WHITE

@@ -217,38 +217,36 @@ class HudRenderer(Widget):
       self.lead_dist = "-"
 
     # --- 讀取 TDX 狀態 (背景接收事件) ---
-    try:
-      tdx = sm['tdx']
-      self.tdx_event_active = tdx.roadEvent.isActive
-      raw_desc = str(tdx.roadEvent.description)
+    # 只採用本次上路後收到、且仍在更新中的資料（tdxd 1Hz；GPS 失效 / 隧道 / 啟動中不會發布）
+    if sm.recv_frame['tdx'] >= ui_state.started_frame and sm.alive['tdx']:
+      try:
+        events = sm['tdx'].events
+        self.tdx_event_active = len(events) > 0
 
-      EVENT_TYPE_LABEL = {
-          '1': '交通事故', '2': '施工事件', '3': '壅塞事件',
-          '4': '道路管制', '5': '天氣異常', '8': '其他異常'
-      }
+        EVENT_TYPE_LABEL = {
+            1: '交通事故', 2: '施工事件', 3: '壅塞事件',
+            4: '道路管制', 5: '天氣異常', 8: '其他異常'
+        }
 
-      if raw_desc and ":" in raw_desc:
-          loc_part, events_part = raw_desc.split(":", 1)
-          
-          # 解除 "前方" 限制，讓 "目前" 也能顯示
-          label_events = []
-          for evt in events_part.split("/"):
-              parts = evt.split("|")
-              evt_type = parts[0] if len(parts) > 1 else '0'
-              label = EVENT_TYPE_LABEL.get(evt_type, '[其他]')
-              label_events.append(label)
+        if self.tdx_event_active:
+            # "目前" 與 "前方" 都顯示
+            loc_part = "目前" if events[0].isCurrentSection else "前方"
 
-          unique_labels = []
-          for lbl in label_events:
-              if lbl not in unique_labels:
-                  unique_labels.append(lbl)
+            unique_labels = []
+            for evt in events:
+                label = EVENT_TYPE_LABEL.get(evt.eventType, '[其他]')
+                if label not in unique_labels:
+                    unique_labels.append(label)
 
-          self.tdx_event_desc = f"{loc_part}:{''.join(unique_labels)}"
-      else:
-          self.tdx_event_desc = raw_desc
+            self.tdx_event_desc = f"{loc_part}:{''.join(unique_labels)}"
+        else:
+            self.tdx_event_desc = ""
 
-    except Exception:
-      pass
+      except Exception:
+        pass
+    else:
+      self.tdx_event_active = False
+      self.tdx_event_desc = ""
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
