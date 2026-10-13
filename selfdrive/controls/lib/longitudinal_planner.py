@@ -23,11 +23,77 @@ from dragonpilot.selfdrive.controls.lib.apm import APM
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
-ALLOW_THROTTLE_THRESHOLD = 0.4
+ALLOW_THROTTLE_THRESHOLD_ACC = 0.4   # mode=='acc' 使用，維持原廠值，行為不變
+# mode=='blended'(e2e) 且 AEM「停用」時的固定門檻。獨立常數，與 aem.py 的
+# BASE_THROTTLE_LOW_SPEED_VALUE / BASE_THROTTLE_HIGH_SPEED_VALUE 互不影響——
+# AEM 啟用時完全不會用到這個常數。
+ALLOW_THROTTLE_THRESHOLD_E2E = 0.2
+# mode=='blended' 且 AEM 判定接近模型停止線（aem.near_stop_active）時使用：比 e2e 基礎
+# 門檻保守、但仍低於 ACC 的 0.4。實際採用 max(AEM 基礎門檻, 本值)，只會讓門檻變高。
+ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP = 0.3
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+
+# v10：throttle_prob（modelV2.meta.disengagePredictions.gasPressProbs[1]）單幀雜訊極大——
+# 三份市區 40~50 km/h 路測 rlog 實測，同一次連續煞停過程中，這個值每 50 ms 可在
+# 0.06~0.58 之間跳動，標準差 0.19~0.36。原廠直接拿原始值比較門檻，allow_throttle 會
+# 每幀在 True/False 間橫跳，反映到 accel_clip[1] 在「完全放開」與「夾到滑行曲線」之間
+# 跳動，即「油門剎車頓挫感」的直接成因。修法：先低通濾波再加遲滯（僅套用在 blended）。
+# 驗證（門檻 0.2、遲滯 0.15 的組合）：三份 log 的 allow_throttle 切換次數從 22~34 次/分鐘
+# 降到 0~4 次/分鐘。
+THROTTLE_PROB_LPF_ALPHA = 0.05   # 等效時間常數約 1 秒（原 0.2 約 0.22 秒）；越小越不易被
+                                  # 單幀雜訊誤判，但追上持續的訊號變化也越慢
+ALLOW_THROTTLE_HYSTERESIS = 0.15  # allow_throttle 為 True 時，解除門檻 = 進入門檻 - 遲滯量
+# v11：遲滯量上限為進入門檻的這個比例，保證解除門檻 >= 0 且不會讓 allow_throttle 被永久鎖死。
+# v10 直接用固定 0.15，當 AEM 給的門檻是 0.1 或 0.0 時，解除門檻變成 -0.05 / -0.15，
+# 而 throttle_prob_filtered 不可能 < 0，一旦變成 True 就永遠不會再變回 False。
+# 0.75 的選擇是為了讓已用 rlog 驗證過的「門檻 0.2 / 遲滯 0.15 / 解除 0.05」組合完全不變：
+#   門檻 0.3（接近停止線） -> 遲滯 0.15  -> 解除 0.15
+#   門檻 0.2（AEM 停用）   -> 遲滯 0.15  -> 解除 0.05（與 v10 相同）
+#   門檻 0.1（AEM 低速）   -> 遲滯 0.075 -> 解除 0.025
+#   門檻 0.0（AEM 高速）   -> 遲滯 0     -> 解除 0.0（= 刻意設定的「不 coast」，見 aem.py）
+ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO = 0.75
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
+
+# dp：e2e 正向加速度放大係數（見 update() 內說明）
+E2E_ACCEL_BOOST_FACTOR = 1.5
+
+# dp(v12.1): e2e 減速保險（e2e decel guard）
+# 用途：acc 模式下，模型（e2e）已經感知到應該減速，但 MPC 仍要加速／維持時，把輸出往 e2e 拉，
+# 當作一層保險。e2e 為負代表模型整體判斷「該減速了」，不依賴雷達前車選擇，因此能補到
+# 雷達／前車選擇還沒反應過來的時段。不切換 mode：accel_clip、allow_throttle、MPC 約束、
+# 彎道加速度限制、shouldStop 全部維持 acc 的設定，只修改最終輸出的加速度目標。
+# 只在 AEM 開啟（dp_flags & DPFlags.AEM）且 mode == 'acc' 時運作；AEM 關閉時行為與 v11 完全相同。
+# 進入（三項同時成立，連續 E2E_GUARD_CONFIRM_FRAMES 幀）：
+#   (1) e2e < E2E_GUARD_ENTER_ACCEL
+#   (2) e2e − mpc < E2E_GUARD_ENTER_DIFF
+#       只看差值時，「MPC 想加速、e2e 只是比較不想加速（兩者皆正）」也會觸發，等於讓 e2e 壓住
+#       加速（log 032 第 18 秒、033 第 12 秒，mpc +0.41/+0.45、e2e +0.11/+0.15）。
+#   (3) 模型油門機率 gasPressProbs[1]（原始值）< E2E_GUARD_ENTER_GAS_PROB
+#       v12.1 新增。跟車時 e2e 常長時間維持 -0.1~-0.3（模型偏好較大車距），只靠 (1)(2) 會在
+#       正常跟車加速時觸發：log 036 第 51~57 秒、037 第 46~50 秒，前車加速、MPC +0.3~+0.6，
+#       e2e 一直在 -0.12~-0.30，保險壓住加速各約 7 秒。這兩段油門機率 0.93~0.99；
+#       032 藍車切入時油門機率掉到 0.59~0.66（煞車機率升到 0.2~0.3），可以區分。
+# 退出（維持滿 E2E_GUARD_MIN_HOLD_S 後，任一成立）：e2e >= 0，或油門機率 >= E2E_GUARD_EXIT_GAS_PROB。
+#   另有 E2E_GUARD_MAX_HOLD_S 硬上限：保險是短時保護，不該長時間接管。
+# 輸出：mpc + w × (min(mpc, e2e) − mpc)，權重 w 在 E2E_GUARD_RAMP_S 秒內 0↔1 漸變，
+#   避免進出時輸出一幀跳 0.3~1 m/s²。只會讓輸出變小（更保守），不會讓輸出超過 MPC。
+# e2e 取模型原始值（不含 E2E_ACCEL_BOOST_FACTOR 放大）。
+# 驗證（log 030/032/033/034/035/036/037，約 390 秒 acc 行駛，63~108 km/h，mpc 由 longitudinalPlan 反推）：
+#   - 032 藍車切入：第 57.5 秒觸發（駕駛踩剎車前 0.3 秒），輸出 0.25 秒內由 +0.05 降到 -0.29。
+#   - 036 第 48 秒、037 第 54 秒：前車減速、MPC 本身也在減速時觸發，多減約 2 km/h。
+#   - 壓住 MPC 加速（MPC > +0.05 且輸出被拉低）的時間：0 秒（v12 為 13.7 秒）。
+# ⚠️ 只有國道 log 驗證過，市區低速情境尚未驗證。
+E2E_GUARD_ENABLED = True           # 總開關；實際運作還需要 AEM 開啟（dp_flags & DPFlags.AEM），AEM 關閉時完全不介入
+E2E_GUARD_ENTER_ACCEL = -0.2        # m/s²
+E2E_GUARD_ENTER_DIFF = -0.25        # m/s²（e2e − mpc）
+E2E_GUARD_ENTER_GAS_PROB = 0.8      # v12.1：油門機率低於此值才可進入
+E2E_GUARD_EXIT_GAS_PROB = 0.9       # v12.1：油門機率回到此值以上即可退出
+E2E_GUARD_CONFIRM_FRAMES = 4        # 0.2 秒
+E2E_GUARD_MIN_HOLD_S = 0.5          # 秒
+E2E_GUARD_MAX_HOLD_S = 3.0          # v12.1：秒，硬上限
+E2E_GUARD_RAMP_S = 0.3              # 秒
 
 class DPFlags:
   OCM = 1
@@ -60,6 +126,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
+    self.throttle_prob_filtered = 1.0   # v10：throttle_prob 低通濾波狀態，見 THROTTLE_PROB_LPF_ALPHA
+    # dp(v12): e2e 減速保險狀態，見 E2E_GUARD_*
+    self.e2e_guard_active = False
+    self.e2e_guard_cnt = 0
+    self.e2e_guard_t = 0.0
+    self.e2e_guard_w = 0.0
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -100,8 +172,15 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     LongitudinalPlannerDP.update(self, sm)
 
     if dp_flags & DPFlags.AEM:
-      # 已修正：將 sm 拆解並傳入正確的 model_msg, radar_msg 與 v_ego
-      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo)
+      # ⚠️ self.traffic_stop.stop_dist_m 要到後段 LongitudinalPlannerDP.update_targets()
+      # 才會刷新成這一幀的值，這裡讀到的是上一幀（約 50 ms 前）。near-stop 判斷本身有
+      # 0.5 秒防彈跳與 10 m 遲滯，一幀落差可忽略；若要完全同步需把 update_targets()
+      # 提前，但會牽動它使用 self.v_desired_filter.x / self.a_desired（上一幀平滑值）
+      # 作為輸入的既有設計，風險較高，暫不動。
+      # ⚠️ AEM 啟用時，get_mode() 預設忽略這裡傳入的 mode（即實驗模式開關），屬刻意分歧，
+      # 見 aem.py 檔頭與 AEM_EXPERIMENTAL_OFF_FORCES_ACC。
+      self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
+                              stop_dist_m=self.traffic_stop.stop_dist_m)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -136,7 +215,32 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
     _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
-    self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
+
+    # v11：濾波每一幀都更新（不分 mode）。v10 只在 blended 分支更新，從 acc 切回 blended
+    # 時會用到停留在 acc 期間凍結的過時值。acc 分支本身仍用原始值判斷，不受影響。
+    self.throttle_prob_filtered = (THROTTLE_PROB_LPF_ALPHA * throttle_prob
+                                    + (1.0 - THROTTLE_PROB_LPF_ALPHA) * self.throttle_prob_filtered)
+
+    if mode == 'blended':
+      # AEM 啟用：基礎門檻由 AEM 依車速決定，接近停止線時取較保守者；
+      # AEM 停用：固定 ALLOW_THROTTLE_THRESHOLD_E2E。方向燈不影響節流門檻（亦不影響 AEM）。
+      if dp_flags & DPFlags.AEM:
+        allow_throttle_threshold = self.aem.base_throttle_threshold
+        if self.aem.near_stop_active:
+          allow_throttle_threshold = max(allow_throttle_threshold, ALLOW_THROTTLE_THRESHOLD_E2E_NEAR_STOP)
+      else:
+        allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_E2E
+      # 濾波 + 遲滯（見常數區說明）。遲滯量受 ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO 限制，
+      # 解除門檻永遠 >= 0，避免 allow_throttle 被鎖死在 True。
+      hysteresis = min(ALLOW_THROTTLE_HYSTERESIS,
+                       max(allow_throttle_threshold, 0.0) * ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO)
+      effective_threshold = (allow_throttle_threshold - hysteresis
+                              if self.allow_throttle else allow_throttle_threshold)
+      self.allow_throttle = self.throttle_prob_filtered > effective_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
+    else:
+      # acc 模式：原廠寫法，直接拿原始 throttle_prob 比較，不濾波、不遲滯
+      allow_throttle_threshold = ALLOW_THROTTLE_THRESHOLD_ACC
+      self.allow_throttle = throttle_prob > allow_throttle_threshold or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
@@ -218,11 +322,36 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
                                                                         action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
+    output_a_target_e2e_raw = output_a_target_e2e   # dp(v12): e2e 減速保險使用未放大的原始值
+
+    # dp: 對 e2e 的正向加速度意圖放大（×E2E_ACCEL_BOOST_FACTOR），補償 desired_accel 偏保守
+    # 的傾向（它是從模型預測的 plan 軌跡微分出來的「預期值」，訓練資料是一般人類的溫和
+    # 示範；調 LONG_SMOOTH_SECONDS / ALLOW_THROTTLE_THRESHOLD 等下游參數不會改變這個值的大小）。
+    # ⚠️ 刻意分歧：送進 min() 比較的 e2e 值偏離模型原始預測。放大後仍取 min(mpc, e2e)，
+    # mpc 依然兜底，最終輸出不會超過 mpc 認為安全的範圍；效果只在「e2e 原本比 mpc 保守」
+    # 的情境讓結果更貼近 mpc。只放大正值，減速／煞車方向不受影響。
+    if output_a_target_e2e > 0:
+      output_a_target_e2e = min(output_a_target_e2e * E2E_ACCEL_BOOST_FACTOR, ACCEL_MAX)
 
     if mode == 'acc':
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+      # dp(v12): e2e 減速保險（只改加速度目標，shouldStop 仍只看 MPC）
+      if E2E_GUARD_ENABLED and (dp_flags & DPFlags.AEM) and not reset_state:
+        self._update_e2e_guard(output_a_target_mpc, output_a_target_e2e_raw, throttle_prob)
+        if self.e2e_guard_w > 0.0:
+          guarded = min(output_a_target_mpc, output_a_target_e2e_raw)
+          output_a_target = output_a_target_mpc + self.e2e_guard_w * (guarded - output_a_target_mpc)
+          if output_a_target < output_a_target_mpc:
+            try:
+              from cereal import log
+              self.mpc.source = log.LongitudinalPlan.LongitudinalPlanSource.e2e
+            except ImportError:
+              pass
+      else:
+        self._reset_e2e_guard()
     else:
+      self._reset_e2e_guard()   # dp(v12): blended 本來就取 min(mpc, e2e)，保險不需要運作
       output_a_target = min(output_a_target_mpc, output_a_target_e2e)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       
@@ -237,6 +366,35 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
+
+  def _reset_e2e_guard(self):
+    self.e2e_guard_active = False
+    self.e2e_guard_cnt = 0
+    self.e2e_guard_t = 0.0
+    self.e2e_guard_w = 0.0
+
+  def _update_e2e_guard(self, a_mpc, a_e2e, gas_prob):
+    # dp(v12.1): e2e 減速保險狀態機，見 E2E_GUARD_*；gas_prob 為 gasPressProbs[1] 原始值
+    if not self.e2e_guard_active:
+      hit = (a_e2e < E2E_GUARD_ENTER_ACCEL and (a_e2e - a_mpc) < E2E_GUARD_ENTER_DIFF and
+             gas_prob < E2E_GUARD_ENTER_GAS_PROB)
+      self.e2e_guard_cnt = self.e2e_guard_cnt + 1 if hit else 0
+      if self.e2e_guard_cnt >= E2E_GUARD_CONFIRM_FRAMES:
+        self.e2e_guard_active = True
+        self.e2e_guard_t = 0.0
+        cloudlog.info(f"[E2EGuard_DP] enter mpc={a_mpc:.2f} e2e={a_e2e:.2f} gas={gas_prob:.2f}")
+    else:
+      self.e2e_guard_t += self.dt
+      released = a_e2e >= 0.0 or gas_prob >= E2E_GUARD_EXIT_GAS_PROB
+      if (released and self.e2e_guard_t >= E2E_GUARD_MIN_HOLD_S) or self.e2e_guard_t >= E2E_GUARD_MAX_HOLD_S:
+        self.e2e_guard_active = False
+        self.e2e_guard_cnt = 0
+        cloudlog.info(f"[E2EGuard_DP] exit after {self.e2e_guard_t:.2f}s mpc={a_mpc:.2f} e2e={a_e2e:.2f} gas={gas_prob:.2f}")
+    step = self.dt / E2E_GUARD_RAMP_S
+    if self.e2e_guard_active:
+      self.e2e_guard_w = min(1.0, self.e2e_guard_w + step)
+    else:
+      self.e2e_guard_w = max(0.0, self.e2e_guard_w - step)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
