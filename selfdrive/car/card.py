@@ -116,6 +116,13 @@ class Car:
       if self.params.get_bool("dp_toyota_stock_lon"):
         dp_params |= structs.DPFlags.ToyotaStockLon
 
+      # dp - 豐田自動煞車維持 (Auto Brake Hold): 0 = OFF, 1 = ON, 2 = SPEED
+      dp_toyota_auto_brake_hold = self.params.get("dp_toyota_auto_brake_hold", return_default=True) or 0
+      if int(dp_toyota_auto_brake_hold) > 0:
+        dp_params |= structs.DPFlags.ToyotaAutoBrakeHold
+      if int(dp_toyota_auto_brake_hold) == 2:
+        dp_params |= structs.DPFlags.ToyotaAutoBrakeHoldSpeed
+
       if self.params.get_bool("dp_vag_a0_sng"):
         dp_params |= structs.DPFlags.VagA0SnG
 
@@ -254,6 +261,8 @@ class Car:
     cs_ext = messaging.new_message('carStateExt')
     cs_ext.valid = CS.canValid
     cs_ext.carStateExt.lkasOn = getattr(self.CI.CS, 'lkas_on', False)
+    # dp - 豐田自動煞車維持：由 carcontroller 寫回 CarState 物件的保持狀態
+    cs_ext.carStateExt.autoBrakeHoldActive = getattr(self.CI.CS, 'auto_brake_hold_active', False)
     self.pm.send('carStateExt', cs_ext)
 
     if RD is not None:

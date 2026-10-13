@@ -80,7 +80,7 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelExt']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelExt'] + ['carStateExt']
     if SIMULATION:
       ignore += ['driverMonitoringState', 'driverCameraState', 'managerState']
     if REPLAY:
@@ -90,7 +90,7 @@ class SelfdriveD:
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback', 'modelExt',
-                                   'lateralManeuverPlan'] + \
+                                   'lateralManeuverPlan', 'carStateExt'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -219,6 +219,10 @@ class SelfdriveD:
     if CS.canValid:
       car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl']).to_msg()
       self.events.add_from_msg(car_events)
+
+      # dp - 豐田自動煞車維持 (Auto Brake Hold)：carcontroller 正在送出保持指令
+      if self.sm['carStateExt'].autoBrakeHoldActive:
+        self.events.add(EventName.autoBrakeHold)
 
       if self.CP.notCar:
         # wait for everything to init first

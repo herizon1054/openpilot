@@ -89,6 +89,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     stockAeb @52;
     stockLkas @98;
     lateralManeuver @99;
+    autoBrakeHold @100;  # dp - 豐田自動煞車維持作動中 (Auto Brake Hold)
     ldw @53;
     carUnrecognized @54;
     invalidLkasSetting @55;

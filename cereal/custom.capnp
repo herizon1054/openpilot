@@ -17,6 +17,8 @@ struct ControlsStateExt @0x81c2f05a394cf4af {
 struct CarStateExt @0xaedffd8f31e7b55d {
   # dp - ALKA: lkasOn state from carstate (mirrors panda's lkas_on)
   lkasOn @0 :Bool;
+  # dp - 豐田自動煞車維持 (Auto Brake Hold) 正在保持中
+  autoBrakeHoldActive @1 :Bool;
 }
 
 struct ModelExt @0xf35cc4560bbf6ec2 {

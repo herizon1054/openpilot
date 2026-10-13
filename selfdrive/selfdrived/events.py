@@ -697,6 +697,12 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.none, .2),
   },
 
+  # dp - 豐田自動煞車維持 (Auto Brake Hold) 作動中
+  # 用 PERMANENT：保持只會在巡航未啟用時作動，WARNING 類在未啟用且 ALKA 關閉時不會顯示
+  EventName.autoBrakeHold: {
+    ET.PERMANENT: NormalPermanentAlert("自動煞車維持中", "踩油門解除，踩煞車重新計時", priority=Priority.LOWEST),
+  },
+
   EventName.parkBrake: {
     ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
     ET.NO_ENTRY: NoEntryAlert("正在使用駐車制動"),
