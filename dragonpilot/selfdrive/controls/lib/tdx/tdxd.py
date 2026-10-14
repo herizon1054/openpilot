@@ -10,7 +10,7 @@ dp - TDX 高公局路況預警 daemon (tdxd)
   - 下載結果寫入 CACHE_SHAPES_PATH（/data 下），先驗證內容再以 tmp + os.replace 原子替換
   - 快取未滿 SHAPES_MAX_AGE_S 不重新下載
 
-TLS：等系統時間有效後才連線並驗證憑證；若主機仍驗證失敗，記錄 warning 後對該主機改用不驗證連線。
+TLS：維持原本 verify=False（實車測試：啟用憑證驗證 / 等待系統時間有效時抓不到資料）。
 """
 import json
 import math
@@ -20,7 +20,6 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
 
 import requests
 import urllib3
@@ -28,11 +27,10 @@ import urllib3
 import cereal.messaging as messaging
 from cereal import custom
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.hardware import PC
 from openpilot.system.hardware.hw import Paths
 
-# 只在 TLS 驗證失敗而改用不驗證連線時才會用到，避免 log 被 InsecureRequestWarning 洗版
+# 忽略因為 verify=False 產生的 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 Congestion = custom.Tdx.Congestion
@@ -70,18 +68,7 @@ CURRENT_SECTION_MISS_LIMIT = 2
 # ==========================================
 # 網路工具
 # ==========================================
-_insecure_hosts: set[str] = set()
-
-
 def _http_get(url, headers, timeout):
-  """先以 TLS 驗證連線；該主機驗證失敗時記錄並改用不驗證連線（之後同主機直接走不驗證）。"""
-  host = urlparse(url).hostname or ""
-  if host not in _insecure_hosts:
-    try:
-      return requests.get(url, headers=headers, timeout=timeout)
-    except requests.exceptions.SSLError as e:
-      cloudlog.warning(f"tdxd: TLS 驗證失敗 ({host})，改用不驗證連線: {e}")
-      _insecure_hosts.add(host)
   return requests.get(url, headers=headers, timeout=timeout, verify=False)
 
 
@@ -500,11 +487,6 @@ class NetworkWorker:
   def _run(self):
     while True:
       try:
-        # 時鐘未同步前 TLS 憑證驗證必定失敗，先等系統時間有效
-        if not system_time_valid():
-          time.sleep(5)
-          continue
-
         # 即時路況優先，圖資下載（最長 SHAPES_TIMEOUT_S）排在後面
         now = time.monotonic()
         if now - self._last_live_update >= LIVE_UPDATE_INTERVAL_S:
