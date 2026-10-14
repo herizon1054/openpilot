@@ -4,6 +4,7 @@ import threading
 import time
 import pyray as rl
 from dataclasses import dataclass
+from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -17,6 +18,19 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+Congestion = custom.Tdx.Congestion
+TRAFFIC_STOP_IDX = int(custom.LongitudinalPlanDP.LongitudinalPlanSource.trafficStop)
+
+# dp - 紅綠燈減速中 banner（基準尺寸 x1.5）：佔用 TDX「前方車速」的位置（中央車速正下方），顯示期間 TDX 全部讓位
+TS_HOLD_TIME = 0.5          # 秒；braking 訊號短暫掉落時維持顯示，避免閃爍
+TS_FONT_SIZE = 144
+TS_BANNER_HEIGHT = 225
+TS_TOP_OFFSET = 5           # 相對 header_height 的位移（km/h 單位文字底緣約在 header 內）
+TS_PADDING_X = 60
+TS_ICON_TEXT_GAP = 36
+TS_LIGHT_RADIUS = 36
+TS_LIGHT_GAP = 18
+TS_BORDER = 9
 
 # DP Perf Constants (字體恢復為 50)
 PERF_FONT_SIZE = 50
@@ -82,10 +96,16 @@ class HudRenderer(Widget):
     self.lead_dist: str = "-"
     self.lead_dist_raw: float = 0.0
 
+    # dp: 右下角資訊列 - 方向盤角度（取代原本的駕駛/自動控制狀態文字）
+    self.steering_angle_deg: float = 0.0
+
+    # --- 紅綠燈減速中 ---
+    self.ts_braking: bool = False
+    self._ts_last_braking_t: float = -1e9
+
     # --- TDX 路況預警變數 ---
-    self.tdx_speed: int = -1
     self.tdx_next_speed: int = -1
-    self.tdx_status: str = "UNKNOWN"
+    self.tdx_congestion = Congestion.unknown
     self.tdx_event_active: bool = False
     self.tdx_event_desc: str = ""
 
@@ -114,14 +134,15 @@ class HudRenderer(Widget):
       self.speed = 0.0
       self.lead_dist = "-"
       self.lead_dist_raw = 0.0
-      
+      self.steering_angle_deg = 0.0
+
       # 重置 TDX 變數，避免殘留上次熄火前的資料
-      self.tdx_speed = -1
-      self.tdx_next_speed = -1
-      self.tdx_status = "UNKNOWN"
-      self.tdx_event_active = False
-      self.tdx_event_desc = ""
+      self._reset_tdx()
+      self.ts_braking = False
+      self._ts_last_braking_t = -1e9
       return
+
+    self._update_traffic_stop(sm)
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
@@ -136,29 +157,20 @@ class HudRenderer(Widget):
       self.lead_dist = "-"
 
     # --- 讀取 TDX 狀態 ---
-    try:
+    # 只採用本次上路後收到、且仍在更新中的資料（tdxd 1Hz；GPS 失效 / 隧道 / 啟動中不會發布）
+    if sm.recv_frame['tdx'] >= ui_state.started_frame and sm.alive['tdx']:
       tdx = sm['tdx']
-      self.tdx_speed = tdx.trafficStatus.speed
-      self.tdx_next_speed = tdx.trafficStatus.nextSpeed
-      self.tdx_status = str(tdx.trafficStatus.status)
-      self.tdx_event_active = tdx.roadEvent.isActive
-      
-      raw_desc = str(tdx.roadEvent.description)
-      # 解碼並只取純文字
-      if raw_desc and ":" in raw_desc:
-          loc_part, events_part = raw_desc.split(":", 1)
-          clean_events = []
-          for evt in events_part.split("/"):
-              parts = evt.split("|")
-              # 如果有代碼，就只取 | 後面的文字；否則保留原樣
-              clean_events.append(parts[1] if len(parts) > 1 else evt)
-          # 重新組裝為純文字供畫面繪製
-          self.tdx_event_desc = f"{loc_part}: {' / '.join(clean_events)}"
+      self.tdx_next_speed = tdx.nextSpeed
+      self.tdx_congestion = tdx.congestion
+      events = tdx.events
+      self.tdx_event_active = len(events) > 0
+      if self.tdx_event_active:
+        loc_part = "目前" if events[0].isCurrentSection else "前方"
+        self.tdx_event_desc = f"{loc_part}: {' / '.join(str(e.description) for e in events)}"
       else:
-          self.tdx_event_desc = raw_desc
-
-    except Exception:
-      pass
+        self.tdx_event_desc = ""
+    else:
+      self._reset_tdx()
 
     v_cruise_cluster = car_state.vCruiseCluster
     self.set_speed = (
@@ -175,6 +187,28 @@ class HudRenderer(Widget):
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
+
+    # dp: 右下角資訊列 - 方向盤角度
+    self.steering_angle_deg = car_state.steeringAngleDeg
+
+  def _update_traffic_stop(self, sm) -> None:
+    """紅綠燈減速中：讀 longitudinalPlanDP.targets[trafficStop].braking，且 openpilot 正在控制縱向"""
+    braking = False
+    if sm.recv_frame['longitudinalPlanDP'] >= ui_state.started_frame and sm.alive['longitudinalPlanDP']:
+      targets = sm['longitudinalPlanDP'].targets
+      if len(targets) > TRAFFIC_STOP_IDX:
+        braking = bool(targets[TRAFFIC_STOP_IDX].braking) and sm['carControl'].longActive
+
+    now = rl.get_time()
+    if braking:
+      self._ts_last_braking_t = now
+    self.ts_braking = (now - self._ts_last_braking_t) < TS_HOLD_TIME
+
+  def _reset_tdx(self) -> None:
+    self.tdx_next_speed = -1
+    self.tdx_congestion = Congestion.unknown
+    self.tdx_event_active = False
+    self.tdx_event_desc = ""
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -193,8 +227,12 @@ class HudRenderer(Widget):
 
     self._draw_current_speed(rect)
 
-    # --- 繪製 TDX 雙行顯示資訊 ---
-    self._draw_tdx_info(rect)
+    # --- 紅綠燈減速中（優先）/ TDX 雙行顯示資訊 ---
+    # 紅綠燈減速期間 TDX（前方車速 + 底部事件）全部讓位，避免搶注意力
+    if self.ts_braking:
+      self._draw_traffic_stop(rect)
+    else:
+      self._draw_tdx_info(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -218,11 +256,11 @@ class HudRenderer(Widget):
     bg_padding_y = 20
 
     # 1. 決定車速的文字顏色
-    if self.tdx_status == "GREEN":
+    if self.tdx_congestion == Congestion.smooth:
       speed_color = rl.Color(128, 216, 166, 255)
-    elif self.tdx_status == "YELLOW":
+    elif self.tdx_congestion == Congestion.slow:
       speed_color = rl.Color(255, 204, 0, 255)
-    elif self.tdx_status == "RED":
+    elif self.tdx_congestion == Congestion.congested:
       speed_color = rl.Color(255, 100, 100, 255)
     else:
       speed_color = rl.WHITE
@@ -310,6 +348,37 @@ class HudRenderer(Widget):
         # 文字沒超長 -> 直接單行置中顯示
         rl.draw_text_ex(self._font_semi_bold, text, rl.Vector2(event_x, draw_y), tdx_event_font_size, 0, rl.WHITE)
 
+  def _draw_traffic_stop(self, rect: rl.Rectangle) -> None:
+    """中央車速正下方（TDX 前方車速的位置）：大型紅綠燈圖示 + 「紅綠燈減速中」"""
+    text = "紅綠燈減速中"
+    text_size = measure_text_cached(self._font_bold, text, TS_FONT_SIZE)
+    icon_w = TS_LIGHT_RADIUS * 6 + TS_LIGHT_GAP * 4
+    icon_h = TS_LIGHT_RADIUS * 2 + TS_LIGHT_GAP * 2
+    banner_w = TS_PADDING_X * 2 + icon_w + TS_ICON_TEXT_GAP + text_size.x
+
+    x = rect.x + rect.width / 2 - banner_w / 2
+    y = rect.y + UI_CONFIG.header_height + TS_TOP_OFFSET
+
+    banner = rl.Rectangle(x, y, banner_w, TS_BANNER_HEIGHT)
+    rl.draw_rectangle_rounded(banner, 0.3, 10, rl.Color(0, 0, 0, 190))
+    border_alpha = 170 + int(85 * math.sin(rl.get_time() * 6))
+    rl.draw_rectangle_rounded_lines_ex(banner, 0.3, 10, TS_BORDER, rl.Color(255, 70, 70, border_alpha))
+
+    # 橫式紅綠燈：外框 + 紅（呼吸閃爍）/ 黃 / 綠（暗）
+    icon_x = x + TS_PADDING_X
+    icon_y = y + (TS_BANNER_HEIGHT - icon_h) / 2
+    rl.draw_rectangle_rounded(rl.Rectangle(icon_x, icon_y, icon_w, icon_h), 0.5, 8, rl.Color(30, 30, 30, 240))
+    cy = int(icon_y + icon_h / 2)
+    red_alpha = 180 + int(75 * math.sin(rl.get_time() * 6))
+    light_colors = (rl.Color(255, 60, 60, red_alpha), rl.Color(90, 75, 20, 255), rl.Color(20, 70, 35, 255))
+    for i, color in enumerate(light_colors):
+      cx = int(icon_x + TS_LIGHT_GAP + TS_LIGHT_RADIUS + i * (TS_LIGHT_RADIUS * 2 + TS_LIGHT_GAP))
+      rl.draw_circle(cx, cy, TS_LIGHT_RADIUS, color)
+
+    text_x = icon_x + icon_w + TS_ICON_TEXT_GAP
+    text_y = y + (TS_BANNER_HEIGHT - text_size.y) / 2
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(text_x, text_y), TS_FONT_SIZE, 0, rl.WHITE)
+
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
     set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
     x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
@@ -368,7 +437,7 @@ class HudRenderer(Widget):
       return
 
     stats = self._get_perf_stats()
-    control_text = self._get_control_state_text()
+    steering_angle_text = f"{tr('Steering Angle')} {self.steering_angle_deg:.0f}°"
 
     lead_dist = self.lead_dist
     cpu_temp = stats.get("cpu_temp", "-")
@@ -380,7 +449,7 @@ class HudRenderer(Widget):
       f"{tr('CPU Temp')} {cpu_temp}",
       f"{tr('Memory')} {mem_usage}",
       f"{tr('Disk Free')} {disk_free}",
-      f"{control_text}",
+      f"{steering_angle_text}",
     ]
 
     measurements = [measure_text_cached(self._perf_font, text, PERF_FONT_SIZE) for text in items]
@@ -409,16 +478,8 @@ class HudRenderer(Widget):
       text_color = rl.WHITE
       if i == 0 and self.lead_dist != "-" and self.lead_dist_raw < 15.0:
         text_color = rl.Color(255, 188, 0, 200)
-      elif i == 4 and ui_state.status != UIStatus.ENGAGED:
-        text_color = rl.YELLOW
 
       rl.draw_text_ex(self._perf_font, text, rl.Vector2(cursor_x, text_y), PERF_FONT_SIZE, 0, text_color)
-
-  def _get_control_state_text(self) -> str:
-    status = ui_state.status
-    if status == UIStatus.ENGAGED:
-      return tr("Auto control")
-    return tr("Manual control")
 
   def _get_perf_stats(self) -> dict[str, str]:
     with self._perf_lock:

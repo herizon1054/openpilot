@@ -102,4 +102,7 @@ class LongitudinalPlannerDP:
         idx = enum_value
         controller.write_to_msg(targets_list[idx])
 
+    # 列舉名稱 trafficStop 與屬性名稱 traffic_stop 不同，上面的 getattr 對不到，明確寫入（UI 讀取用）
+    self.traffic_stop.write_to_msg(targets_list[LongitudinalPlanSource.trafficStop])
+
     pm.send('longitudinalPlanDP', plan_dp_send)
