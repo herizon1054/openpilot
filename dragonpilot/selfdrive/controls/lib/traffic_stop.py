@@ -210,6 +210,22 @@ class TrafficStopController:
       adj = self.params.get(PARAM_DISTANCE_ADJUST)
       self.distance_adjust_m = float(np.clip(adj, -5, 5))
 
+  def write_to_msg(self, target) -> None:
+    """dp: 寫入 longitudinalPlanDP.targets[trafficStop]，供 UI 繪製「紅綠燈減速中」（不走 onroadEvents）。
+
+    available / enable：功能開關
+    action ：狀態機不在 CRUISE（STOPPING 或 STOPPED）
+    braking：STOPPING 且虛擬停止線障礙物生效中（stop_dist_m 有值）= 正在為紅燈/停止標誌減速
+    """
+    target.available = bool(self.is_enabled)
+    target.enable = bool(self.is_enabled)
+    target.action = self.state != CRUISE
+    target.braking = self.state == STOPPING and self.stop_dist_m is not None
+    target.vTarget = float(self.output_v_target)
+    target.aTarget = float(self.output_a_target)
+    target.outputVtarget = float(self.output_v_target)
+    target.outputAtarget = float(self.output_a_target)
+
   def _reset(self):
     self.state = CRUISE
     self.stop_sign_count = 0

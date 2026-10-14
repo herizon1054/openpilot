@@ -10,9 +10,21 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
-from cereal import log
+from cereal import log, custom
 
 EventName = log.OnroadEvent.EventName
+TRAFFIC_STOP_IDX = int(custom.LongitudinalPlanDP.LongitudinalPlanSource.trafficStop)
+
+# --- dp 紅綠燈減速中 banner：佔用 TDX 橫幅的位置（畫面中央），顯示期間 TDX 讓位 ---
+TS_HOLD_TIME = 0.5      # 秒；braking 訊號短暫掉落時維持顯示，避免閃爍
+TS_FONT_SIZE = 48
+TS_EDGE_BAR_WIDTH = 20  # 與 _draw_edge_warnings 的 bar_width 一致
+TS_EDGE_GAP = 2         # 與 _draw_tdx_info 的 gap 一致
+TS_PADDING_Y = 15
+TS_ICON_TEXT_GAP = 10
+TS_LIGHT_RADIUS = 11
+TS_LIGHT_GAP = 5
+TS_BORDER = 3
 
 # Constants
 SET_SPEED_NA = 255
@@ -121,6 +133,10 @@ class HudRenderer(Widget):
     self.tdx_event_active: bool = False
     self.tdx_event_desc: str = ""
 
+    # --- 紅綠燈減速中 ---
+    self.ts_braking: bool = False
+    self._ts_last_braking_t: float = -1e9
+
     # --- 前車距離變數 ---
     self.lead_dist: str = "-"
     self.lead_dist_raw: float = 0.0
@@ -205,7 +221,20 @@ class HudRenderer(Widget):
       
       self._dp_indicator_show_left = False
       self._dp_indicator_show_right = False
+      self.ts_braking = False
+      self._ts_last_braking_t = -1e9
       return
+
+    # --- 紅綠燈減速中：longitudinalPlanDP.targets[trafficStop].braking 且 openpilot 正在控制縱向 ---
+    ts_braking_now = False
+    if sm.recv_frame['longitudinalPlanDP'] >= ui_state.started_frame and sm.alive['longitudinalPlanDP']:
+      targets = sm['longitudinalPlanDP'].targets
+      if len(targets) > TRAFFIC_STOP_IDX:
+        ts_braking_now = bool(targets[TRAFFIC_STOP_IDX].braking) and sm['carControl'].longActive
+    now = rl.get_time()
+    if ts_braking_now:
+      self._ts_last_braking_t = now
+    self.ts_braking = (now - self._ts_last_braking_t) < TS_HOLD_TIME
 
     # --- 讀取雷達狀態 ---
     radar_state = sm['radarState']
@@ -306,8 +335,11 @@ class HudRenderer(Widget):
     # 顯示置中的動態立體倒三角形與前車距離
     self._draw_lead_info(rect)
     
-    # 繪製 TDX 警告
-    self._draw_tdx_info(rect)
+    # 紅綠燈減速中（優先）/ TDX 警告：同一個中央位置，紅綠燈減速期間 TDX 讓位
+    if self.ts_braking:
+      self._draw_traffic_stop(rect)
+    else:
+      self._draw_tdx_info(rect)
 
     # --- 最後繪製：自帶雙閃爍頻率的方向燈與盲區邊條 ---
     # 確保圖層順序在最上方，不被裁切
@@ -443,6 +475,46 @@ class HudRenderer(Widget):
     draw_rounded_triangle_poly(bar_x, bar_y, bar_w, bar_h, base_r, 1.0, edge_color)
     # 頂部亮色中心 (縮小 0.7 倍製造立體感)
     draw_rounded_triangle_poly(bar_x, bar_y, bar_w, bar_h, base_r, 0.7, center_color)
+
+  def _draw_traffic_stop(self, rect: rl.Rectangle) -> None:
+    """畫面中央橫幅（TDX 橫幅的位置）：紅綠燈圖示 + 「紅綠燈減速中」。
+
+    - 寬度與 TDX 橫幅相同，貼齊兩側方向燈 / 盲區邊條內側
+    - 有 alert 時不畫（alert 由上方下拉，HUD 疊在 alert 之上，會蓋住 alert 文字）
+    """
+    if not self._can_draw_top_icons:
+      return
+
+    text = "紅綠燈減速中"
+    text_size = measure_text_cached(self._font_bold, text, TS_FONT_SIZE)
+    icon_w = TS_LIGHT_RADIUS * 6 + TS_LIGHT_GAP * 4
+    icon_h = TS_LIGHT_RADIUS * 2 + TS_LIGHT_GAP * 2
+    content_w = icon_w + TS_ICON_TEXT_GAP + text_size.x
+
+    bg_x = rect.x + TS_EDGE_BAR_WIDTH + TS_EDGE_GAP
+    bg_w = rect.width - (TS_EDGE_BAR_WIDTH + TS_EDGE_GAP) * 2
+    pos_y = rect.y + (rect.height - text_size.y) / 2 - 20   # 與 TDX 橫幅相同的垂直位置
+    bg_y = pos_y - TS_PADDING_Y
+    bg_h = text_size.y + TS_PADDING_Y * 2
+
+    banner = rl.Rectangle(bg_x, bg_y, bg_w, bg_h)
+    rl.draw_rectangle_rounded(banner, 0.25, 10, rl.Color(0, 0, 0, 200))
+    border_alpha = 170 + int(85 * math.sin(rl.get_time() * 6))
+    rl.draw_rectangle_rounded_lines_ex(banner, 0.25, 10, TS_BORDER, rl.Color(255, 70, 70, border_alpha))
+
+    # 內容置中；橫式紅綠燈：外框 + 紅（呼吸閃爍）/ 黃 / 綠（暗）
+    icon_x = bg_x + (bg_w - content_w) / 2
+    icon_y = bg_y + (bg_h - icon_h) / 2
+    rl.draw_rectangle_rounded(rl.Rectangle(icon_x, icon_y, icon_w, icon_h), 0.5, 6, rl.Color(30, 30, 30, 240))
+    cy = int(icon_y + icon_h / 2)
+    red_alpha = 180 + int(75 * math.sin(rl.get_time() * 6))
+    light_colors = (rl.Color(255, 60, 60, red_alpha), rl.Color(90, 75, 20, 255), rl.Color(20, 70, 35, 255))
+    for i, color in enumerate(light_colors):
+      cx = int(icon_x + TS_LIGHT_GAP + TS_LIGHT_RADIUS + i * (TS_LIGHT_RADIUS * 2 + TS_LIGHT_GAP))
+      rl.draw_circle(cx, cy, TS_LIGHT_RADIUS, color)
+
+    text_x = icon_x + icon_w + TS_ICON_TEXT_GAP
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(text_x, pos_y), TS_FONT_SIZE, 0, rl.WHITE)
 
   def _draw_tdx_info(self, rect: rl.Rectangle) -> None:
     """TDX 路況警告：單向循環跑馬燈，寬度貼齊兩側 BSM 與方向燈，字體 70"""
