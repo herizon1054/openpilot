@@ -5,7 +5,7 @@ ITEMS = [
     "section": "Longitudinal",
     "key": "dp_lon_traffic_stop",
     "type": "toggle_item",
-    "title": lambda: tr("Traffic Light / Stop Sign Stopping"),
+    "title": lambda: tr("Traffic Light / Stop Sign Stopping Beta"),
     "description": lambda: tr(
       "Uses the driving model's own predicted path to detect an upcoming red "
       "light or stop sign and brings the car to a smooth stop, without needing "

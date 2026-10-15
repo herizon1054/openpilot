@@ -1,7 +1,7 @@
 settings:
   - key: dp_toyota_auto_brake_hold
     type: text_spin_button_item
-    title: "自動煞車維持 (TSS2)"
+    title: "自動煞車維持（TSS2限油電）Beta版"
     description: "<b>限油電車型（汽油版不支援）。</b><br>適用於沒有原廠 Auto Hold 的車輛。停車且巡航未啟用時，靜止滿 2 秒後借用 PCS 煞車將車輛保持在原地。踩油門即解除；再次踩下煞車會解除並重新計時。<br>關閉：停用。<br>開啟：在 D 檔即可作動。<br>速度：進入 D 檔後車速曾超過 18 公里/時 (5 m/s) 才作動。<br>需為 TSS2 相機 ACC 車型並使用 openpilot 縱向控制，重新發動車輛後生效。"
     category: "Toyota / Lexus"
     brands: ["toyota"]

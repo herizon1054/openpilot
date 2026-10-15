@@ -598,8 +598,8 @@ msgstr ""
 
 #: dragonpilot/settings/min-feat.lon.traffic-stop.py:8
 #, python-format
-msgid "Traffic Light / Stop Sign Stopping"
-msgstr "紅綠燈／停止標誌自動停車"
+msgid "Traffic Light / Stop Sign Stopping Beta"
+msgstr "紅綠燈／停止標誌自動停車 Beta版"
 
 #: dragonpilot/settings/min-feat.lon.traffic-stop.py:22
 #, python-format
@@ -927,3 +927,7 @@ msgstr "警告：這會授予您 GitHub 設定中所有公開金鑰 SSH 存取�
 #: dragonpilot/settings
 msgid "<b>WARNING: openpilot longitudinal control is in alpha for this car and may disable Automatic Emergency Braking (AEB).</b><br><br>On this car, openpilot defaults to the car's built-in ACC instead of openpilot's longitudinal control. Enable this to switch to openpilot longitudinal control. Enabling Experimental mode is recommended when enabling openpilot longitudinal control alpha. Changing this setting will restart openpilot if the car is powered on."
 msgstr "<b>警告：此車款的 openpilot 縱向控制仍為 Alpha 版本，可能會停用自動緊急煞車（AEB）。</b><br><br>此車款的 openpilot 預設使用原廠內建的 ACC，而非 openpilot 縱向控制。啟用此選項即改由 openpilot 進行縱向控制。啟用 openpilot 縱向控制 Alpha 時，建議同時開啟實驗模式。若車輛通電，變更此設定將重新啟動 openpilot。"
+
+# dp - beta 標示
+msgid "Auto Brake Hold (TSS2, Hybrid Only) Beta"
+msgstr "自動煞車維持（TSS2限油電）Beta版"

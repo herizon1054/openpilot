@@ -1,7 +1,7 @@
 settings:
   - key: dp_lon_traffic_stop
     type: toggle_item
-    title: "紅綠燈／停止標誌自動停車"
+    title: "紅綠燈／停止標誌自動停車 Beta版"
     description: "利用駕駛模型自己預測的行駛軌跡，偵測前方紅燈或停止標誌，讓車輛自然平順地煞停，不需要額外的紅綠燈辨識模型。<br>移植自 openpilot carrot (cp) 分支。"
     category: "Longitudinal"
     flags: PERSISTENT
