@@ -1,6 +1,11 @@
 """
 Traffic light / stop sign virtual stop-line obstacle.
 
+A-to-DP port: retain B's update/write_to_msg interfaces and DP meter-based
+settings. Apply A's speed-target and MPC-obstacle release gates (default 2.16).
+The local RELEASE_BRAKE_MPS2 constant replaces A's SP-only hot Params setting.
+A's SP diagnostic logging integration is not included in this standalone port.
+
 Ported from the carrot (cp) fork's traffic-stop mechanism into openpilot-dptest.
 Pure-function layer is numerically verified against cp's official
 `selfdrive/carrot/tests/test_traffic_stop.py`; the state machine is a
@@ -48,7 +53,13 @@ import numpy as np
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+# A-port: inactive target must not win the planner's minimum selection.
+V_TARGET_SENTINEL = 1e6
+
+# A's default MPC release threshold. Kept local: no new DP Params key required.
+# Lower values release the obstacle earlier; values >= 2.16 retain default timing.
+RELEASE_BRAKE_MPS2 = 2.16
+MPC_OBSTACLE_ONLY_WHEN_MUST_BRAKE = True
 
 # ── state machine states ────────────────────────────────────────────────
 CRUISE, STOPPING, STOPPED = 0, 1, 2
@@ -199,7 +210,7 @@ class TrafficStopController:
     self.stopped_grace_frames = 0
 
     self.stop_dist_m: float | None = None
-    self.output_v_target = V_CRUISE_MAX
+    self.output_v_target = V_TARGET_SENTINEL
     self.output_a_target = 0.0
 
   def _poll_params(self):
@@ -210,6 +221,22 @@ class TrafficStopController:
       adj = self.params.get(PARAM_DISTANCE_ADJUST)
       self.distance_adjust_m = float(np.clip(adj, -5, 5))
 
+  def write_to_msg(self, target) -> None:
+    """dp: 寫入 longitudinalPlanDP.targets[trafficStop]，供 UI 繪製「紅綠燈減速中」（不走 onroadEvents）。
+
+    available / enable：功能開關
+    action ：狀態機不在 CRUISE（STOPPING 或 STOPPED）
+    braking：STOPPING 且虛擬停止線障礙物生效中（stop_dist_m 有值）= 正在為紅燈/停止標誌減速
+    """
+    target.available = bool(self.is_enabled)
+    target.enable = bool(self.is_enabled)
+    target.action = self.state != CRUISE
+    target.braking = self.state == STOPPING and self.stop_dist_m is not None
+    target.vTarget = float(self.output_v_target)
+    target.aTarget = float(self.output_a_target)
+    target.outputVtarget = float(self.output_v_target)
+    target.outputAtarget = float(self.output_a_target)
+
   def _reset(self):
     self.state = CRUISE
     self.stop_sign_count = 0
@@ -218,7 +245,7 @@ class TrafficStopController:
     self.reference_speed_kph = 0.0
     self.stopped_grace_frames = 0
     self.stop_dist_m = None
-    self.output_v_target = V_CRUISE_MAX
+    self.output_v_target = V_TARGET_SENTINEL
     self.output_a_target = 0.0
 
   def _update_stop_model_x(self, raw_x: float, v_ego: float) -> tuple[float, float]:
@@ -244,8 +271,9 @@ class TrafficStopController:
     model_x_traj = model_v2.position.x
     model_y_traj = model_v2.position.y
     model_v_traj = model_v2.velocity.x
-    if len(model_x_traj) < 2 or len(model_v_traj) == 0:
-      self.output_v_target = V_CRUISE_MAX
+    if len(model_x_traj) < 2 or len(model_v_traj) == 0 or len(model_y_traj) == 0:
+      self.stop_dist_m = None
+      self.output_v_target = V_TARGET_SENTINEL
       self.output_a_target = 0.0
       return
     model_x_end = model_x_traj[-1]
@@ -318,7 +346,7 @@ class TrafficStopController:
       self.reference_speed_kph = 0.0
       self.stopped_grace_frames = 0
       self.stop_dist_m = None
-      self.output_v_target = V_CRUISE_MAX
+      self.output_v_target = V_TARGET_SENTINEL
       self.output_a_target = 0.0
       return
 
@@ -326,7 +354,7 @@ class TrafficStopController:
 
     if traffic_state in (OFF, GREEN):
       self.actual_stop_distance = 0.0
-      self.output_v_target = V_CRUISE_MAX
+      self.output_v_target = V_TARGET_SENTINEL
       self.output_a_target = 0.0
       return  # state does NOT revert here - only via the transitions above
 
@@ -341,9 +369,19 @@ class TrafficStopController:
       self.output_v_target = 0.0
       self.output_a_target = 0.0
     else:
-      self.output_v_target = v_ego
-      self.output_a_target = -COMFORT_BRAKE_BASE * STOPPING_BRAKE_DISCOUNT
-      if stop_dist < 300.0:
-        comfort_brake = COMFORT_BRAKE_BASE * STOPPING_BRAKE_DISCOUNT
-        v_limited = (2 * comfort_brake * max(stop_dist - 1.0, 0.0)) ** 0.5
-        self.output_v_target = min(v_limited, v_ego)
+      comfort_brake = COMFORT_BRAKE_BASE * STOPPING_BRAKE_DISCOUNT
+      v_limited = ((2 * comfort_brake * max(stop_dist - 1.0, 0.0)) ** 0.5
+                   if stop_dist < 300.0 else float('inf'))
+      if v_limited < v_ego:
+        self.output_v_target = v_limited
+        self.output_a_target = -comfort_brake
+      else:
+        # No speed restriction until the comfortable stopping threshold is met.
+        self.output_v_target = V_TARGET_SENTINEL
+        self.output_a_target = 0.0
+        # Independently gate the obstacle; lowering this threshold releases it
+        # earlier without changing the speed-target candidate above.
+        v_release = ((2 * RELEASE_BRAKE_MPS2 * max(stop_dist - 1.0, 0.0)) ** 0.5
+                     if stop_dist < 300.0 else float('inf'))
+        if MPC_OBSTACLE_ONLY_WHEN_MUST_BRAKE and v_release >= v_ego:
+          self.stop_dist_m = None
