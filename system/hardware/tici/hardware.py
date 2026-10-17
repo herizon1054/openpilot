@@ -271,8 +271,8 @@ class Tici(HardwareBase):
       pass
 
   def set_screen_brightness(self, percentage):
-    # 如果硬體是 "mici"，最大亮度為 100% (1.0)，其他硬體則限制為 30% (0.3)
-    BRIGHTNESS_SCALE = 1.0 if self.get_device_type() == "mici" else 0.3 
+    # 如果硬體是 "mici"，最大亮度為 100% (1.0)，其他硬體則限制為 40% (0.4)
+    BRIGHTNESS_SCALE = 1.0 if self.get_device_type() == "mici" else 0.4 
 
     try:
       # 讀取螢幕硬體支援的最大亮度數值
@@ -290,7 +290,7 @@ class Tici(HardwareBase):
 
   def get_screen_brightness(self):
     # 必須與 set_screen_brightness 使用相同的縮放比例，以確保 UI 顯示一致
-    BRIGHTNESS_SCALE = 1.0 if self.get_device_type() == "mici" else 0.3
+    BRIGHTNESS_SCALE = 1.0 if self.get_device_type() == "mici" else 0.4
 
     try:
       # 讀取螢幕硬體支援的最大亮度數值
@@ -302,7 +302,8 @@ class Tici(HardwareBase):
         current_brightness = float(f.read())
         
         # 反向計算回百分比
-        return int(current_brightness / (max_brightness * BRIGHTNESS_SCALE / 100.))
+        # Boot-time brightness may exceed our software limit, but the reported percentage must not.
+        return max(0, min(100, int(current_brightness / (max_brightness * BRIGHTNESS_SCALE / 100.))))
     except Exception:
       return 0
 
