@@ -99,30 +99,10 @@ def fill_model_msg(base_msg: capnp._DynamicStructBuilder, extended_msg: capnp._D
   LINE_T_IDXS: list[float] = []
 
   # lane lines
-  # 添加左右獨立車道偏移參數，單位米 (設定為內縮 15cm)
-  LEFT_LANE_OFFSET = 0.15   # 左車道線偏移量，正值向右偏移（向內）
-  RIGHT_LANE_OFFSET = 0.15  # 右車道線偏移量，正值向左偏移（向內）
-  
   modelV2.init('laneLines', 4)
   for i in range(4):
     lane_line = modelV2.laneLines[i]
-    
-    # 左車道線（index 1）：正值向右偏移（向內），使車輛遠離左車道線
-    if i == 1:
-      original_y = net_output_data['lane_lines'][0,i,:,0]
-      y_data = original_y + LEFT_LANE_OFFSET
-      
-    # 右車道線（index 2）：正值向左偏移（向內），使車輛遠離右車道線
-    elif i == 2:
-      original_y = net_output_data['lane_lines'][0,i,:,0]
-      y_data = original_y - RIGHT_LANE_OFFSET
-      
-    # 其他線段維持原樣
-    else:
-      y_data = net_output_data['lane_lines'][0,i,:,0]
-      
-    fill_xyzt(lane_line, LINE_T_IDXS, np.array(ModelConstants.X_IDXS), y_data, net_output_data['lane_lines'][0,i,:,1])
-    
+    fill_xyzt(lane_line, LINE_T_IDXS, np.array(ModelConstants.X_IDXS), net_output_data['lane_lines'][0,i,:,0], net_output_data['lane_lines'][0,i,:,1])
   modelV2.laneLineStds = net_output_data['lane_lines_stds'][0,:,0,0].tolist()
   modelV2.laneLineProbs = net_output_data['lane_lines_prob'][0,1::2].tolist()
 
@@ -211,4 +191,3 @@ def fill_pose_msg(msg: capnp._DynamicStructBuilder, net_output_data: dict[str, n
   cameraOdometry.rotStd = net_output_data['pose_stds'][0,3:].tolist()
   cameraOdometry.wideFromDeviceEulerStd = net_output_data['wide_from_device_euler_stds'][0,:].tolist()
   cameraOdometry.roadTransformTransStd = net_output_data['road_transform_stds'][0,:3].tolist()
-
