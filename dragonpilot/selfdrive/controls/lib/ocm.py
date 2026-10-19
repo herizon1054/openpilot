@@ -58,10 +58,12 @@ PITCH_SMOOTH_ALPHA_UP = 0.30
 PITCH_SMOOTH_ALPHA_DOWN = 0.15
 PITCH_DOWNHILL_THRESHOLD = -0.030      # 判定為下坡的閾值 (-3% 坡度)：下坡滑行會越滑越快，不啟動
 
-# 滑行加速度微調 (m/s²)：疊加在 planner 的 get_coast_accel(pitch) 上。
-# get_coast_accel 平路約 −0.3，是 openpilot 對「放開油門」的估計；各車實際值不同
-# （油電車回充、輪胎、風阻）。若實車觀察到 OCM 中仍有輕踩煞車 → 調負（例如 −0.1）；
-# 仍有補油 → 調正（例如 +0.1）。0.0 = 不修正。
+# 滑行加速度微調 (m/s²)：疊加在 planner 的 get_coast_accel(pitch, v_ego) 上。
+# get_coast_accel 已改為依車速查表的自然滑行減速度（見 longitudinal_planner.py 的
+# DP_COAST_BASE，依 Corolla TSS2 rlog 校正）。指令比自然滑行更負時 Toyota PCM 會動用煞車
+# （前輪附近有聲音、PCM_CRUISE.ACC_BRAKING=1）。
+# 若 OCM 中仍聽到煞車聲 / ACC_BRAKING=1 → 調正（例如 +0.05，減速度變小）；
+# 若感覺仍有補油、減速太慢 → 調負（例如 −0.05）。0.0 = 不修正。
 COAST_ACCEL_OFFSET = 0.0
 
 
@@ -226,6 +228,6 @@ class OCM:
 
   @staticmethod
   def get_coast_target(accel_coast: float) -> float:
-    """滑行時的加速度目標：planner 的 get_coast_accel(pitch) + 實車微調。
+    """滑行時的加速度目標：planner 的 get_coast_accel(pitch, v_ego)（自然滑行查表）+ 實車微調。
     只會 <= 0：上坡時 get_coast_accel 本身更負（自然減速更快），不會變成要求加速。"""
     return min(accel_coast + COAST_ACCEL_OFFSET, 0.0)
