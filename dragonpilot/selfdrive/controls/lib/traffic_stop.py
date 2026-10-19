@@ -117,6 +117,9 @@ STOP_SIGN_LATERAL_TOLERANCE_M = 5.0
 # this constant is the fixed physical correction (not user-editable), and
 # dp_lon_traffic_stop_distance_adjust_m (settings ITEMS, +/-5m, default 0) is
 # the small user preference layered on top via get_traffic_stop_obstacle_distance().
+# dp 符號約定（與設定說明一致）：使用者值「正 = 停更後面、負 = 停更前面」。
+# 障礙物距離越大車停得越前面，所以使用者值是「減」進障礙物距離（見 update() 內呼叫處）。
+# ⚠️ 刻意分歧：cp 原版是直接加上去（正值 = 停更前面）。
 CAMERA_TO_FRONT_M = -1.5
 
 PARAM_ENABLED = "dp_lon_traffic_stop"
@@ -377,7 +380,8 @@ class TrafficStopController:
 
     contribution = 0.0 if self.actual_stop_distance > 0.0 else self.stop_model_x_rl
     stop_dist = max(0.0, contribution + self.actual_stop_distance)
-    stop_dist = get_traffic_stop_obstacle_distance(stop_dist, CAMERA_TO_FRONT_M + self.distance_adjust_m)
+    # 使用者微調取負號：正值 -> 障礙物拉近 -> 停更後面（符合設定說明）
+    stop_dist = get_traffic_stop_obstacle_distance(stop_dist, CAMERA_TO_FRONT_M - self.distance_adjust_m)
     self.stop_dist_m = stop_dist
     self.near_stop_dist_m = stop_dist
 

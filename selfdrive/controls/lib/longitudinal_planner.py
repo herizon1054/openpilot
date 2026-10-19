@@ -11,11 +11,13 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import CRUISE_MIN_ACCEL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
 from dragonpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerDP
+from dragonpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as DPPlanSource
 from dragonpilot.selfdrive.controls.lib.ocm import OCM
 from dragonpilot.selfdrive.controls.lib.aem import AEM
 from dragonpilot.selfdrive.controls.lib.apm import APM
@@ -204,10 +206,14 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       accel_clip = dp_accel_clip
     elif mode == 'acc':
       accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
-      steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
-      accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
     else:
       accel_clip = [ACCEL_MIN, ACCEL_MAX]
+    # dp(H3a 修正): 彎道加速度限制改為「acc 模式一律套用」。原本寫在 elif 裡，
+    # 開啟動態加速度個性（dp_accel_clip 有值）時整段被跳過，例如 AEM 在低速路口轉彎
+    # 切到 acc 時，原廠允許 0 m/s²、dp 卻允許約 1.5 m/s²。順序：先取 dp 上限，再取彎道限制。
+    if mode == 'acc':
+      steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
+      accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
     if reset_state:
       self.v_desired_filter.x = v_ego
@@ -246,6 +252,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       clipped_accel_coast = max(accel_coast, accel_clip[0])
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
+
+    # dp(OCM v2): 上一幀仍在滑行 -> MPC 的加速度上限壓到滑行加速度（不給油），
+    # 與上面 allow_throttle=False 同一個機制，讓 MPC 計畫與最終輸出一致。
+    # OCM 狀態在下方輸出段才更新（需要本幀 MPC 的控制來源），這裡用上一幀的狀態，落後 1 幀。
+    if (dp_flags & DPFlags.OCM) and self.ocm.active and len(sm['carControl'].orientationNED) == 3:
+      accel_clip[1] = min(accel_clip[1], max(OCM.get_coast_target(accel_coast), accel_clip[0]))
 
     personality = sm['selfdriveState'].personality
     if dp_flags & DPFlags.APM:
@@ -287,6 +299,12 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     v_cruise_target, a_target_from_dp = LongitudinalPlannerDP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
     a_cruise_min_override = LongitudinalPlannerDP.get_cruise_min_accel(self, v_ego)
+    # dp(H3b 修正): 動態加速度個性的巡航最小加速度只用在「一般定速」的舒適降速。
+    # 強制減速（駕駛監控第三級、softDisabling）或 DTSC／紅綠燈主導 v 目標時，
+    # 至少給原廠 CRUISE_MIN_ACCEL（−1.2），避免降速被壓到 −0.07~−0.13 m/s²
+    # （模擬：100 km/h 降到一半由 11 s 拖到 22 s）。
+    if a_cruise_min_override is not None and (force_slow_decel or self.source != DPPlanSource.cruise):
+      a_cruise_min_override = min(a_cruise_min_override, CRUISE_MIN_ACCEL)
 
     if force_slow_decel:
       v_cruise_target = 0.0
@@ -301,12 +319,9 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
-    
-    if dp_flags & DPFlags.OCM:
-      user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
-      self.ocm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, dtsc_active=is_dtsc_active)
-      self.a_desired_trajectory = self.ocm.update_a_desired_trajectory(self.a_desired_trajectory)
-    
+    # dp(OCM v2): 不再修改 a_desired_trajectory（v1 只改 a 不改 v，會讓 get_accel_from_plan 的煞車加倍），
+    # 改在下方輸出段直接處理最終加速度目標。
+
     self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
 
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill
@@ -361,6 +376,21 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
           self.mpc.source = log.LongitudinalPlan.LongitudinalPlanSource.e2e
         except ImportError:
           pass
+
+    # dp(OCM v2): 超車後滑行回設定速度。條件與解除見 ocm.py；只在控制來源仍是 cruise 時作用，
+    # 前車／紅綠燈／e2e 一旦主導（self.mpc.source 已含上面的 e2e 覆寫）當幀解除。
+    # 作用中：輸出 = 自然滑行加速度（不給油、也不因超過設定速度而煞車）。
+    self.ocm.enabled = bool(dp_flags & DPFlags.OCM)
+    if self.ocm.enabled:
+      user_control = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
+      self.ocm.update_states(sm['carControl'], sm['radarState'], user_control, v_ego, v_cruise, dtsc_active=is_dtsc_active,
+                             plan_source=self.mpc.source, a_target=float(output_a_target),
+                             a_plan_min=float(np.min(self.a_desired_trajectory)))
+      if self.ocm.active:
+        output_a_target = OCM.get_coast_target(accel_coast)
+        self.output_should_stop = False
+    else:
+      self.ocm.active = False
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
