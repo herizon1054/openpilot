@@ -190,3 +190,19 @@ def test_obstacle_latched_after_must_brake():
     step(ctrl, 25.0, 10 / 3.6)
   assert ctrl.state == ts.STOPPING
   assert ctrl.stop_dist_m is not None
+
+
+def test_user_distance_adjust_sign_matches_settings_description():
+  # 設定說明：正值 = 停更後面（障礙物更近），負值 = 停更前面（障礙物更遠）
+  ts, step = _gate_setup()
+  dists = {}
+  for adj in (-2.0, 0.0, 2.0):
+    ctrl = ts.TrafficStopController()
+    ctrl.is_enabled = True
+    ctrl.distance_adjust_m = adj
+    ctrl._poll_frame = -10_000   # 測試期間不重新讀 Params 覆蓋 distance_adjust_m
+    for _ in range(20):
+      step(ctrl, 60.0, 30 / 3.6)
+    dists[adj] = ctrl.near_stop_dist_m
+  assert dists[2.0] == pytest.approx(dists[0.0] - 2.0, abs=1e-3)
+  assert dists[-2.0] == pytest.approx(dists[0.0] + 2.0, abs=1e-3)

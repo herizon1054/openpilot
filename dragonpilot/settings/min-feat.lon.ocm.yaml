@@ -1,8 +1,8 @@
 settings:
-  - key: dp_lon_acm
+  - key: dp_lon_ocm
     type: toggle_item
     title: "超車滑行模式 (OCM)"
-    description: "超車後，如果車速超過巡航速度 20 公里/小時，將平穩滑行至設定速度，不使用煞車。"
+    description: "踩油門超過設定速度後（超出 2~30 公里/小時、車速 50 公里/小時以上），放開油門時不給油也不煞車，自然滑行回設定速度。遇到前車、紅綠燈、彎道或下坡時立即解除。"
     category: "Longitudinal"
    #condition: "openpilotLongitudinalControl"
     flags: PERSISTENT
