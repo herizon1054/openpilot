@@ -288,8 +288,12 @@ class LongitudinalMpc:
     v_ego = self.x0[1]
     
     t_follow = get_T_FOLLOW(personality)
-    self.set_weights(personality=personality)
-    
+    # dp(H2 修正): 移除原本這裡的 self.set_weights(personality=personality)。
+    # 它用預設 prev_accel_constraint=True 覆蓋 planner 已設定的權重，讓靜止起步／重新接合時
+    # A_CHANGE_COST 無法歸零（原廠 update() 不呼叫 set_weights）。planner 呼叫
+    # set_weights(prev_accel_constraint, personality) 時已傳入 APM 調整後的 personality，
+    # jerk_factor 一樣會生效。
+
     a_cruise_min = a_cruise_min_override if a_cruise_min_override is not None else CRUISE_MIN_ACCEL
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 

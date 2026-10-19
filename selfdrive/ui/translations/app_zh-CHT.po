@@ -1281,8 +1281,8 @@ msgstr "觸發人工轉彎檢測的方向盤角度（度）。"
 msgid "Overtaking Coasting Mode (OCM)"
 msgstr "超車滑行模式 (OCM)"
 
-msgid "Smoothly coast down to your set speed without engine braking when you exceed the cruise speed by 20 km/h after overtaking."
-msgstr "超車後，如果車速超過巡航速度 20 公里/小時，將平穩滑行至設定速度，不使用煞車。"
+msgid "After you accelerate above your set speed with the gas pedal (2-30 km/h over, at 50 km/h or faster), coast back down to the set speed with no throttle and no brake. Cancels immediately when a lead car, traffic light, curve or downhill takes over."
+msgstr "踩油門超過設定速度後（超出 2~30 公里/小時、車速 50 公里/小時以上），放開油門時不給油也不煞車，自然滑行回設定速度。遇到前車、紅綠燈、彎道或下坡時立即解除。"
 
 msgid "Dynamic Accel Personality"
 msgstr "動態加速度模式開關"
