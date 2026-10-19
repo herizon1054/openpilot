@@ -302,7 +302,8 @@ class Tici(HardwareBase):
         current_brightness = float(f.read())
         
         # 反向計算回百分比
-        return int(current_brightness / (max_brightness * BRIGHTNESS_SCALE / 100.))
+        # Boot-time brightness may exceed our software limit, but the reported percentage must not.
+        return max(0, min(100, int(current_brightness / (max_brightness * BRIGHTNESS_SCALE / 100.))))
     except Exception:
       return 0
 

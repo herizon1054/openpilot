@@ -121,7 +121,7 @@ procs = [
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
-  PythonProcess("hardwared", "system.hardware.hardwared", always_run),
+  PythonProcess("hardwared", "system.hardware.hardwared", always_run, restart_if_crash=True),
   PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI and not LITE),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),

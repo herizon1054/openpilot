@@ -34,6 +34,7 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
+STARTUP_OFFROAD_TIME = 3.0
 
 LITE = os.getenv("LITE")
 
@@ -164,6 +165,9 @@ def hardware_thread(end_event, hw_queue) -> None:
   }
   startup_conditions: dict[str, bool] = {}
   startup_conditions_prev: dict[str, bool] = {}
+  startup_diagnostic_prev: dict[str, bool] = {}
+  startup_diagnostic_ts = 0.
+  initial_offroad_ts: float | None = None
 
   off_ts: float | None = None
   started_ts: float | None = None
@@ -306,6 +310,9 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # ensure device is fully booted
     startup_conditions["device_booted"] = startup_conditions.get("device_booted", False) or HARDWARE.booted()
+    startup_conditions["initial_offroad_complete"] = (
+      initial_offroad_ts is not None and time.monotonic() - initial_offroad_ts >= STARTUP_OFFROAD_TIME
+    )
 
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
@@ -328,6 +335,27 @@ def hardware_thread(end_event, hw_queue) -> None:
     should_start = not dp_dev_go_off_road and all(onroad_conditions.values())
     if started_ts is None:
       should_start = should_start and all(startup_conditions.values())
+
+    if not should_start:
+      diagnostic = {
+        **startup_conditions,
+        **onroad_conditions,
+        "not_forced_offroad": not dp_dev_go_off_road,
+        "panda_alive": bool(sm.alive["pandaStates"]),
+        "panda_valid": bool(sm.valid["pandaStates"]),
+        "panda_connected": len(pandaStates) > 0,
+      }
+      now = time.monotonic()
+      if diagnostic != startup_diagnostic_prev or now - startup_diagnostic_ts >= 30.:
+        cloudlog.event("Startup waiting", conditions=diagnostic,
+                      blockers=[name for name, passed in diagnostic.items() if not passed],
+                      ignition_line=any(ps.ignitionLine for ps in pandaStates),
+                      ignition_can=any(ps.ignitionCan for ps in pandaStates),
+                      harness_connected=in_car, error=False)
+        startup_diagnostic_prev = diagnostic
+        startup_diagnostic_ts = now
+    else:
+      startup_diagnostic_prev = {}
 
     if should_start != should_start_prev or (count == 0):
       params.put_bool("IsEngaged", False, block=True)
@@ -397,6 +425,8 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     msg.deviceState.thermalStatus = thermal_status
     pm.send("deviceState", msg)
+    if initial_offroad_ts is None:
+      initial_offroad_ts = time.monotonic()
 
     # Log to statsd
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
@@ -471,13 +501,13 @@ def main():
   try:
     while True:
       time.sleep(1)
-      if not all(t.is_alive() for t in threads):
-        break
+      stopped = [t.name for t in threads if not t.is_alive()]
+      if stopped:
+        raise RuntimeError(f"hardwared threads stopped unexpectedly: {', '.join(stopped)}")
   finally:
     end_event.set()
-
-  for t in threads:
-    t.join()
+    for t in threads:
+      t.join()
 
 
 if __name__ == "__main__":
