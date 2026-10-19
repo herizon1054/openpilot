@@ -101,6 +101,7 @@ def _cache_is_fresh():
     age = time.time() - os.path.getmtime(CACHE_SHAPES_PATH)  # noqa: TID251 與檔案 mtime 比較，需用牆鐘
   except OSError:
     return False
+  # age < 0（系統時間比檔案時間還早）視為過期，重新下載
   return 0 <= age < SHAPES_MAX_AGE_S
 
 

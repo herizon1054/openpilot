@@ -180,7 +180,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       # ⚠️ AEM 啟用時，get_mode() 預設忽略這裡傳入的 mode（即實驗模式開關），屬刻意分歧，
       # 見 aem.py 檔頭與 AEM_EXPERIMENTAL_OFF_FORCES_ACC。
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
-                              stop_dist_m=self.traffic_stop.stop_dist_m)
+                              stop_dist_m=self.traffic_stop.near_stop_dist_m)  # 不受障礙物閘門影響的停止線距離
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:

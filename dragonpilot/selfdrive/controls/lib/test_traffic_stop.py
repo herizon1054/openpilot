@@ -141,4 +141,52 @@ def test_lead_cancel_margin_boundary():
   ctrl_out = stopping_ctrl(20.0)
   ctrl_out.update(model_v2(model_x, model_y, model_v), car_state(), radar_state(20.0 + 6.0), 5.0, -0.5, 15.0)
   assert ctrl_out.state == ts.STOPPING
-  assert ctrl_out.stop_dist_m is not None
+  # 18 km/h、距線約 18 m 尚未到必須煞車點：MPC 障礙物被閘門擋下，但 AEM 用的停止線距離仍在
+  assert ctrl_out.near_stop_dist_m is not None
+
+
+# --- MPC 障礙物閘門 + 鎖存（dp0111pre 整合修正，cp 原版沒有這個閘門）---
+def _gate_setup():
+  ts = pytest.importorskip(
+    "dragonpilot.selfdrive.controls.lib.traffic_stop",
+    reason="requires the compiled Params extension")
+  import types
+
+  def step(ctrl, d, v):
+    xs = [d * i / 32 for i in range(33)]
+    vs = [v] + [max(v * (1 - i / 32), 0.3) for i in range(1, 33)]
+    ctrl.update(types.SimpleNamespace(position=types.SimpleNamespace(x=xs, y=[0.0] * 33),
+                                      velocity=types.SimpleNamespace(x=vs)),
+                types.SimpleNamespace(steeringAngleDeg=0.0, gasPressed=False, leftBlinker=False),
+                types.SimpleNamespace(leadOne=types.SimpleNamespace(status=False, dRel=0.0)),
+                v, 0.0, 30.0)
+  return ts, step
+
+
+def test_obstacle_gated_until_must_brake():
+  ts, step = _gate_setup()
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  # 30 km/h、距線 60 m：還不需要煞車 -> 不給 MPC 障礙物，但 AEM 距離存在
+  for _ in range(20):
+    step(ctrl, 60.0, 30 / 3.6)
+  assert ctrl.state == ts.STOPPING
+  assert ctrl.stop_dist_m is None
+  assert ctrl.near_stop_dist_m is not None
+
+
+def test_obstacle_latched_after_must_brake():
+  ts, step = _gate_setup()
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  for _ in range(20):
+    step(ctrl, 60.0, 50 / 3.6)
+  # 50 km/h 接近到 30 m：已達必須煞車點 -> 障礙物啟用
+  for _ in range(20):
+    step(ctrl, 30.0, 50 / 3.6)
+  assert ctrl.stop_dist_m is not None
+  # 開始煞車後車速大降（低於 v_release），障礙物仍須保持，不可被放掉
+  for _ in range(5):
+    step(ctrl, 25.0, 10 / 3.6)
+  assert ctrl.state == ts.STOPPING
+  assert ctrl.stop_dist_m is not None

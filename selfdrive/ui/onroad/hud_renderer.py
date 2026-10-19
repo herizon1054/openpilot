@@ -101,7 +101,7 @@ class HudRenderer(Widget):
     self.lead_dist: str = "-"
     self.lead_dist_raw: float = 0.0
 
-    # dp: 右下角資訊列 - 方向盤角度（取代原本的駕駛/自動控制狀態文字）
+    # dp: 右下角資訊列 - 方向盤角度（取代原本的駕駛/自動控制狀態文字，與 dplcc 相同）
     self.steering_angle_deg: float = 0.0
 
     # --- 紅綠燈減速中 ---
