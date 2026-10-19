@@ -107,8 +107,25 @@ class DPFlags:
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
-def get_coast_accel(pitch):
-  return np.sin(pitch) * -5.65 - 0.3  
+# dp: 自然滑行減速度（平路基準值，m/s²），依車速查表，取代原廠固定的 −0.3。
+# ⚠️ 刻意分歧（原廠為 np.sin(pitch) * -5.65 - 0.3）。
+# 原因：滑行指令比車子自然滑行的減速度更負時，Toyota PCM 會動用 ACC 煞車補差額
+# （煞車致動器作動，前輪附近有聲音）。rlog 實測 TOYOTA_COROLLA_TSS2（汽油，dptest fd2eb666f0，
+# 02~05 段）：
+#   - 駕駛放開油門自然滑行（未接管、未踩煞車）：20~35 km/h 約 −0.15~−0.20、45 km/h 約 −0.28，
+#     期間 PCM_CRUISE.ACC_BRAKING 全程 0%。
+#   - 接管中 allowThrottle=False（目標約 −0.33）：PCM 指令 −0.34、ACC_BRAKING 92%、aEgo −0.29，
+#     比自然滑行多減速約 0.1~0.15，即煞車補上的部分。
+# 表值 = 實測中位數扣除 log 平均俯仰角（0.0065 rad）的坡度項，再往 0 方向留約 0.02 餘裕
+# （寧可 PCM 補一點點油，也不要動用煞車）。45 km/h 以上 log 中沒有資料，依風阻 v² 外推且刻意
+# 保守（偏向 0），需用 OCM 路測 log 校正：看 OCM 作動時 PCM_CRUISE.ACC_BRAKING 是否為 0。
+DP_COAST_BP_KPH = [0.,    20.,   30.,   35.,   45.,   60.,   80.,   100.,  120.]
+DP_COAST_BASE   = [-0.10, -0.11, -0.11, -0.14, -0.22, -0.24, -0.27, -0.30, -0.33]
+
+def get_coast_accel(pitch, v_ego=None):
+  if v_ego is None:
+    return np.sin(pitch) * -5.65 - 0.3   # 原廠公式（保留給未傳車速的呼叫端）
+  return np.sin(pitch) * -5.65 + float(np.interp(v_ego * CV.MS_TO_KPH, DP_COAST_BP_KPH, DP_COAST_BASE))
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
@@ -186,7 +203,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
-      accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
+      accel_coast = get_coast_accel(sm['carControl'].orientationNED[1], sm['carState'].vEgo)
     else:
       accel_coast = ACCEL_MAX
 
