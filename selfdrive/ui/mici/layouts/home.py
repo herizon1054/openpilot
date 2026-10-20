@@ -8,6 +8,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.layouts import HBoxLayout
 from openpilot.system.ui.widgets.icon_widget import IconWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel, gui_label
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.version import RELEASE_BRANCHES
@@ -156,7 +157,16 @@ class MiciHomeLayout(Widget):
       self._mic_icon,
     ], spacing=18)
 
-    self._openpilot_label = UnifiedLabel("dragonpilot", font_size=96, font_weight=FontWeight.DISPLAY, max_width=480, wrap_text=False)
+    # dp: 「dragonpilot」比原廠「openpilot」多兩個字母，固定 96 字級 + 480 px 寬會被截成「dragonpi…」。
+    # 改為以整個螢幕寬度為上限，實際量測標題寬度，放不下就逐步縮小字級，完整顯示標題。
+    title_text = "dragonpilot"
+    title_max_w = int(gui_app.width - HOME_PADDING * 2)
+    title_font = gui_app.font(FontWeight.DISPLAY)
+    title_size = 96
+    while title_size > 48 and measure_text_cached(title_font, title_text, title_size).x > title_max_w:
+      title_size -= 2
+    self._openpilot_label = UnifiedLabel(title_text, font_size=title_size, font_weight=FontWeight.DISPLAY,
+                                         max_width=title_max_w, wrap_text=False)
     self._version_label = UnifiedLabel("", font_size=36, font_weight=FontWeight.ROMAN, max_width=480, wrap_text=False)
     self._large_version_label = UnifiedLabel("", font_size=64, text_color=rl.GRAY, font_weight=FontWeight.ROMAN, max_width=480, wrap_text=False)
     self._date_label = UnifiedLabel("", font_size=36, text_color=rl.GRAY, font_weight=FontWeight.ROMAN, max_width=480, wrap_text=False)
