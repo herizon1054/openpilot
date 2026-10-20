@@ -65,7 +65,7 @@ V_TARGET_SENTINEL = 1e6
 
 # A's default MPC release threshold. Kept local: no new DP Params key required.
 # Lower values release the obstacle earlier; values >= 2.16 retain default timing.
-RELEASE_BRAKE_MPS2 = 1.8
+RELEASE_BRAKE_MPS2 = 1.6
 MPC_OBSTACLE_ONLY_WHEN_MUST_BRAKE = True
 
 # ── state machine states ────────────────────────────────────────────────
