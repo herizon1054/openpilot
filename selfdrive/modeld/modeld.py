@@ -164,17 +164,22 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                 ModelConstants.T_IDXS,
                                                 v_ego,
                                                 lat_action_t)
+    # dp(M6): 固定曲率偏移（dp_lat_offset_cm），上一幀曲率先扣掉偏移再參與平滑／沿用，避免重複累加
+    curvature_offset = 2.0 * (dp_lat_offset_cm / 100.0) / 900.0 if dp_lat_offset_cm != 0 else 0.0
+    prev_curvature_base = prev_action.desiredCurvature - curvature_offset
     if v_ego > MIN_LAT_CONTROL_SPEED:
       desired_curvature = dp_apply_curve_gain(desired_curvature, v_ego)  # dp: 彎道曲率增益（見檔頭說明）
-      desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, LAT_SMOOTH_SECONDS)
+      desired_curvature = smooth_value(desired_curvature, prev_curvature_base, LAT_SMOOTH_SECONDS)
     else:
-      desired_curvature = prev_action.desiredCurvature
+      desired_curvature = prev_curvature_base
 
     # Apply lateral offset (driving style adjustment)
-    if dp_lat_offset_cm != 0:
-        lat_offset_m = dp_lat_offset_cm / 100.0
-        curvature_offset = 2.0 * lat_offset_m / 900.0
-        desired_curvature += curvature_offset
+    # dp(M6 修正): 偏移量只加一次。prev_action.desiredCurvature 已含上一幀的偏移，原本在
+    # 車速 <= MIN_LAT_CONTROL_SPEED 時直接沿用它再 += 偏移，每幀（20 Hz）累加一次：10 cm 時
+    # 等 60 秒紅燈累積到約 0.27 1/m。LAT_SMOOTH_SECONDS > 0 時平滑濾波也會把偏移放大成 offset/alpha。
+    # 改為：上面先用「扣掉偏移後的上一幀曲率」平滑／沿用，這裡再加一次偏移。
+    # dp_lat_offset_cm 只在 modeld 啟動時讀一次，整趟固定，所以扣回的值與上一幀加上的值相同。
+    desired_curvature += curvature_offset
 
     return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature),
                                   desiredAcceleration=float(desired_accel),

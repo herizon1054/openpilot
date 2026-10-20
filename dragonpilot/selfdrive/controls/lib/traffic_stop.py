@@ -374,6 +374,20 @@ class TrafficStopController:
       self.actual_stop_distance = 0.0
       self.output_v_target = V_TARGET_SENTINEL
       self.output_a_target = 0.0
+      # dp(M5 修正): 模型這一幀沒判成紅燈時，障礙物「保留」但以車速航位推算往前扣距離，
+      # 讓虛擬停止線固定在地面上。原本直接 return 會把「相對本車距離」凍結在上一幀，
+      # 停止線等於跟著車子一起往前跑；模型恢復紅燈時距離又瞬間跳回真值，MPC 被迫急煞。
+      # 刻意不拿掉障礙物：這幾幀 v_target 已是 sentinel，障礙物是唯一約束，拿掉 MPC 會往前衝。
+      # STOPPED 時車速約 0，距離不變，「停妥 + 綠燈 + 左轉燈」仍會把車留在原地（原有行為）。
+      if self.near_stop_dist_m is not None:
+        self.near_stop_dist_m = max(0.0, self.near_stop_dist_m - v_ego * DT_MDL)
+        if self.state == STOPPING and not self._obstacle_latched:
+          # 閘門照常判斷：推算期間若已到必須煞車點，一樣鎖存並交出障礙物
+          v_release = (2 * RELEASE_BRAKE_MPS2 * max(self.near_stop_dist_m - 1.0, 0.0)) ** 0.5
+          if v_release < v_ego:
+            self._obstacle_latched = True
+        if self.state == STOPPED or self._obstacle_latched or not MPC_OBSTACLE_ONLY_WHEN_MUST_BRAKE:
+          self.stop_dist_m = self.near_stop_dist_m
       return  # state does NOT revert here - only via the transitions above
 
     self.stop_model_x_rl = self.stop_model_x_raw  # actively stopping: force sync every frame
