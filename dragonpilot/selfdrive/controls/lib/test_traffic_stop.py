@@ -238,3 +238,58 @@ def test_obstacle_dead_reckons_when_model_flickers_off():
   assert ctrl.stop_dist_m is not None                                   # 沒被拿掉
   assert ctrl.stop_dist_m == pytest.approx(before - 4 * v * ts.DT_MDL, abs=1e-3)  # 有往前扣
   assert ctrl.near_stop_dist_m == pytest.approx(ctrl.stop_dist_m, abs=1e-6)
+
+
+# --- 坡頂防護（dp 刻意分歧，cp 沒有）---
+def _crest_step(ts, ctrl, d, v, rise_m):
+  import types
+  xs = [d * i / 32 for i in range(33)]
+  zs = [rise_m * i / 32 for i in range(33)]  # 前方路面升高 rise_m
+  vs = [v] + [max(v * (1 - i / 32), 0.3) for i in range(1, 33)]
+  ctrl.update(types.SimpleNamespace(position=types.SimpleNamespace(x=xs, y=[0.0] * 33, z=zs),
+                                    velocity=types.SimpleNamespace(x=vs)),
+              types.SimpleNamespace(steeringAngleDeg=0.0, gasPressed=False, leftBlinker=False),
+              types.SimpleNamespace(leadOne=types.SimpleNamespace(status=False, dRel=0.0)),
+              v, 0.0, 30.0)
+
+
+def test_crest_guard_blocks_fast_uphill():
+  ts = pytest.importorskip("dragonpilot.selfdrive.controls.lib.traffic_stop",
+                           reason="requires the compiled Params extension")
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  ctrl._poll_frame = -10_000
+  # 55 km/h、前方 100 m 升高 3 m（3%）：模型看似要停，但上坡且車速 > 30 km/h -> 不進入
+  for _ in range(40):
+    _crest_step(ts, ctrl, 100.0, 55 / 3.6, 3.0)
+  assert ctrl.state == ts.CRUISE
+  # 到坡頂坡度歸 0，CREST_HOLD_S 內仍不進入
+  for _ in range(ts.CREST_HOLD_FRAMES - 5):
+    _crest_step(ts, ctrl, 60.0, 50 / 3.6, 0.0)
+  assert ctrl.state == ts.CRUISE
+
+
+def test_crest_guard_slow_uphill_needs_confirm():
+  ts = pytest.importorskip("dragonpilot.selfdrive.controls.lib.traffic_stop",
+                           reason="requires the compiled Params extension")
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  ctrl._poll_frame = -10_000
+  # 20 km/h 上坡：需紅燈連續判定 UPHILL_CONFIRM_FRAMES 才進入
+  for _ in range(ts.UPHILL_CONFIRM_FRAMES - 1):
+    _crest_step(ts, ctrl, 40.0, 20 / 3.6, 1.5)
+  assert ctrl.state == ts.CRUISE
+  for _ in range(2):
+    _crest_step(ts, ctrl, 40.0, 20 / 3.6, 1.5)
+  assert ctrl.state == ts.STOPPING
+
+
+def test_flat_road_enters_immediately():
+  ts = pytest.importorskip("dragonpilot.selfdrive.controls.lib.traffic_stop",
+                           reason="requires the compiled Params extension")
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  ctrl._poll_frame = -10_000
+  # 平路維持 cp 原本行為：紅燈第一幀即進入
+  _crest_step(ts, ctrl, 60.0, 40 / 3.6, 0.0)
+  assert ctrl.state == ts.STOPPING
