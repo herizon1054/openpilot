@@ -55,7 +55,7 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected, right_edge_detected):
+  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected, right_edge_detected, lane_line_probs=None):
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = True if self.dp_lat_lca_speed == 0. else v_ego < self.dp_lat_lca_speed
@@ -67,7 +67,10 @@ class DesireHelper:
         blindspot_right=(carstate.rightBlindspot or right_edge_detected),
         left_blinker=carstate.leftBlinker,
         right_blinker=carstate.rightBlinker,
-        v_ego=v_ego
+        v_ego=v_ego,
+        # dp(L3): 只傳本車道左右線 [1]/[2]，LTD 用來判斷是否已進入路口（車道線變弱）
+        lane_line_probs=([lane_line_probs[1], lane_line_probs[2]]
+                         if lane_line_probs is not None and len(lane_line_probs) >= 3 else None)
     )
     lane_turn_desire = self.lane_turn_controller.get_turn_desire()
 

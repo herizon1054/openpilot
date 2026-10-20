@@ -317,10 +317,13 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     v_cruise_target, a_target_from_dp = LongitudinalPlannerDP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
     a_cruise_min_override = LongitudinalPlannerDP.get_cruise_min_accel(self, v_ego)
     # dp(H3b 修正): 動態加速度個性的巡航最小加速度只用在「一般定速」的舒適降速。
-    # 強制減速（駕駛監控第三級、softDisabling）或 DTSC／紅綠燈主導 v 目標時，
+    # 強制減速（駕駛監控第三級、softDisabling）或紅綠燈主導 v 目標時，
     # 至少給原廠 CRUISE_MIN_ACCEL（−1.2），避免降速被壓到 −0.07~−0.13 m/s²
     # （模擬：100 km/h 降到一半由 11 s 拖到 22 s）。
-    if a_cruise_min_override is not None and (force_slow_decel or self.source != DPPlanSource.cruise):
+    # v9：刻意排除 DTSC。rlog 重播（dptest fd2eb666f0 03 段 t=183.8~184.4、219~221.6）顯示 DTSC 主導時
+    # v 目標比車速低 4~8.6 km/h，但 DTSC 以 a_max 陣列 + 低通（0.08）讓減速由 −0.23 漸進到 −0.55/−1.27；
+    # 若此時巡航下限放寬到 −1.2，MPC 會直接以較大減速追 v 目標，蓋過 DTSC 的漸進設計，入彎煞車變突兀。
+    if a_cruise_min_override is not None and (force_slow_decel or self.source == DPPlanSource.trafficStop):
       a_cruise_min_override = min(a_cruise_min_override, CRUISE_MIN_ACCEL)
 
     if force_slow_decel:
