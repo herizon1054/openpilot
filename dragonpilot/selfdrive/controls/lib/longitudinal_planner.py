@@ -58,7 +58,11 @@ class LongitudinalPlannerDP:
 
     # 紅綠燈/停止標誌虛擬停止線：內部自行輪詢 Params 開關，關閉時 output_v_target
     # 維持 V_CRUISE_MAX，min() 選擇時自然不會勝出，故不需要額外的 dp_flags 閘門
-    self.traffic_stop.update(sm['modelV2'], CS, sm['radarState'], v_ego, a_ego, v_cruise)
+    # dp(L2 修正): 紅綠燈模組改用實際車速 CS.vEgo。原本傳入的 v_ego 是呼叫端的
+    # self.v_desired_filter.x（MPC 規劃積分出來的計畫車速），用在 STOPPED 判定（< 0.3 m/s）、
+    # 停止線航位推算與「必須煞車」閘門，實車落後或超前計畫時會有偏差。
+    # a_ego 仍沿用計畫加速度（只用於 check_model_stopping 的「已在減速」判斷，維持原行為）。
+    self.traffic_stop.update(sm['modelV2'], CS, sm['radarState'], CS.vEgo, a_ego, v_cruise)
 
     # 控制參考來源
     # output_v_target = 目標巡航速度
