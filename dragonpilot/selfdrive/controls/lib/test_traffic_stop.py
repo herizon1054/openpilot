@@ -206,3 +206,35 @@ def test_user_distance_adjust_sign_matches_settings_description():
     dists[adj] = ctrl.near_stop_dist_m
   assert dists[2.0] == pytest.approx(dists[0.0] - 2.0, abs=1e-3)
   assert dists[-2.0] == pytest.approx(dists[0.0] + 2.0, abs=1e-3)
+
+
+def test_obstacle_dead_reckons_when_model_flickers_off():
+  # M5：STOPPING 中模型短暫沒判紅燈（OFF）時，障礙物不可凍結（否則停止線跟著車跑），
+  # 也不可拿掉（否則 MPC 往前衝），而是以車速往前扣距離。
+  ts, step = _gate_setup()
+  import types
+
+  def step_off(ctrl, v):
+    # 模型終點 200 m 外（超出偵測距離 -> 非停車），終點速度 3 m/s（< 5，不構成起步）-> OFF
+    xs = [200.0 * i / 32 for i in range(33)]
+    vs = [v] + [3.0] * 32
+    ctrl.update(types.SimpleNamespace(position=types.SimpleNamespace(x=xs, y=[0.0] * 33),
+                                      velocity=types.SimpleNamespace(x=vs)),
+                types.SimpleNamespace(steeringAngleDeg=0.0, gasPressed=False, leftBlinker=False),
+                types.SimpleNamespace(leadOne=types.SimpleNamespace(status=False, dRel=0.0)),
+                v, 0.0, 30.0)
+
+  ctrl = ts.TrafficStopController()
+  ctrl.is_enabled = True
+  ctrl._poll_frame = -10_000
+  for _ in range(20):
+    step(ctrl, 30.0, 50 / 3.6)          # 50 km/h、距線 30 m：已鎖存障礙物
+  assert ctrl.state == ts.STOPPING and ctrl.stop_dist_m is not None
+  v = 30 / 3.6
+  before = ctrl.stop_dist_m
+  for _ in range(4):                    # 4 幀 OFF（未達 GREEN 確認，狀態不變）
+    step_off(ctrl, v)
+  assert ctrl.state == ts.STOPPING
+  assert ctrl.stop_dist_m is not None                                   # 沒被拿掉
+  assert ctrl.stop_dist_m == pytest.approx(before - 4 * v * ts.DT_MDL, abs=1e-3)  # 有往前扣
+  assert ctrl.near_stop_dist_m == pytest.approx(ctrl.stop_dist_m, abs=1e-6)
