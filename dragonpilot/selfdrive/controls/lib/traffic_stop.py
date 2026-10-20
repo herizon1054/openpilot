@@ -12,6 +12,7 @@ dp0111pre 整合修正（刻意分歧，cp 原版沒有這個閘門）：
   拿掉，模擬中 30~60 km/h 進場會反覆啟用/解除 45~104 次並衝過停止線約 2 m。
 - 另外提供 near_stop_dist_m（不受閘門影響，等同原本的 stop_dist_m）給 AEM 的「接近停止線」
   判斷；stop_dist_m 只代表「MPC 目前要不要把停止線當障礙物」。
+- 坡頂防護（CREST_* / UPHILL_CONFIRM_S）：上坡接近坡頂時模型誤判停車，見常數註解。
 
 Ported from the carrot (cp) fork's traffic-stop mechanism into openpilot-dptest.
 Pure-function layer is numerically verified against cp's official
@@ -67,6 +68,16 @@ V_TARGET_SENTINEL = 1e6
 # Lower values release the obstacle earlier; values >= 2.16 retain default timing.
 RELEASE_BRAKE_MPS2 = 1.6
 MPC_OBSTACLE_ONLY_WHEN_MUST_BRAKE = True
+
+# dp 坡頂防護（刻意分歧，cp 沒有）：上坡接近坡頂時模型看不到坡頂後方，預測路徑縮短、終點車速趨近 0，
+# 被 check_model_stopping 誤判為紅燈（rlog 實例：55 km/h 上坡，前方坡度 +1.5~+3.0%，坡頂急煞到 -2.3 m/s²）。
+# 前方坡度 = 模型預測路面高度差 / 預測距離（modelV2.position.z）。
+CREST_GRADE_THRESHOLD = 0.015   # 前方坡度 > 1.5% 視為上坡
+CREST_HOLD_S = 4.0              # 上坡訊號維持秒數（坡頂時坡度會掉到 0，需延續到越過坡頂）
+CREST_MIN_SPEED_KPH = 30.0      # 上坡期間且車速 > 30 km/h：不進入 STOPPING
+UPHILL_CONFIRM_S = 0.5          # 上坡期間且車速 <= 30 km/h：紅燈需連續判定 0.5 秒才進入 STOPPING
+CREST_HOLD_FRAMES = round(CREST_HOLD_S / DT_MDL)
+UPHILL_CONFIRM_FRAMES = round(UPHILL_CONFIRM_S / DT_MDL)
 
 # ── state machine states ────────────────────────────────────────────────
 CRUISE, STOPPING, STOPPED = 0, 1, 2
@@ -222,6 +233,8 @@ class TrafficStopController:
     self.stop_dist_m: float | None = None        # 給 MPC：閘門後的障礙物距離（None = 不給）
     self.near_stop_dist_m: float | None = None   # 給 AEM：不受閘門影響的停止線距離
     self._obstacle_latched = False               # 本次 STOPPING 是否已達必須煞車點
+    self.uphill_hold_frames = 0                  # 坡頂防護：最近 CREST_HOLD_S 內是否出現上坡
+    self.ahead_grade = 0.0
     self.output_v_target = V_TARGET_SENTINEL
     self.output_a_target = 0.0
 
@@ -293,6 +306,17 @@ class TrafficStopController:
       return
     model_x_end = model_x_traj[-1]
 
+    # 坡頂防護：前方坡度（模型預測路面高度差 / 預測距離）
+    model_z_traj = getattr(model_v2.position, "z", ())  # 缺高度資料時視為平路，防護不作用
+    if len(model_z_traj) == len(model_x_traj):
+      self.ahead_grade = (model_z_traj[-1] - model_z_traj[0]) / max(model_x_end, 1.0)
+    else:
+      self.ahead_grade = 0.0
+    if self.ahead_grade > CREST_GRADE_THRESHOLD:
+      self.uphill_hold_frames = CREST_HOLD_FRAMES
+    elif self.uphill_hold_frames > 0:
+      self.uphill_hold_frames -= 1
+
     lead = radar_state.leadOne
     lead_present = bool(lead.status)
     d_rel = lead.dRel if lead_present else 1000.0
@@ -320,8 +344,11 @@ class TrafficStopController:
 
     if self.state == CRUISE:
       entry_allowed = is_traffic_stop_entry_allowed(steering_angle_deg)
+      # 坡頂防護：上坡期間車速 > 30 km/h 不進入；<= 30 km/h 需紅燈連續判定 UPHILL_CONFIRM_S
+      uphill = self.uphill_hold_frames > 0
+      crest_ok = not uphill or (v_ego * 3.6 <= CREST_MIN_SPEED_KPH and self.stop_sign_count >= UPHILL_CONFIRM_FRAMES)
       if (not lead_present and traffic_state == RED and
-          entry_allowed and self.gas_suppress_frames == 0):
+          entry_allowed and self.gas_suppress_frames == 0 and crest_ok):
         self.state = STOPPING
         self._obstacle_latched = False
         self.reference_speed_kph = get_traffic_stop_reference_speed(v_ego * 3.6, None)
