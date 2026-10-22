@@ -86,6 +86,10 @@ class RadarInterface(RadarInterfaceBase):
           self.pts[ii].dRel = cpt['LONG_DIST']  # from front of car
           self.pts[ii].yRel = -cpt['LAT_DIST']  # in car frame's y axis, left is positive
           self.pts[ii].vRel = cpt['REL_SPEED']
+          # dp: 恢復 measured 旗標（VALID=真實量測；只靠 SCORE>50 保留的點=外推估計）。
+          # 新版 opendbc 已把此欄位移到 deprecated 群組且不再填寫；dp radard_ext 的雷達主導救援、
+          # 切入預測與轉彎時的信心度累積需要它（行為比照 dp0111nodm 的舊 opendbc）。
+          self.pts[ii].deprecated.measured = bool(cpt['VALID'])
         else:
           if ii in self.pts:
             del self.pts[ii]
