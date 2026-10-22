@@ -62,12 +62,15 @@ class Track:
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
 
-  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float):
+  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool = True):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
     self.vRel = v_rel   # REL_SPEED
     self.vLead = v_lead
+    # dp: 雷達點是真實量測還是外推估計（供 radard_ext 的雷達主導救援 / 切入預測使用）。
+    # sunnypilot 新版 opendbc 已把 RadarPoint.measured 移到 deprecated 群組，見 RadarD.update 說明。
+    self.measured = measured   # measured or estimate
 
     # computed velocity and accelerations
     if self.cnt > 0:
@@ -156,7 +159,9 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True) -> dict[str, Any]:
+             low_speed_override: bool = True, **_dp_kwargs) -> dict[str, Any]:
+  # dp: **_dp_kwargs 吸收 radard_ext 專用的關鍵字參數（is_turning、路徑、原始機率等），
+  # 讓未載入 radard_ext 的情境（測試）不會 TypeError；原廠邏輯不使用這些參數。
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
@@ -210,6 +215,13 @@ class RadarD:
 
     self.ready = False
 
+    # dp: 雷達點 measured 旗標是否可用。sunnypilot 新版 opendbc 的 RadarPoint.measured 已移到
+    # deprecated 群組，只有套用 dp 修改的 Toyota radar_interface 會填（VALID 位元）；其他廠牌
+    # 一律為 False。若直接讀取，非 Toyota（或未套用 opendbc 修改）時所有點都會被當成「外推」，
+    # 雷達主導救援與切入預測永遠不會成立。因此：曾經看過任一點 measured=True 才信任這個旗標，
+    # 在那之前一律視為真實量測（比照 dp0111nodm 舊 opendbc 中其他廠牌 measured=True 的行為）。
+    self.measured_supported = False
+
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
 
@@ -218,7 +230,23 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points}
+    # dp: 判斷是否正在轉彎（角度或角速度超過門檻），供 radard_ext 的信心度累積邏輯
+    # 使用——轉彎時保留「必須真實量測」的保護（避免誤判旁側車道目標切入本車道），
+    # 直行/巡航時放行（避免正常雷達漏拍拖慢插隊反應）。
+    # dp(修正 8): 角速度門檻 10 → 20 deg/s。log 實測（車速 >15 km/h、角度 <15 度）：
+    #   >=10 deg/s 佔 4~14% 幀（市區閃機車、路面修正就會觸發），>=20 deg/s 佔 1~6%。
+    is_turning = abs(sm['carState'].steeringAngleDeg) >= 15.0 or abs(sm['carState'].steeringRateDeg) >= 20.0
+    steering_angle_deg = sm['carState'].steeringAngleDeg
+    # dp(v9.2): 本車正在變換車道（模型換道狀態非 off）時，暫停雷達切入預測。
+    # v9.2 起不再看方向燈：方向燈亮但尚未換道時本車路徑不會移動，不會產生假的切入；
+    # 而且警示燈（左右方向燈同時亮）在國道壅塞時很常見，原本會讓切入預測整個停用。
+    lane_change = sm['modelV2'].meta.laneChangeState != log.LaneChangeState.off
+
+    # dp: measured 旗標（見 __init__ 中 measured_supported 說明）
+    if not self.measured_supported and any(pt.deprecated.measured for pt in rr.points):
+      self.measured_supported = True
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, (bool(pt.deprecated.measured) if self.measured_supported else True)]
+              for pt in rr.points}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -235,7 +263,7 @@ class RadarD:
       # create the track if it doesn't exist or it's a new track
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead)
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3])
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -257,10 +285,19 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
+      # dp: 傳入模型規劃路徑（供橫向閘門與雷達主導救援的走廊判斷），以及未濾波的原始
+      # lead 機率（雷達主導救援的視覺信心度下限只看原始值，最嚴格版本）。
+      path_x = list(sm['modelV2'].position.x)
+      path_y = list(sm['modelV2'].position.y)
+      # dp(第七版): 擴充參數一律用關鍵字傳入，避免位置參數錯位；原廠 get_lead 以 **kwargs 吸收。
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                                          self.CP, self.CP_SP, low_speed_override=True)
+                                          self.CP, self.CP_SP, low_speed_override=True,
+                                          is_turning=is_turning, steering_angle_deg=steering_angle_deg,
+                                          raw_lead_prob=leads_v3[0].prob, lane_change=lane_change, path_x=path_x, path_y=path_y)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
-                                          self.CP, self.CP_SP, low_speed_override=False)
+                                          self.CP, self.CP_SP, low_speed_override=False,
+                                          is_turning=is_turning, steering_angle_deg=steering_angle_deg,
+                                          raw_lead_prob=leads_v3[1].prob, lane_change=lane_change, path_x=path_x, path_y=path_y)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
@@ -288,7 +325,11 @@ def main() -> None:
   sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
-  RD = RadarD(CP, CP_SP, CP.radarDelay)
+  # ==============================================================================
+  # dp 擴充引入點：動態替換並生成帶有提早鎖定 / 雷達主導救援 / 切入預測邏輯的實例
+  # ==============================================================================
+  from openpilot.sunnypilot.selfdrive.controls.radard_ext import RadarDExt
+  RD = RadarDExt(CP, CP_SP, CP.radarDelay)
 
   while 1:
     sm.update()
