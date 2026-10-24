@@ -266,13 +266,18 @@ class RadarD:
       # lead 機率（雷達主導救援的視覺信心度下限只看原始值，最嚴格版本）。
       path_x = list(sm['modelV2'].position.x)
       path_y = list(sm['modelV2'].position.y)
+      # dp(v9.6): 傳入模型車道線（每條線的 x/y）與信心度，供多點大型車的切入判斷改用車道線。
+      lane_lines = [(list(ll.x), list(ll.y)) for ll in sm['modelV2'].laneLines]
+      lane_line_probs = list(sm['modelV2'].laneLineProbs)
       # dp(第七版): 擴充參數一律用關鍵字傳入，避免位置參數錯位；原廠 get_lead 以 **kwargs 吸收。
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
                                           low_speed_override=True, is_turning=is_turning, steering_angle_deg=steering_angle_deg,
-                                          raw_lead_prob=leads_v3[0].prob, lane_change=lane_change, path_x=path_x, path_y=path_y)
+                                          raw_lead_prob=leads_v3[0].prob, lane_change=lane_change, path_x=path_x, path_y=path_y,
+                                          lane_lines=lane_lines, lane_line_probs=lane_line_probs)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
                                           low_speed_override=False, is_turning=is_turning, steering_angle_deg=steering_angle_deg,
-                                          raw_lead_prob=leads_v3[1].prob, lane_change=lane_change, path_x=path_x, path_y=path_y)
+                                          raw_lead_prob=leads_v3[1].prob, lane_change=lane_change, path_x=path_x, path_y=path_y,
+                                          lane_lines=lane_lines, lane_line_probs=lane_line_probs)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
