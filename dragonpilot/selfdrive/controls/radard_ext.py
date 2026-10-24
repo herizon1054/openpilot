@@ -145,6 +145,12 @@ GATE_PATH_JUMP_LIMIT = 1.0          # m
 LANE_GATE_DV_PCT = 0.25
 
 # dp(第九版 / 9.1 穩定性補強): 雷達橫向速度切入預測（cut-in prediction）
+# v9.6.2：大型車身分補強（依 7 段實車 log）——(a) 同一 ID 曾判定為大型車即維持到該 ID 消失；
+#         (b) 與大型車點為同一物體的重複點（Toyota 雙 trackId）繼承大型車身分；
+#         (c) 只有移動中的點參與大型車判定（排除護欄、門架等靜止物串成的鏈）。
+# v9.6：聯結車在旁邊車道並行時的誤觸發防護——多點大型車改以模型車道線判斷（雷達點須越過車道線
+#       才算候選、退回線外即釋放），車道線信心度 < 0.5 時退回本車路徑 + 濾波車道寬；
+#       加入模型路徑跳動保護。小車（非多點大型車）維持 v9.4 判斷。詳見 v9.6 參數區說明。
 # v9.4：在 v931 基礎上加入「1 秒淨橫移」條件（CUTIN_NET_SHIFT_*），擋單一反射點大型車的橫向抖動。
 # v9.3（無切入跨 ID 繼承版）：保留多點一致性、停滯釋放與切入偵測；新 ID 重新確認。
 # v9.2：啟用車速下限 36 → 20 km/h；量測新鮮度與切入診斷保留，跨 ID 繼承已移除
@@ -248,6 +254,87 @@ CUTIN_NET_SHIFT_MIN = 0.5           # m
 CUTIN_NET_SHIFT_MIN_FRAMES = 10     # 新雷達點至少觀察 0.5 秒
 CUTIN_NET_SHIFT_REVERSAL = 0.15     # m，新雷達點觀察期間允許的往外回彈上限
 
+# ==============================================================================
+# dp(v9.6): 聯結車在旁邊車道並行時的切入誤觸發防護
+# ==============================================================================
+# 問題：聯結車在旁邊車道並行時，雷達在車身側面打出多個反射點；側面離本車路徑約 2.25m
+#   （3.5m 車道中心 − 半車寬 1.25m），長時間落在小車設計的候選帶 1.0 < |off| < 2.5 內。
+#   反射點沿車身滑動、或模型路徑漂移，都可能讓它看起來在往內移而被採用；採用後側面點一直在
+#   CUTIN_HOLD_OFF 2.5 內，要等 2.5 秒停滯釋放，期間以近距離前車重煞。
+# 做法（只套用在「多點大型車」，小車維持 v9.4）：
+#   (1) 大型車判定（_update_large_vehicle_flags）：同車條件（橫向差 < CUTIN_GROUP_DY、速度差 <
+#       CUTIN_GROUP_DV、縱向 LARGE_VEH_GROUP_DD 內）的點沿縱向串成鏈（相鄰間距 <= LARGE_VEH_CHAIN_GAP），
+#       鏈長 >= LARGE_VEH_MIN_SPAN 即為大型車；1 秒遲滯。
+#       限制：從後方遠距離只看得到車尾點（鏈長約 0）時判定不到，該情況維持 v9.4 行為。
+#   (2) 車道線判斷：以目標所在側的模型車道線（右側 laneLines[2]、左側 laneLines[1]）計算
+#       「雷達點越過車道線的距離」intr（正值 = 已在本車道內）。
+#       候選：intr >= LARGE_LINE_ENTER（0：雷達點已越過車道線）。
+#       維持：intr < LARGE_LINE_RELEASE（退回線外 0.1m）即釋放，不等停滯釋放。
+#   (3) 車道線信心度 < LANE_LINE_MIN_PROB（0.5）時退回本車路徑：假設車道線在
+#       路徑 ± 濾波車道寬/2。本車路徑不等於車道中心（本車在車道內的偏移未知），
+#       候選多扣 LARGE_PATH_ENTER（0.3m）餘裕；釋放在 intr < LARGE_PATH_RELEASE（0：退回推估車道線外）。
+#   (4) 濾波車道寬：兩側車道線信心度都 >= 0.5 時，取本車前方 LANE_WIDTH_X 處的 L1−R1，
+#       一階濾波、限制在 [LANE_WIDTH_MIN, LANE_WIDTH_MAX]；尚無量測時用 LANE_WIDTH_DEFAULT。
+#   (5) 路徑跳動保護（所有目標）：同一目標距離處的路徑 y 一幀變化 > CUTIN_PATH_JUMP_LIMIT 時，
+#       重設偏移濾波與淨橫移歷史。原本 CUTIN_BETA/DT_MDL = 1.0，路徑跳 1m 會注入 1 m/s 假橫向速度。
+LARGE_VEH_GROUP_DD = 25.0           # m，大型車判定的縱向搜尋範圍（涵蓋超長聯結車）
+LARGE_VEH_CHAIN_GAP = 4.0           # m，鏈上相鄰反射點最大縱向間距
+LARGE_VEH_MIN_SPAN = 5.0            # m，鏈長 >= 此值視為大型車
+LARGE_VEH_HOLD_FRAMES = 20          # 1.0 秒判定遲滯
+LANE_LINE_MIN_PROB = 0.5            # 目標側車道線信心度下限，低於此值退回本車路徑
+LARGE_LINE_ENTER = 0.0              # m，車道線模式：雷達點越過車道線才算候選
+LARGE_LINE_RELEASE = -0.1           # m，車道線模式：退回線外 0.1m 即釋放
+LARGE_PATH_ENTER = 0.3              # m，本車路徑模式：越過推估車道線 0.3m 才算候選（本車偏移餘裕）
+LARGE_PATH_RELEASE = 0.0            # m，本車路徑模式：退回推估車道線外即釋放
+LANE_WIDTH_DEFAULT = 3.5            # m
+LANE_WIDTH_MIN = 3.0                # m
+LANE_WIDTH_MAX = 4.0                # m
+LANE_WIDTH_X = 8.0                  # m，量測車道寬的位置（模型座標，攝影機前方）
+LANE_WIDTH_ALPHA = 0.05             # 每幀濾波係數（約 1 秒時間常數）
+CUTIN_PATH_JUMP_LIMIT = 0.5         # m / 幀
+
+_LANE_WIDTH = {'w': LANE_WIDTH_DEFAULT}   # dp(v9.6): 濾波後車道寬
+
+
+def _update_large_vehicle_flags(tracks, v_ego: float) -> None:
+  # dp(v9.6): 每幀只呼叫一次（leadOne）。以每個雷達點為中心找同車點，沿縱向串鏈，鏈長判定大型車。
+  # 一般小車的重複點縱向差 < 1.5m；同車道前後兩台同速小車（車尾點間距通常 > 4m）不會串成一條鏈。
+  # dp(v9.6.2):
+  #   (c) 只有移動中的點（絕對速度 > max(3, DYNAMIC_SPEED_PCT * v_ego)）參與判定。7 段 log 中被串鏈判為
+  #       大型車的片段，多數是相對速度 ≈ −本車速的護欄、門架等靜止物；靜止物本來就不會成為切入候選，
+  #       排除後大型車旗標只代表真正的移動大車，也避免診斷 log 混淆。
+  #   (a) 同一 ID 曾被串鏈判定為大型車，就維持到該 ID 消失（large_sticky）。會造成切入誤判的一定是
+  #       ID 穩定、連續追蹤 >= 0.5 秒的點（淨橫移條件），ID 跳動的點本來就不可能被採用，所以綁 ID 足夠。
+  #   (b) 與大型車點為同一物體（_is_same_object）的重複點，同幀繼承大型車身分。log 033 聯結車：
+  #       R13604 判為大型車，但其重複點 R13618/R13626/R13630（d、y、v 完全相同）沒有，而這些重複點
+  #       位在 |off| 2.25~2.6m，正好在小車候選帶 CUTIN_OFF_MAX 2.5 邊緣，是最可能造成誤煞的點。
+  v_min = max(3.0, DYNAMIC_SPEED_PCT * v_ego)
+  items = list(tracks.values())
+  moving = [o for o in items if (o.vRel + v_ego) > v_min]
+  for t in items:
+    large_now = False
+    if (t.vRel + v_ego) > v_min:
+      ds = sorted(o.dRel for o in moving
+                  if abs(o.dRel - t.dRel) < LARGE_VEH_GROUP_DD and abs(o.yRel - t.yRel) < CUTIN_GROUP_DY and
+                  abs(o.vRel - t.vRel) < CUTIN_GROUP_DV)
+      i = min(range(len(ds)), key=lambda k: abs(ds[k] - t.dRel))
+      lo = hi = i
+      while lo > 0 and ds[lo] - ds[lo - 1] <= LARGE_VEH_CHAIN_GAP:
+        lo -= 1
+      while hi < len(ds) - 1 and ds[hi + 1] - ds[hi] <= LARGE_VEH_CHAIN_GAP:
+        hi += 1
+      large_now = (ds[hi] - ds[lo]) >= LARGE_VEH_MIN_SPAN
+    t.large_hold = LARGE_VEH_HOLD_FRAMES if large_now else max(t.large_hold - 1, 0)
+    if large_now:
+      t.large_sticky = True
+    t.is_large = t.large_hold > 0 or t.large_sticky
+  # (b) 重複點繼承：以本幀已判定的大型車點為來源，只傳一層（不做遞移擴散）
+  sources = [o for o in items if o.is_large]
+  for t in items:
+    if not t.is_large and any(_is_same_object(t, o) for o in sources):
+      t.is_large = True
+      t.large_sticky = True
+
 # dp(9.1): 切入雷達量測 freshness。允許 Toyota 雷達短暫 2 幀（約 0.1s）非實測/外推，
 # 超過後不再累積或維持 cut-in，避免長時間外推點單靠橫向估計成為切入前車。
 CUTIN_MEASURED_MAX_AGE = 2           # 幀；0=本幀實測，1~2=短暫容忍，>2=失效
@@ -261,6 +348,46 @@ MODEL_PATH_MIN_LENGTH = 5.0         # 模型路徑最短有效長度 (m)
 # 誤差常超過 1.5m，導致 EMA 在 ~30m 外無法累積。
 # 比照原廠 dist_sane 精神（25% 或 5m），但取較保守的比例。
 FUZZY_D_BOUNDS_PCT = [0.05, 0.12]   # 滿分 / 歸零 對應的距離比例
+
+def _build_lane_ctx(lane_lines, lane_line_probs):
+  # dp(v9.6): 整理 modelV2.laneLines[1]（本車左線）、[2]（本車右線）與信心度；
+  # 兩側信心度都 >= LANE_LINE_MIN_PROB 時順便更新濾波車道寬。資料不完整時回傳 None（一律本車路徑模式）。
+  if lane_lines is None or lane_line_probs is None or len(lane_lines) < 3 or len(lane_line_probs) < 3:
+    return None
+  ctx = {}
+  for key, idx in (('left', 1), ('right', 2)):
+    x, y = lane_lines[idx]
+    if len(x) < 2 or len(x) != len(y):
+      return None
+    xa = np.asarray(x, dtype=float)
+    if not bool(np.all(np.diff(xa) > 0)):
+      return None
+    ctx[key] = (xa, np.asarray(y, dtype=float), float(lane_line_probs[idx]))
+  l_x, l_y, l_p = ctx['left']
+  r_x, r_y, r_p = ctx['right']
+  if l_p >= LANE_LINE_MIN_PROB and r_p >= LANE_LINE_MIN_PROB:
+    # 模型座標 y 向右為正：車道寬 = 右線 y − 左線 y
+    w = float(np.interp(LANE_WIDTH_X, r_x, r_y) - np.interp(LANE_WIDTH_X, l_x, l_y))
+    if LANE_WIDTH_MIN - 0.5 < w < LANE_WIDTH_MAX + 0.5:   # 明顯錯誤的量測不納入
+      w = float(np.clip(w, LANE_WIDTH_MIN, LANE_WIDTH_MAX))
+      _LANE_WIDTH['w'] += LANE_WIDTH_ALPHA * (w - _LANE_WIDTH['w'])
+  return ctx
+
+
+def _lane_intrusion(track, off: float, lane_ctx) -> tuple[float, str]:
+  # dp(v9.6): 回傳（雷達點越過目標側車道線的距離，模式）。正值 = 已在本車道內。
+  # 目標側由 off 符號決定（off < 0 為右側）。radar 座標 y 向左為正，模型座標 y 向右為正，取負號轉換；
+  # 模型 x 由攝影機起算，以 dRel + RADAR_TO_CAMERA 查表（與 _path_y_at 相同）。
+  right_side = off < 0.0
+  if lane_ctx is not None:
+    x, y, p = lane_ctx['right'] if right_side else lane_ctx['left']
+    if p >= LANE_LINE_MIN_PROB:
+      line_y = -float(np.interp(track.dRel + RADAR_TO_CAMERA, x, y))
+      intr = (track.yRel - line_y) if right_side else (line_y - track.yRel)
+      return intr, 'line'
+  # 本車路徑模式：假設車道線在路徑 ± 濾波車道寬/2
+  return _LANE_WIDTH['w'] / 2.0 - abs(off), 'path'
+
 
 def _is_same_object(a, b) -> bool:
   # dp: 兩個雷達目標是否為同一個實體物體的重複回報
@@ -320,6 +447,13 @@ class TrackDP(Track):
     self.cutin_entered = False                 # dp(v9.3): 採用後是否已進入 ±CUTIN_CORRIDOR 走廊
     self.cutin_measured_age = 0                # dp(9.1): 距離最近一次真實雷達量測的幀數
     self.cutin_diag_armed = False              # dp(9.1): 防止候選成立診斷重複洗 log
+    self.cutin_last_path_y = None              # dp(v9.6): 上一幀此目標距離處的路徑 y（路徑跳動保護）
+    self.large_hold = 0                        # dp(v9.6): 大型車判定遲滯計數
+    self.is_large = False                      # dp(v9.6): 是否判定為多點大型車
+    self.large_sticky = False                  # dp(v9.6.2): 此 ID 曾判定為大型車，維持到 ID 消失
+    self.cutin_is_large = False                # dp(v9.6): 本幀切入判斷使用的大型車旗標（診斷用）
+    self.cutin_line_mode = 'path'              # dp(v9.6): 'line' = 車道線模式，'path' = 本車路徑模式
+    self.cutin_line_intr = None                # dp(v9.6): 雷達點越過車道線的距離（正值 = 已在本車道內）
 
   def _check_closing_speed_fallback(self, lead_idx: int, v_ego: float) -> bool:
     # 比照原廠 vel_sane 的 (v_ego + vRel > 3) 這個條件（目標絕對速度 > 3 m/s，即移動目標），
@@ -359,14 +493,18 @@ class TrackDP(Track):
       self.gate_flip_cnt[lead_idx] = 0
     return self.is_out_of_lane[lead_idx]
 
-  def update_cutin(self, v_ego: float, path_valid: bool, path_y: float, gated: bool) -> None:
+  def update_cutin(self, v_ego: float, path_valid: bool, path_y: float, gated: bool,
+                   is_large: bool = False, lane_ctx=None) -> None:
     # dp(第九版): 每幀呼叫一次（只在 leadOne 那次）。gated=True 表示本車轉彎或變換車道中，暫停判定。
     # dp(9.1): 加入 radar measurement freshness；短暫漏拍最多容忍 CUTIN_MEASURED_MAX_AGE 幀。
+    # dp(v9.6): is_large=True（多點大型車）時，候選與維持改以車道線判斷（見 v9.6 參數區）；
+    #           lane_ctx 為 get_lead_ext 準備的車道線資料（None = 無車道線，一律用本車路徑模式）。
     if bool(self.measured):
       self.cutin_measured_age = 0
     else:
       self.cutin_measured_age = min(self.cutin_measured_age + 1, CUTIN_MEASURED_MAX_AGE + 1)
     fresh = self.cutin_measured_age <= CUTIN_MEASURED_MAX_AGE
+    self.cutin_is_large = is_large
 
     if not path_valid:
       if self.cutin_active or self.cutin_frames > 0:
@@ -380,9 +518,27 @@ class TrackDP(Track):
       self.cutin_active = False
       self.cutin_diag_armed = False
       self.cutin_raw_hist.clear()                # dp(v9.4): 路徑無效時偏移基準改變，歷史一併清除
+      self.cutin_last_path_y = None              # dp(v9.6)
       return
 
+    # dp(v9.6): 路徑跳動保護——路徑在此距離處一幀跳動超過 CUTIN_PATH_JUMP_LIMIT 時，偏移基準已改變，
+    # 重設濾波與淨橫移歷史，不把路徑跳動當成目標橫向移動。已採用中的目標不因此釋放，vy 歸零後重新估計。
+    path_jump = self.cutin_last_path_y is not None and abs(path_y - self.cutin_last_path_y) > CUTIN_PATH_JUMP_LIMIT
+    self.cutin_last_path_y = path_y
+
     meas = self.yRel - path_y
+    if path_jump:
+      if self.cutin_active or self.cutin_frames > 0:
+        cloudlog.debug(
+          f"[RadarD_CutinPathJump_DP] id={self.identifier} d={self.dRel:.1f} y={self.yRel:.2f} "
+          f"offNew={meas:.2f} vyPrev={self.cutin_vy:.2f} active={self.cutin_active} "
+          f"frames={self.cutin_frames} large={is_large}"
+        )
+      self.cutin_raw_hist.clear()
+      self.cutin_off = None
+      self.cutin_frames = 0
+      self.cutin_diag_armed = False
+
     self.cutin_raw_hist.append(meas)
     if self.cutin_off is None:
       self.cutin_off = meas
@@ -394,6 +550,11 @@ class TrackDP(Track):
       self.cutin_vy = self.cutin_vy + (CUTIN_BETA / DT_MDL) * res
     off, vy = self.cutin_off, self.cutin_vy
 
+    # dp(v9.6): 雷達點越過車道線的距離（大型車用；小車僅記錄供診斷）
+    intr, mode = _lane_intrusion(self, off, lane_ctx)
+    self.cutin_line_intr = intr
+    self.cutin_line_mode = mode
+
     v_abs = self.vRel + v_ego
     max_d = float(np.interp(v_ego, CUTIN_MAX_DIST_BP, CUTIN_MAX_DIST_V))
     base_ok = (fresh and not gated and v_ego > CUTIN_MIN_V_EGO and CUTIN_MIN_DIST < self.dRel < max_d and
@@ -403,18 +564,36 @@ class TrackDP(Track):
 
     if self.cutin_active:
       # 已採用：偏移仍在 CUTIN_HOLD_OFF 內、沒有明顯遠離路徑就維持（進入走廊後也維持）
+      # dp(v9.6): 大型車改為「仍在車道線內（intr >= 釋放門檻）」才維持，退回線外即釋放
+      if is_large:
+        release_thr = LARGE_LINE_RELEASE if mode == 'line' else LARGE_PATH_RELEASE
+        within = intr >= release_thr
+      else:
+        within = abs(off) < CUTIN_HOLD_OFF
       moving_away = (off * vy > 0.0) and abs(vy) > CUTIN_VY_MIN and abs(off) > CUTIN_CORRIDOR
       # dp(v9.3): 停滯釋放——採用後 CUTIN_PENDING_MAX_FRAMES 幀內仍未進入走廊就釋放
       self.cutin_active_frames += 1
       if abs(off) <= CUTIN_CORRIDOR:
         self.cutin_entered = True
       stalled = (not self.cutin_entered) and self.cutin_active_frames > CUTIN_PENDING_MAX_FRAMES
-      if stalled or not (base_ok and abs(off) < CUTIN_HOLD_OFF and not moving_away):
-        reason = 'stalled' if stalled else ('stale' if not fresh else ('gated' if gated else ('moving_away' if moving_away else 'base_condition')))
+      if stalled or not (base_ok and within and not moving_away):
+        if stalled:
+          reason = 'stalled'
+        elif not fresh:
+          reason = 'stale'
+        elif gated:
+          reason = 'gated'
+        elif moving_away:
+          reason = 'moving_away'
+        elif not within:
+          reason = 'large_line_out' if is_large else 'off'
+        else:
+          reason = 'base_condition'
         cloudlog.debug(
           f"[RadarD_CutinRelease_DP] id={self.identifier} reason={reason} "
           f"d={self.dRel:.1f} off={off:.2f} vy={vy:.2f} vRel={self.vRel:.2f} "
-          f"aLeadK={self.aLeadK:.2f} aLeadTau={float(self.aLeadTau.x):.2f} age={self.cutin_measured_age}"
+          f"aLeadK={self.aLeadK:.2f} aLeadTau={float(self.aLeadTau.x):.2f} age={self.cutin_measured_age} "
+          f"large={is_large} mode={mode} intr={intr:.2f} activeFrames={self.cutin_active_frames}"
         )
         self.cutin_active = False
         self.cutin_frames = 0
@@ -425,7 +604,13 @@ class TrackDP(Track):
 
     self.cutin_active_frames = 0               # dp(v9.3): 未採用狀態下歸零
     self.cutin_entered = False
-    hit = (base_ok and CUTIN_CORRIDOR < abs(off) < CUTIN_OFF_MAX and toward and
+    if is_large:
+      # dp(v9.6): 大型車——雷達點須已越過車道線（本車路徑模式多扣餘裕），取代 CUTIN_OFF_MAX 上限
+      enter_thr = LARGE_LINE_ENTER if mode == 'line' else LARGE_PATH_ENTER
+      lateral_ok = CUTIN_CORRIDOR < abs(off) and intr >= enter_thr
+    else:
+      lateral_ok = CUTIN_CORRIDOR < abs(off) < CUTIN_OFF_MAX
+    hit = (base_ok and lateral_ok and toward and
            CUTIN_VY_MIN < abs(vy) < CUTIN_VY_MAX and
            (abs(off) - CUTIN_CORRIDOR) / abs(vy) < CUTIN_T_ENTER)
     self.cutin_frames = self.cutin_frames + 1 if hit else 0
@@ -436,7 +621,7 @@ class TrackDP(Track):
         f"[RadarD_CutinArmed_DP] id={self.identifier} d={self.dRel:.1f} y={self.yRel:.2f} "
         f"off={off:.2f} vy={vy:.2f} tEnter={t_enter:.2f}s vRel={self.vRel:.2f} "
         f"vLead={self.vLead:.2f} aLeadK={self.aLeadK:.2f} aLeadTau={float(self.aLeadTau.x):.2f} "
-        f"frames={self.cutin_frames} age={self.cutin_measured_age}"
+        f"frames={self.cutin_frames} age={self.cutin_measured_age} large={is_large} mode={mode} intr={intr:.2f}"
       )
       self.cutin_diag_armed = True
     elif self.cutin_frames == 0:
@@ -550,6 +735,8 @@ def get_lead_ext(
   lane_change: bool = False,
   path_x: list[float] | None = None,
   path_y: list[float] | None = None,
+  lane_lines: list | None = None,
+  lane_line_probs: list[float] | None = None,
 ) -> dict[str, Any]:
   """
   DP 適配版：移除了 CP 與 CP_SP，純粹依靠 DP 的系統參數運作。
@@ -560,6 +747,8 @@ def get_lead_ext(
   未提供時（例如測試）退回使用濾波後的 lead_prob。
   lane_change：本車正在變換車道（模型 laneChangeState 非 off），切入預測暫停（v9.2 起不看方向燈）。
   path_x/path_y：modelV2.position，供橫向閘門、鎖定黏著、雷達主導救援與切入預測的走廊判斷。
+  lane_lines/lane_line_probs（v9.6）：modelV2.laneLines 每條線的 (x, y) 與 laneLineProbs，
+  供多點大型車的切入判斷改用車道線；未提供時大型車一律用本車路徑模式。
   radard.py 一律以關鍵字參數傳入上述擴充參數，避免位置參數錯位。
   """
   lead_idx = 0 if low_speed_override else 1
@@ -617,10 +806,16 @@ def get_lead_ext(
     # v9.3（停用切入跨 ID 繼承）：新 Track 使用建構時的初始切入狀態，
     # 重新估算橫向速度與累積確認幀數，避免大車反射點交換 ID 時接續錯誤狀態。
 
+    # dp(v9.6): 先依本幀所有雷達點判定多點大型車，並整理車道線（同時更新濾波車道寬）
+    if len(tracks) > 0:
+      _update_large_vehicle_flags(tracks, v_ego)
+    lane_ctx = _build_lane_ctx(lane_lines, lane_line_probs)
+
     for track in tracks.values():
       track.update_radar_rescue(v_ego, use_model_path, _path_y_at(track.dRel), steering_angle_deg,
                                 is_active=track is active_rescue)
-      track.update_cutin(v_ego, use_model_path, _path_y_at(track.dRel), is_turning or lane_change)
+      track.update_cutin(v_ego, use_model_path, _path_y_at(track.dRel), is_turning or lane_change,
+                         is_large=track.is_large, lane_ctx=lane_ctx)
 
     rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
     if ready and rescue_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0:
@@ -790,7 +985,9 @@ def get_lead_ext(
             f"y={cutin_track.yRel:.2f} off={off:.2f} vy={vy:.2f} tEnter={t_enter:.2f}s "
             f"vRel={cutin_track.vRel:.2f} vLead={cutin_track.vLead:.2f} "
             f"aLeadK={cutin_track.aLeadK:.2f} aLeadTau={float(cutin_track.aLeadTau.x):.2f} "
-            f"frames={cutin_track.cutin_frames} age={cutin_track.cutin_measured_age} oldLeadD={cur_d:.1f}"
+            f"frames={cutin_track.cutin_frames} age={cutin_track.cutin_measured_age} oldLeadD={cur_d:.1f} "
+            f"large={cutin_track.cutin_is_large} mode={cutin_track.cutin_line_mode} "
+            f"intr={cutin_track.cutin_line_intr if cutin_track.cutin_line_intr is not None else float('nan'):.2f}"
           )
       else:
         cutin_track.cutin_active = False
