@@ -13,6 +13,7 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
   6. 聯結車／大型車防護（v9.6~）：多點大型車須越過模型車道線才算切入候選。
 
 以 monkey patch 取代 radard.Track 與 radard.get_lead，RadarDExt 由 radard.main() 建立。
+只在 radard.DP_RADARD_EXT_BRANDS（Toyota）載入；其他品牌不 import 本模組，維持原廠前車選擇。
 
 版本紀錄（切入預測）：
   v9.2   啟用車速 36 → 20 km/h（20~36 km/h 確認 6 幀）；radard.py 的換道判斷不看方向燈。
@@ -22,6 +23,8 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
          模型路徑跳動保護。小車維持 v9.4。
   v9.6.2 大型車身分補強：ID 黏著、重複點繼承、只看移動中的點。
   v9.6.3 雷達主導救援在車道線可靠時，目標須已越過車道線（路徑偏移時不會救援旁車道聯結車）。
+  v9.6.4 品牌閘門（radard.py）：只有 Toyota 載入 radard_ext；其他品牌使用原廠 get_lead / Track。
+         所有門檻只用 Toyota TSS2 log 驗證，其他品牌雷達的點數、measured 語意、橫向尺度不同（見 radard.py）。
 
 與原廠（cp）的刻意分歧：
   - 低速覆寫：現有雷達前車與最近目標為同一物體時不替換（原廠只要更近就替換，重複點會每幀互換）。
