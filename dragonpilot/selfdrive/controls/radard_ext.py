@@ -25,6 +25,8 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
   v9.6.3 雷達主導救援在車道線可靠時，目標須已越過車道線（路徑偏移時不會救援旁車道聯結車）。
   v9.6.4 品牌閘門（radard.py）：只有 Toyota 載入 radard_ext；其他品牌使用原廠 get_lead / Track。
          所有門檻只用 Toyota TSS2 log 驗證，其他品牌雷達的點數、measured 語意、橫向尺度不同（見 radard.py）。
+  v9.6.5 雷達主導救援、切入預測的啟用車速提高到 > 30 km/h（避開市區低速路口轉彎）；
+         已採用中的目標沿用原車速下限（救援 10.8 km/h、切入 20 km/h），本車減速時前車不會突然消失。
 
 與原廠（cp）的刻意分歧：
   - 低速覆寫：現有雷達前車與最近目標為同一物體時不替換（原廠只要更近就替換，重複點會每幀互換）。
@@ -139,6 +141,9 @@ RADAR_RESCUE_MAX_DIST = 120.0       # m
 RADAR_RESCUE_MIN_SPEED = 3.0        # m/s，絕對速度下限 = max(此值, PCT × 本車速)
 RADAR_RESCUE_MIN_SPEED_PCT = 0.2
 RADAR_RESCUE_MAX_ANGLE = 25.0       # deg
+# v9.6.5：本車速 > 30 km/h 才開始累積救援幀數（市區低速路口轉彎不救援）。已在救援中的目標不受此限
+# （仍需模型路徑有效，即 > MODEL_PATH_MIN_SPEED）：跟著救援前車減速到 30 km/h 以下時不會當幀撤銷。
+RADAR_RESCUE_MIN_V_EGO = 30.0 / 3.6 # m/s
 # v9.6.3：目標側車道線信心度 >= LANE_LINE_MIN_PROB 時，救援目標須已越過車道線（雷達點在本車道內）。
 # 救援走廊以模型路徑為中心，路徑往旁車偏時，旁車道聯結車側面點會落入走廊（虛擬測試：路徑右偏
 # 0.85m，線外 0.5m 的聯結車被救援採用，−2.7 m/s²）。8 段實車 log 的救援目標越線距離皆 >= 0.00m。
@@ -152,7 +157,10 @@ RADAR_RESCUE_LINE_HOLD = -0.2       # m，維持：已在救援中的目標允�
 # 57m 外的遠車，直到 59.4s 才鎖到藍車（駕駛 57.89s 已踩煞車）。
 # 採用條件：連續 CUTIN_CONFIRM_FRAMES 幀成立、同車一致、1 秒淨橫移足夠，且沒有前車或比現有前車
 # 更近（且不是同一物體）。切入前車不享有續命。
-CUTIN_MIN_V_EGO = 20.0 / 3.6        # m/s
+# v9.6.5：新候選需本車速 > 30 km/h（市區低速路口轉彎不預測切入）；已採用中的切入目標維持到
+# CUTIN_HOLD_MIN_V_EGO，本車為切入車減速時不會當幀釋放。
+CUTIN_MIN_V_EGO = 30.0 / 3.6        # m/s
+CUTIN_HOLD_MIN_V_EGO = 20.0 / 3.6   # m/s
 CUTIN_LOW_SPEED = 36.0 / 3.6        # m/s，低於此車速（機車多、反射點跳動大）確認幀數提高
 CUTIN_CONFIRM_FRAMES = 4            # 0.2 秒
 CUTIN_CONFIRM_FRAMES_LOW = 6        # 0.3 秒
@@ -509,7 +517,8 @@ class TrackDP(Track):
     # line_intr：目標側車道線可靠時的越線距離（None = 車道線不可靠，不檢查）。
     corridor = RADAR_RESCUE_CORRIDOR_HOLD if is_active else RADAR_RESCUE_CORRIDOR
     line_ok = line_intr is None or line_intr >= (RADAR_RESCUE_LINE_HOLD if is_active else RADAR_RESCUE_LINE_ENTER)
-    eligible = (path_valid and bool(self.measured) and line_ok and
+    v_ok = is_active or v_ego > RADAR_RESCUE_MIN_V_EGO
+    eligible = (path_valid and v_ok and bool(self.measured) and line_ok and
                 RADAR_RESCUE_MIN_DIST < self.dRel < RADAR_RESCUE_MAX_DIST and
                 abs(self.yRel - path_y) < corridor and
                 (self.vRel + v_ego) > max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego) and
@@ -549,7 +558,8 @@ class TrackDP(Track):
 
     v_abs = self.vRel + v_ego
     max_d = float(np.interp(v_ego, CUTIN_MAX_DIST_BP, CUTIN_MAX_DIST_V))
-    base_ok = (fresh and not gated and v_ego > CUTIN_MIN_V_EGO and CUTIN_MIN_DIST < self.dRel < max_d and
+    base_ok = (fresh and not gated and v_ego > (CUTIN_HOLD_MIN_V_EGO if self.cutin_active else CUTIN_MIN_V_EGO) and
+               CUTIN_MIN_DIST < self.dRel < max_d and
                v_abs > max(3.0, DYNAMIC_SPEED_PCT * v_ego) and
                (self.vRel < CUTIN_CLOSING_VREL or self.dRel < CUTIN_CLOSE_HEADWAY * v_ego))
 
