@@ -277,6 +277,17 @@ class RadarD:
     pm.send("radarState", radar_msg)
 
 
+# dp: radard_ext 只在下列品牌載入（v9.6.4）。radard_ext 的門檻全部以 Toyota TSS2 log 驗證，
+# 其他品牌雷達特性不同，未驗證前一律使用原廠 get_lead / Track：
+#   - 一車一點（Hyundai/Kia、Honda Nidec、Ford MRR 聚類）：多點大型車鏈判定永遠不成立，聯結車防護失效。
+#   - Hyundai/Kia yRel = 0.5 × -sin(az) × dist：橫向尺度與公尺門檻（車道線、走廊）不一致。
+#   - measured：Honda/Ford/Hyundai 恆為 True、GM 未設定（恆為 False）。
+#   - GM 雷達 14 Hz：低於 radard 20 Hz，切入濾波與確認幀數失準。
+# Toyota TSS-P（0x210 系列）與 TSS2 同一套 radar_interface 語意（VALID / LAT_DIST / NEW_TRACK），一併啟用。
+# radard_ext 於 import 時即 monkey patch radard.Track / radard.get_lead，非啟用品牌不可 import。
+DP_RADARD_EXT_BRANDS = ("toyota",)
+
+
 # fuses camera and radar data for best lead detection
 def main() -> None:
   config_realtime_process(5, Priority.CTRL_LOW)
@@ -290,9 +301,14 @@ def main() -> None:
   sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
-  # dp: 使用 radard_ext 的 RadarDExt（Track / get_lead 由 radard_ext 替換）
-  from dragonpilot.selfdrive.controls.radard_ext import RadarDExt as RadarD
-  RD = RadarD(CP.radarDelay)
+  # dp: 啟用品牌使用 radard_ext 的 RadarDExt（Track / get_lead 由 radard_ext 替換），其他品牌用原廠 RadarD
+  if CP.brand in DP_RADARD_EXT_BRANDS:
+    from dragonpilot.selfdrive.controls.radard_ext import RadarDExt
+    RD = RadarDExt(CP.radarDelay)
+    cloudlog.info(f"radard: radard_ext enabled (brand={CP.brand})")
+  else:
+    RD = RadarD(CP.radarDelay)
+    cloudlog.info(f"radard: radard_ext disabled, using stock lead selection (brand={CP.brand})")
 
   while 1:
     sm.update()
