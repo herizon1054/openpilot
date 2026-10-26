@@ -27,6 +27,9 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
          所有門檻只用 Toyota TSS2 log 驗證，其他品牌雷達的點數、measured 語意、橫向尺度不同（見 radard.py）。
   v9.6.5 雷達主導救援、切入預測的啟用車速提高到 > 30 km/h（避開市區低速路口轉彎）；
          已採用中的目標沿用原車速下限（救援 10.8 km/h、切入 20 km/h），本車減速時前車不會突然消失。
+  v9.6.6 切入預測一律以越過車道線為標準（不再只限多點大型車）：雷達點越過目標側車道線才算候選、
+         退回線外 0.1m 即釋放；車道線信心度 < 0.5 時退回本車路徑 + 濾波車道寬（越過推估線 0.3m）。
+         單一反射點的聯結車／大車在旁車道橫向抖動、路徑漂移不再觸發切入。代價：真切入要等壓過線才採用。
 
 與原廠（cp）的刻意分歧：
   - 低速覆寫：現有雷達前車與最近目標為同一物體時不替換（原廠只要更近就替換，重複點會每幀互換）。
@@ -213,6 +216,9 @@ LANE_WIDTH_MIN = 3.0                # m
 LANE_WIDTH_MAX = 4.0                # m
 LANE_WIDTH_X = 8.0                  # m，量測車道寬的位置（模型座標）
 LANE_WIDTH_ALPHA = 0.05             # 每幀濾波係數（約 1 秒時間常數）
+# v9.6.6：所有切入目標（不分大小車）都套用上方的車道線規則（LARGE_LINE_* / LARGE_PATH_*）。
+# False = 回到 v9.6.5（只有多點大型車用車道線，小車用 CUTIN_OFF_MAX / CUTIN_HOLD_OFF 偏移帶）。
+CUTIN_LINE_CROSS_ALL = True
 
 # ==============================================================================
 # 模組狀態（跨幀）
@@ -552,6 +558,7 @@ class TrackDP(Track):
       return
 
     off, vy = self._update_cutin_filter(path_y, is_large)
+    line_rule = is_large or CUTIN_LINE_CROSS_ALL     # 車道線規則（v9.6.6 起所有目標）
     intr, mode = _lane_intrusion(self, off, lane_ctx)
     self.cutin_line_intr = intr
     self.cutin_line_mode = mode
@@ -564,9 +571,9 @@ class TrackDP(Track):
                (self.vRel < CUTIN_CLOSING_VREL or self.dRel < CUTIN_CLOSE_HEADWAY * v_ego))
 
     if self.cutin_active:
-      self._update_cutin_active(off, vy, intr, mode, base_ok, fresh, gated, is_large)
+      self._update_cutin_active(off, vy, intr, mode, base_ok, fresh, gated, line_rule)
     else:
-      self._update_cutin_candidate(off, vy, intr, mode, base_ok, is_large, v_ego)
+      self._update_cutin_candidate(off, vy, intr, mode, base_ok, line_rule, v_ego)
 
   def _update_cutin_filter(self, path_y: float, is_large: bool) -> tuple[float, float]:
     # 相對本車路徑的橫向偏移 alpha-beta 濾波。路徑一幀跳動超過 CUTIN_PATH_JUMP_LIMIT 時偏移基準
@@ -599,10 +606,10 @@ class TrackDP(Track):
     return self.cutin_off, self.cutin_vy
 
   def _update_cutin_active(self, off: float, vy: float, intr: float, mode: str, base_ok: bool, fresh: bool,
-                           gated: bool, is_large: bool) -> None:
-    # 已採用：仍在維持範圍內（小車 |off| < CUTIN_HOLD_OFF；大型車仍在車道線內）且未遠離就維持；
+                           gated: bool, line_rule: bool) -> None:
+    # 已採用：仍在維持範圍內（車道線規則：仍在車道線內；偏移帶規則：|off| < CUTIN_HOLD_OFF）且未遠離就維持；
     # 採用後 CUTIN_PENDING_MAX_FRAMES 幀內仍未進入走廊（壓線不進來）即停滯釋放。
-    if is_large:
+    if line_rule:
       release_thr = LARGE_LINE_RELEASE if mode == 'line' else LARGE_PATH_RELEASE
       within = intr >= release_thr
     else:
@@ -624,14 +631,14 @@ class TrackDP(Track):
     elif moving_away:
       reason = 'moving_away'
     elif not within:
-      reason = 'large_line_out' if is_large else 'off'
+      reason = 'line_out' if line_rule else 'off'
     else:
       reason = 'base_condition'
     cloudlog.debug(
       f"[RadarD_CutinRelease_DP] id={self.identifier} reason={reason} " +
       f"d={self.dRel:.1f} off={off:.2f} vy={vy:.2f} vRel={self.vRel:.2f} " +
       f"aLeadK={self.aLeadK:.2f} aLeadTau={float(self.aLeadTau.x):.2f} age={self.cutin_measured_age} " +
-      f"large={is_large} mode={mode} intr={intr:.2f} activeFrames={self.cutin_active_frames}"
+      f"large={self.cutin_is_large} mode={mode} intr={intr:.2f} activeFrames={self.cutin_active_frames}"
     )
     self.cutin_active = False
     self.cutin_frames = 0
@@ -639,13 +646,13 @@ class TrackDP(Track):
     self.cutin_active_frames = 0
     self.cutin_entered = False
 
-  def _update_cutin_candidate(self, off: float, vy: float, intr: float, mode: str, base_ok: bool, is_large: bool,
+  def _update_cutin_candidate(self, off: float, vy: float, intr: float, mode: str, base_ok: bool, line_rule: bool,
                               v_ego: float) -> None:
     # 未採用：預測即將進入走廊（朝路徑移動、橫向速度合理、CUTIN_T_ENTER 內進入）的連續幀數。
-    # 小車偏移須 < CUTIN_OFF_MAX；大型車須已越過車道線（本車路徑模式多扣餘裕）。
+    # 車道線規則：須已越過車道線（本車路徑模式多扣餘裕）；偏移帶規則：偏移須 < CUTIN_OFF_MAX。
     self.cutin_active_frames = 0
     self.cutin_entered = False
-    if is_large:
+    if line_rule:
       enter_thr = LARGE_LINE_ENTER if mode == 'line' else LARGE_PATH_ENTER
       lateral_ok = CUTIN_CORRIDOR < abs(off) and intr >= enter_thr
     else:
@@ -662,7 +669,7 @@ class TrackDP(Track):
         f"[RadarD_CutinArmed_DP] id={self.identifier} d={self.dRel:.1f} y={self.yRel:.2f} " +
         f"off={off:.2f} vy={vy:.2f} tEnter={t_enter:.2f}s vRel={self.vRel:.2f} " +
         f"vLead={self.vLead:.2f} aLeadK={self.aLeadK:.2f} aLeadTau={float(self.aLeadTau.x):.2f} " +
-        f"frames={self.cutin_frames} age={self.cutin_measured_age} large={is_large} mode={mode} intr={intr:.2f}"
+        f"frames={self.cutin_frames} age={self.cutin_measured_age} large={self.cutin_is_large} mode={mode} intr={intr:.2f}"
       )
       self.cutin_diag_armed = True
     elif self.cutin_frames == 0:
