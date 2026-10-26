@@ -30,6 +30,9 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
   v9.6.6 切入預測一律以越過車道線為標準（不再只限多點大型車）：雷達點越過目標側車道線才算候選、
          退回線外 0.1m 即釋放；車道線信心度 < 0.5 時退回本車路徑 + 濾波車道寬（越過推估線 0.3m）。
          單一反射點的聯結車／大車在旁車道橫向抖動、路徑漂移不再觸發切入。代價：真切入要等壓過線才採用。
+  v9.6.7 切入／大型車車道線門檻提前 0.1m：雷達點壓線（線外 0.1m 內）即為候選，釋放與本車路徑模式同步
+         提前 0.1m。續命例外：視覺前車比鎖定中的雷達前車近 HOLD_BYPASS_DD 以上且視覺機率高時不續命，
+         當幀換成視覺前車（log 032 藍車：遠方前車續命讓換到視覺前車晚 0.25 秒）。
 
 與原廠（cp）的刻意分歧：
   - 低速覆寫：現有雷達前車與最近目標為同一物體時不替換（原廠只要更近就替換，重複點會每幀互換）。
@@ -107,6 +110,11 @@ SELECT_HOLDOVER_FRAMES = 3          # 配對失敗時沿用上一個雷達前車
 #   - 鎖定目標仍在雷達清單與走廊內、且沒有更近的純視覺前車：續命延長為 STICKY_HOLD_FRAMES。
 #   - 換成「更遠」的目標需連續 SWITCH_FARTHER_CONFIRM_FRAMES 幀；換成「更近」的（切入車）立即切換。
 STICKY_HOLD_FRAMES = 10             # 0.5 秒
+# v9.6.7 續命例外：配對失敗時，若純視覺前車比上一個雷達前車近 HOLD_BYPASS_DD 以上、且視覺機率
+# >= HOLD_BYPASS_MIN_PROB，不續命，當幀改用視覺前車（模型已換到較近的切入車，但視覺測距誤差大、
+# 雷達配對不到時，續命會讓前車停留在遠方車）。原廠沒有續命，此情況等同回到原廠行為。
+HOLD_BYPASS_DD = 10.0               # m
+HOLD_BYPASS_MIN_PROB = 0.7
 SWITCH_FARTHER_CONFIRM_FRAMES = 5   # 0.25 秒
 # Toyota TSS2 雷達常把同一台車回報成兩個 trackId（log 92462：60 秒內互換 279 次）。
 # 三項差距都在下列範圍內視為同一物體（log 中重複點最大差距：1.13m / 0.60m / 0.90 m/s）。
@@ -207,10 +215,10 @@ LARGE_VEH_CHAIN_GAP = 4.0           # m，鏈上相鄰反射點最大間距
 LARGE_VEH_MIN_SPAN = 5.0            # m，鏈長門檻
 LARGE_VEH_HOLD_FRAMES = 20          # 1.0 秒遲滯
 LANE_LINE_MIN_PROB = 0.5            # 目標側車道線信心度下限
-LARGE_LINE_ENTER = 0.0              # m，車道線模式候選：雷達點越過車道線
-LARGE_LINE_RELEASE = -0.1           # m，車道線模式釋放：退回線外 0.1m
-LARGE_PATH_ENTER = 0.3              # m，本車路徑模式候選：越過推估車道線 0.3m
-LARGE_PATH_RELEASE = 0.0            # m，本車路徑模式釋放：退回推估車道線外
+LARGE_LINE_ENTER = -0.1             # m，車道線模式候選：雷達點壓線（線外 0.1m 內）（v9.6.6：0.0 越線）
+LARGE_LINE_RELEASE = -0.2           # m，車道線模式釋放：退回線外 0.2m（v9.6.6：-0.1）
+LARGE_PATH_ENTER = 0.2              # m，本車路徑模式候選：越過推估車道線 0.2m（v9.6.6：0.3）
+LARGE_PATH_RELEASE = -0.1           # m，本車路徑模式釋放：退回推估車道線外 0.1m（v9.6.6：0.0）
 LANE_WIDTH_DEFAULT = 3.5            # m
 LANE_WIDTH_MIN = 3.0                # m
 LANE_WIDTH_MAX = 4.0                # m
@@ -931,6 +939,14 @@ def get_lead_ext(
   hold_limit = SELECT_HOLDOVER_FRAMES
   if locked_in_path and (vision_cand is None or vision_cand['dRel'] >= locked.dRel):
     hold_limit = STICKY_HOLD_FRAMES
+  # 續命例外（v9.6.7）：視覺前車明顯較近且機率高時不續命
+  if (matched_track is None and vision_cand is not None and cache['track'] is not None and
+      lead_prob >= HOLD_BYPASS_MIN_PROB and vision_cand['dRel'] < cache['track'].dRel - HOLD_BYPASS_DD):
+    hold_limit = 0
+    cloudlog.debug(
+      f"[RadarD_HoldBypass_DP] 目標 {lead_idx} | 雷達前車 {cache['track'].identifier} d={cache['track'].dRel:.1f} → " +
+      f"視覺前車 d={vision_cand['dRel']:.1f} 機率 {lead_prob:.2f}"
+    )
   held_track = None
   if matched_track is None and cache['track'] is not None and cache['absent'] + 1 <= hold_limit:
     held_track = cache['track']
