@@ -106,6 +106,11 @@ const EncoderInfo stream_road_encoder_info = {
   //.thumbnail_name = "thumbnail",
   .record = false,
   .adaptive_bitrate = true,
+  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
+  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
+  .frame_width = 1440,
+  .frame_height = 902,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamRoadEncode),
 };
@@ -114,6 +119,11 @@ const EncoderInfo stream_wide_road_encoder_info = {
   .publish_name = "livestreamWideRoadEncodeData",
   .record = false,
   .adaptive_bitrate = true,
+  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
+  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
+  .frame_width = 1440,
+  .frame_height = 902,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamWideRoadEncode),
 };
@@ -122,6 +132,11 @@ const EncoderInfo stream_driver_encoder_info = {
   .publish_name = "livestreamDriverEncodeData",
   .record = false,
   .adaptive_bitrate = true,
+  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
+  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
+  .frame_width = 1440,
+  .frame_height = 902,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamDriverEncode),
 };
