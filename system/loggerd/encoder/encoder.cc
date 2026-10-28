@@ -6,6 +6,13 @@ VideoEncoder::VideoEncoder(const EncoderInfo &encoder_info, int in_width, int in
   out_width = encoder_info.frame_width > 0 ? encoder_info.frame_width : in_width;
   out_height = encoder_info.frame_height > 0 ? encoder_info.frame_height : in_height;
 
+  // dp - 寬度超過上限時等比例縮小（寬高取偶數）；未超過則維持原尺寸
+  //   AR0231 / OX03C10 1928x1208 → 1440x902；OS04C10 1344x760 → 不變
+  if (encoder_info.max_frame_width > 0 && out_width > encoder_info.max_frame_width) {
+    out_height = (int)((int64_t)out_height * encoder_info.max_frame_width / out_width) & ~1;
+    out_width = encoder_info.max_frame_width & ~1;
+  }
+
   pm.reset(new PubMaster(std::vector{encoder_info.publish_name}));
 }
 
