@@ -62,6 +62,8 @@ public:
   bool adaptive_bitrate = false;
   int frame_width = -1;
   int frame_height = -1;
+  // dp - 輸出寬度上限：鏡頭寬度超過時等比例縮小（見 encoder.cc）；-1 = 不限制
+  int max_frame_width = -1;
   int fps = MAIN_FPS;
   std::function<EncoderSettings(int)> get_settings;
 
@@ -106,11 +108,10 @@ const EncoderInfo stream_road_encoder_info = {
   //.thumbnail_name = "thumbnail",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
-  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
-  .frame_width = 1440,
-  .frame_height = 902,
+  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
+  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamRoadEncode),
 };
@@ -119,11 +120,10 @@ const EncoderInfo stream_wide_road_encoder_info = {
   .publish_name = "livestreamWideRoadEncodeData",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
-  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
-  .frame_width = 1440,
-  .frame_height = 902,
+  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
+  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamWideRoadEncode),
 };
@@ -132,11 +132,10 @@ const EncoderInfo stream_driver_encoder_info = {
   .publish_name = "livestreamDriverEncodeData",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流縮小到 1440x902（與 1928x1208 同比例）：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208 會讓 MediaCodec.configure 失敗而退回軟體解碼（實測 Xiaomi c2.qti.avc.decoder 寬上限 1920）。
-  // V4L 編碼器縮放不額外耗資源（同 qcam 526x330）。opview 疊圖用相機內參計算，不受串流解析度影響。
-  .frame_width = 1440,
-  .frame_height = 902,
+  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
+  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
+  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamDriverEncode),
 };
