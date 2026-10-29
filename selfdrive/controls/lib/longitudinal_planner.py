@@ -199,7 +199,11 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
       # ⚠️ AEM 啟用時，get_mode() 預設忽略這裡傳入的 mode（即實驗模式開關），屬刻意分歧，
       # 見 aem.py 檔頭與 AEM_EXPERIMENTAL_OFF_FORCES_ACC。
       self.aem.update_states(model_msg=sm['modelV2'], radar_msg=sm['radarState'], v_ego=sm['carState'].vEgo,
-                              stop_dist_m=self.traffic_stop.near_stop_dist_m)  # 不受障礙物閘門影響的停止線距離
+                              stop_dist_m=self.traffic_stop.near_stop_dist_m,  # 不受障礙物閘門影響的停止線距離
+                              # AEM v16：有打方向燈就不進入實驗模式
+                              blinker=sm['carState'].leftBlinker or sm['carState'].rightBlinker,
+                              # AEM v17：方向盤角度 > 20° 取消「接近停止線強制實驗模式」（扣除角度偏移）
+                              steer_angle_deg=sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg)
       mode = self.aem.get_mode(mode)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -246,7 +250,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
 
     if mode == 'blended':
       # AEM 啟用：基礎門檻由 AEM 依車速決定，接近停止線時取較保守者；
-      # AEM 停用：固定 ALLOW_THROTTLE_THRESHOLD_E2E。方向燈不影響節流門檻（亦不影響 AEM）。
+      # AEM 停用：固定 ALLOW_THROTTLE_THRESHOLD_E2E。方向燈不影響節流門檻（AEM v16 起方向燈會讓 mode 走 acc，見 aem.py）。
       if dp_flags & DPFlags.AEM:
         allow_throttle_threshold = self.aem.base_throttle_threshold
         if self.aem.near_stop_active:
