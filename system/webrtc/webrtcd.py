@@ -53,15 +53,32 @@ class AsyncTaskRunner:
     pass
 
 
+def _r3(values) -> list[float]:
+  return [round(v, 3) for v in values]
+
+
+def _xyz(xyzt) -> dict:
+  return {"x": _r3(xyzt.x), "y": _r3(xyzt.y), "z": _r3(xyzt.z)}
+
+
+def compact_model_v2(model) -> dict:
+  """opview 用的 modelV2 精簡版：只送畫面用到的欄位，數值四捨五入到小數 3 位。
+  完整 to_dict() 約 31 KB / 筆（20 Hz ≈ 5 Mbps），精簡後約 5.6 KB（≈ 0.9 Mbps），
+  comma 端 json.dumps 與手機端 jsonDecode 的負擔也一起降低。
+  opview 讀的欄位：position.x/y/z、laneLines[].x/y/z、laneLineProbs、roadEdges[].x/y/z、roadEdgeStds、acceleration.x
+  （見 opview lib/selfdrive/ui/ui_state.dart applyModelV2）。opview 之後若要用其他欄位，需在這裡一併加上。"""
+  return {
+    "frameId": model.frameId,
+    "position": _xyz(model.position),
+    "laneLines": [_xyz(l) for l in model.laneLines],
+    "laneLineProbs": _r3(model.laneLineProbs),
+    "roadEdges": [_xyz(e) for e in model.roadEdges],
+    "roadEdgeStds": _r3(model.roadEdgeStds),
+    "acceleration": {"x": _r3(model.acceleration.x)},
+  }
+
+
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
-  def __init__(self, sm: messaging.SubMaster):
-    super().__init__()
-    self.sm = sm
-    self.channels: list[RTCDataChannel] = []
-
-  def add_channel(self, channel: 'RTCDataChannel'):
-    self.channels.append(channel)
-
   def to_json(self, msg_content: Any):
     if isinstance(msg_content, capnp._DynamicStructReader):
       msg_dict = msg_content.to_dict()
@@ -74,17 +91,56 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
 
     return msg_dict
 
+  # opview：data channel 是可靠、有序的，aiortc 的送出佇列沒有上限。
+  # 網路（例如 iPhone 熱點）或 comma CPU 跟不上時，舊訊息會在佇列裡越積越多、照順序晚到，
+  # 手機上就會看到「車停了還顯示 98 km/h」這種落後好幾秒到幾十秒的畫面。
+  # 佇列超過上限時這一輪不送（SubMaster 只留最新值，下一輪送的就是最新資料），讓延遲維持在上限以內。
+  MAX_BUFFERED_BYTES = 256 * 1024
+  # opview 只在 modelV2（20 Hz）到達時重畫：carState、controlsState 這類 100 Hz 的 service 多送也看不到，
+  # 每個 service 最多約 33 Hz（間隔 30 ms）。20 Hz 以下的 service（含 modelV2）不受影響。
+  MIN_SEND_INTERVAL = 0.03
+
+  def __init__(self, sm: messaging.SubMaster):
+    super().__init__()
+    self.sm = sm
+    self.channels: list[RTCDataChannel] = []
+    self.skipped = 0
+    self.congested_since: float | None = None
+    self.last_sent: dict[str, float] = {}
+
+  def add_channel(self, channel: 'RTCDataChannel'):
+    self.channels.append(channel)
+
   def update(self):
     # this is blocking in async context...
     self.sm.update(0)
+    ready = [ch for ch in self.channels if ch.bufferedAmount <= self.MAX_BUFFERED_BYTES]
+    n_updated = sum(1 for updated in self.sm.updated.values() if updated)
+    if len(ready) < len(self.channels):
+      if self.congested_since is None:
+        self.congested_since = time.monotonic()
+        buffered = max(ch.bufferedAmount for ch in self.channels)
+        self.logger.warning("data channel congested (%d bytes queued), dropping stale messages", buffered)
+      self.skipped += n_updated
+    elif self.congested_since is not None:
+      self.logger.warning("data channel recovered after %.1fs, dropped %d messages",
+                          time.monotonic() - self.congested_since, self.skipped)
+      self.congested_since = None
+      self.skipped = 0
+    if not ready:
+      return
+    now = time.monotonic()
     for service, updated in self.sm.updated.items():
       if not updated:
         continue
-      msg_dict = self.to_json(self.sm[service])
+      if now - self.last_sent.get(service, 0.0) < self.MIN_SEND_INTERVAL:
+        continue
+      self.last_sent[service] = now
+      msg_dict = compact_model_v2(self.sm[service]) if service == "modelV2" else self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
       outgoing_msg = {"type": service, "logMonoTime": mono_time, "valid": valid, "data": msg_dict}
       encoded_msg = json.dumps(outgoing_msg).encode()
-      for channel in self.channels:
+      for channel in ready:
         channel.send(encoded_msg)
 
   async def run(self):
