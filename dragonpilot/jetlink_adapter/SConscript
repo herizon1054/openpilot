@@ -14,7 +14,7 @@ Import('env', 'arch', 'camera_configs')
 
 basedir = env.Dir("#").abspath
 jetlink_repo = env.Dir("#jetlink_repo").abspath
-capture = os.path.join(jetlink_repo, 'jetlink', 'openpilot', 'warp.py')
+capture = os.path.join(basedir, 'dragonpilot', 'jetlink_adapter', 'warp.py')
 
 # comma GPU only (dp names the comma's arch larch64): the pickle is captured
 # against Device.DEFAULT and only modeld on the device loads one. And only with
@@ -46,6 +46,6 @@ if arch == 'larch64' and os.path.isfile(capture):
     # every device builds this, link on or not, so a failed compile must not fail
     # the build. It leaves no pickle, modeld stays on the small model and the
     # offroad alert says why ("no warp built for this camera")
-    cmd = (f'-python3 -m jetlink.openpilot.warp --adapter {jetlink_adapter.__name__} '
+    cmd = (f'-python3 -m dragonpilot.jetlink_adapter.warp --adapter {jetlink_adapter.__name__} '
            f'--camera {cam_w}x{cam_h} --model {model_w}x{model_h} --output {pkl}')
     lenv.Command(pkl, tinygrad_files + script_files, Action(cmd, "  [JETLINK WARP] $TARGET"))

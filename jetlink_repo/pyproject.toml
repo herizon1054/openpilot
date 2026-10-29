@@ -24,6 +24,10 @@ dev = ["pytest>=7", "ruff", "onnx>=1.16"]
 [tool.setuptools.packages.find]
 include = ["jetlink*"]
 
+# The root script the comma runs (jetlink/comma/root.py), so a wheel has it too
+[tool.setuptools.package-data]
+"jetlink.comma" = ["jetlink-root.sh"]
+
 [tool.setuptools.dynamic]
 version = { attr = "jetlink.__version__" }
 

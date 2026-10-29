@@ -7,8 +7,8 @@ See the LICENSE file in the root directory for more details.
 Who may do endpoint IO on the gadget, while one process owns it throughout.
 
 The owner (owner.py) holds ep0 for as long as the link is on, and nothing else
-ever does: when two processes took turns at it, every change of owner was an
-unplug, a fresh libusb open and a fresh server session as the Jetson saw it.
+ever does: to the Jetson, a change of who holds ep0 is an unplug, a fresh
+libusb open and a fresh server session.
 
 What still has to change hands is the right to read the endpoint files.
 FunctionFS keeps a queued read queued until something completes it, so a second
@@ -55,10 +55,7 @@ POLL = 0.5
 # what a borrower passes on of the server's hello (Loan.note_server): the owner
 # never speaks the protocol, and sleep_after is how it knows whether letting
 # go of the gadget lets the Jetson sleep. The rest is for its status record
-SERVER_FIELDS = ('protocol', 'device', 'backend', 'runtime_version', 'trt_version', 'sleep_after',
-                 # dp: what the far end has loaded and built, so the comma can show the phone's
-                 # models and follow the one it loaded (gadget.SERVER keeps them)
-                 'loaded', 'cached_models')
+SERVER_FIELDS = ('protocol', 'device', 'backend', 'runtime_version', 'trt_version', 'sleep_after', 'loaded', 'cached_models')
 
 
 def _send(conn: socket.socket, msg: dict) -> None:

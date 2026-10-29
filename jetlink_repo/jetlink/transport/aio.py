@@ -9,7 +9,7 @@ Linux native AIO (io_submit), for the gadget's endpoint writes.
 A synchronous FunctionFS write holds the endpoint's one usb_request, and
 epfile->mutex with it, until the host has taken every byte, so a frame sent as
 32 KB writes leaves the bus idle between them: 1.4 ms a frame at 13 writes,
-2.8 ms at 25 (2026-10-06 bench, against one 512 KB write). The AIO path in
+2.8 ms at 25, against one 512 KB write. The AIO path in
 ffs_epfile_io gives each iocb its own request, copies the iocb's bytes into it
 and queues it before io_submit moves on, then lets go of the mutex. dwc3 puts
 every queued request on its TRB ring, so the bus streams them back to back,

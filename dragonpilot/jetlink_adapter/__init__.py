@@ -47,7 +47,7 @@ if str(JETLINK_REPO) not in sys.path:
 
 # the version of jetlink.openpilot's API this adapter is written to; any other
 # is treated as jetlink being absent, with the reason as the offroad alert
-API = 2
+API = 3
 
 # the gadget owner, as manager names the process and selfdrived lists it
 OWNER = 'jetlinkd'
@@ -172,6 +172,19 @@ class Adapter:
     self.basedir = Path(BASEDIR)
     # one Params per store (a test or a bench runs under its own prefix)
     self._stores: dict[Path, object] = {}
+
+  def in_control(self) -> bool:
+    # Updated by modeld immediately before run(); default closed before its first frame.
+    return _model_in_control
+
+  def model_warp(self, small, cam_w: int, cam_h: int, model_w: int, model_h: int):
+    # dp's two-JIT modeld and tinygrad keep their existing standalone warp format.
+    from dragonpilot.jetlink_adapter.warp import Warps, Warp
+    jit = Warps(self).load(cam_w, cam_h, model_w, model_h)
+    made = tuple(getattr(jit.captured.ret, 'shape', ()))
+    if made != (2, 6, model_h // 2, model_w // 2):
+      raise RuntimeError(f"dp warp output {made} does not match {model_w}x{model_h}")
+    return Warp(jit, self.model_face().frame_size(cam_w, cam_h), self.log)
 
   # -- params ---------------------------------------------------------------
 
@@ -529,6 +542,14 @@ def reason() -> str | None:
 def prepare() -> bool:
   """modeld, before config_realtime_process: will the link join this modeld?"""
   return _api().prepare()
+
+
+_model_in_control = True
+
+
+def update_control(sm) -> None:
+  global _model_in_control
+  _model_in_control = in_control(sm)
 
 
 _alka_enabled: bool | None = None

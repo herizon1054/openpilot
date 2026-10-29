@@ -13,8 +13,8 @@ frames and context in, 18452 floats out, and holds no control state.
 The split is at `run_policy`. The warp stays on the comma's GPU: its input is a
 2 MB camera buffer already there and its output the 393 KB the link carries
 anyway. The history queues live on the Jetson, shipping them would cost ~10 MB
-a frame instead of ~0.5 MB. Upstream fused warp and policy into one JIT, so
-the fork's build compiles a standalone warp; see warp.
+a frame instead of ~0.5 MB. modeld runs its warp as a JIT of its own, and
+the link runs the same one; see warp.
 
 A model that keeps its own history (openpilot #38916, Cinque Terre V3 on)
 takes the same warped frame and the same scalars; its hidden state never
@@ -22,7 +22,7 @@ leaves the Jetson, so there is no prev_feat to send back. The spec says which.
 
 What openpilot's modeld reads off a ModelState comes from the fork's adapter
 (ModelFace): comma's constants, parser, smoothing and action function.
-tinygrad is warp.Warp's to import: only modeld and the build have it.
+tinygrad is warp.Warp's to import: only modeld has it.
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from jetlink.protocol import NotFinite
+
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 SLOW_FRAME = 0.05  # the full 20 Hz budget, not just the largest outliers
 # How far into a frame end() waits for the reply before publishing the
@@ -41,7 +43,7 @@ SLOW_FRAME = 0.05  # the full 20 Hz budget, not just the largest outliers
 # would be dropped: modeld's own work around run() takes the rest of the 50 ms.
 # A held frame is a plan one frame old, which the 10 s plan and the actuator
 # delay both dwarf, where a dropped frame is the same stale plan plus a count
-# toward selfdrived's modeldLagging. None waits the client's deadline, as before
+# toward selfdrived's modeldLagging. None waits the client's full deadline
 HOLD_FRAME = 0.046
 # Held frames the large model may make before it is behind rather than
 # tailing: this many in a row, or more than HOLDS_ALLOWED within HOLD_WINDOW.
@@ -57,8 +59,7 @@ HOLD_WINDOW = 10.0
 # The first frames after a swap, which the fork holds engagement off for (a
 # second at 20 Hz): a single held frame among them is behind. A host cold from
 # a reconnect proves itself here, before anyone can engage, rather than at the
-# wheel, where an iPhone's every return was a soft disable within a second
-# (2026-10-04)
+# wheel, where a slow host's return is a soft disable within a second
 PROVING_FRAMES = 20
 # the first of them never hand back, held or not: the first after a join
 # carries the history reset, and a Mac's is ~100 ms of CoreML warm-up. A
@@ -156,9 +157,9 @@ class JetlinkModelState:
     # model manager key off this flag
     self.chestnut = True
 
-    # a warp.Warp, loaded and warmed ahead: its first call costs ~2 s and this
-    # runs on modeld's frame thread. Frames go out of its output as they are,
-    # over either transport
+    # a warp.Warp or the adapter's model_warp, loaded and warmed ahead: its
+    # first call links the JIT, and this runs on modeld's frame thread. Frames
+    # go out of its output as they are, over either transport
     self.warp = warp
 
     self.input_shapes = spec.input_shapes
@@ -193,6 +194,8 @@ class JetlinkModelState:
     self._holds: deque[float] = deque()
     self._holds_in_a_row = 0
     self.behind: str | None = None
+    # whether the last frame published the one before it: the runtime record's
+    self.held = False
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     return {k: model_outputs[np.newaxis, v] for k, v in output_slices.items()}
@@ -264,8 +267,9 @@ class JetlinkModelState:
   def end(self, after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
     """The sent frame's output, as modeld blocks on a chestnut's, but not past
     HOLD_FRAME once there is an output to publish again: a frame that long
-    is a dropped camera frame. Only a stall past the client's deadline raises,
-    into the joining state's demotion to the small model."""
+    is a dropped camera frame. Only a stall past the client's deadline, or an
+    output that is not finite, raises, into the joining state's demotion to
+    the small model."""
     frame, self._frame = self._frame, None
     # publish health while the Jetson works
     if after_enqueue is not None:
@@ -274,12 +278,17 @@ class JetlinkModelState:
     if frame.seq is None:
       model_output = None   # not sent (see send): held
     else:
-      model_output = self.client.infer_end(frame.seq, hold=self._hold_left(frame) if self._can_hold else None)
+      try:
+        model_output = self.client.infer_end(frame.seq, hold=self._hold_left(frame) if self._can_hold else None)
+      except NotFinite:
+        # answered, so the leave's summary counts it
+        self.trips.record(time.perf_counter() - frame.t0, self.client.last_timings[2])
+        raise
     t4 = time.perf_counter()
-    held = model_output is None
+    held = self.held = model_output is None
     self.behind = self._note_hold(held)
-    outputs = self._outputs(self.client.last_output if held else model_output)
     self.trips.record(t4 - frame.t0, self.client.last_timings[2])
+    outputs = self._outputs(self.client.last_output if held else model_output)
     # a frame past the budget is a dropped camera frame; send against reply
     # says which end it was. Held frames are a steady few on a marginal host,
     # so after the first they go to the log at TELEMETRY_PERIOD
@@ -352,9 +361,17 @@ class JetlinkModelState:
     gives the same dict again: the parser's softmax works in place on it."""
     if self._parsed is not None and self._parsed[0] is model_output:
       return self._parsed[1]
-    # the non-finite check runs on the server (Status.NOT_FINITE -> LinkError),
-    # so modeld's big->small failover fires as it does for a chestnut
+    # the server checks first (Status.NOT_FINITE, which the client raises as
+    # this). This is for one that did not, or bytes the link changed: a raw
+    # inf is a corrupt output even where the parser would clip it finite. A
+    # sum allocates nothing, and any NaN or inf makes it one; these outputs
+    # are far from overflow
+    if not np.isfinite(model_output.sum()):
+      raise NotFinite(f"frame {self._frame_id}: the output is not finite")
     outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, self.output_slices))
+    # a finite output can still parse to inf, by a parser that does not clip
+    if not np.isfinite(sum(float(value.sum()) for value in outputs_dict.values())):
+      raise NotFinite(f"frame {self._frame_id}: the parsed output is not finite")
     if SEND_RAW_PRED:
       outputs_dict['raw_pred'] = model_output.copy()
     self._parsed = (model_output, outputs_dict)

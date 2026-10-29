@@ -1,3 +1,4 @@
+from dragonpilot.selfdrive.ui import jetlink_ui
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -195,7 +196,9 @@ class HudRenderer(Widget):
       return
     state = ui_state.jetlink_state
     loading = state == JetlinkState.LOADING
-    if loading:
+    if state == JetlinkState.DISCONNECTED and jetlink_ui.show_disconnected():
+      icon, opacity = self._txt_jetlink, 0.4
+    elif loading:
       icon = self._txt_jetlink
       opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
     elif state in (JetlinkState.UNCOMPILED, JetlinkState.FAILED):
@@ -210,7 +213,7 @@ class HudRenderer(Widget):
     if icon is not self._jetlink_icon:
       self._jetlink_fade_time = rl.get_time()
       self._jetlink_icon = icon
-    visible = loading or state == JetlinkState.WAITING or rl.get_time() - self._jetlink_fade_time < SET_SPEED_PERSISTENCE
+    visible = loading or state in (JetlinkState.WAITING, JetlinkState.DISCONNECTED) or rl.get_time() - self._jetlink_fade_time < SET_SPEED_PERSISTENCE
     alpha = self._jetlink_alpha_filter.update(visible)
     if alpha < 1e-2:
       return

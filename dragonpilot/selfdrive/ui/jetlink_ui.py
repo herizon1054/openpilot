@@ -141,6 +141,10 @@ def status_note(model_name: str | None = None) -> str:
   return tr('Using {v0}; automatically fall back to the small model if disconnected, then switch back after recovery.').format(v0=big_name)
 
 
+def show_disconnected() -> bool:
+  return not ui_state.usbgpu and link_mode() != "off"
+
+
 class JetlinkIcons:
   """The three icon textures at one size, and how a state draws."""
 
@@ -150,10 +154,10 @@ class JetlinkIcons:
     self.orange = gui_app.texture(f"{ICON_DIR}/jetlink_orange.png", width, height)
 
   def for_state(self, state: JetlinkState) -> tuple[Union[rl.Texture, None], float]:
-    """(texture, opacity) for a state; None while disconnected. Loading pulses,
+    """(texture, opacity); enabled but disconnected shows a dim grey icon. Loading pulses,
     waiting is a steady dim green, failed is orange, ready/active solid green."""
     if state == JetlinkState.DISCONNECTED:
-      return None, 0.0
+      return (self.default, 0.4) if show_disconnected() else (None, 0.0)
     if state == JetlinkState.LOADING:
       return self.default, 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
     if state == JetlinkState.WAITING:

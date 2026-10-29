@@ -89,10 +89,8 @@ class Settings:
     return True if value is None else value
 
   def charge_phone(self) -> bool:
-    """Is an iPhone on a direct cable asked to charge from the comma? Off when
-    the param is unset or the fork declares none."""
-    key = self.keys.charge_phone
-    return bool(key) and self.params.get_bool(key) is True
+    """dp: phone charging is disabled, including previously enabled saved params."""
+    return False
 
   def marks(self) -> dict[str, int]:
     """When each watched param last changed, by key; 0 for one that is unset."""

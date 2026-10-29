@@ -14,14 +14,14 @@ openpilot #38916. feat_dim is prod(fb[2:]); older forks use fb[2], which gives
 32 rather than 16384 for the big model's (1,32,32,512) features_buffer.
 tests/test_queues.py catches the drift.
 
-The stateful one (openpilot #38916, 2026-09-15; Cinque Terre V3 onwards)
+The stateful one (openpilot #38916; Cinque Terre V3 onwards)
 carries its history in the graph: the newest warped frame goes in as new_img,
 each queue goes in as state_<q> and comes back advanced as next_state_<q>, and
 the hidden state never leaves the graph.
 
 Either way the wire carries the newest frame and three scalars, and the reply
 the outputs less hidden_state (protocol 3): the queued graph's server feeds its
-own hidden state back, which modeld did through prev_feat until then.
+own hidden state back, where an older modeld sends prev_feat.
 """
 from __future__ import annotations
 

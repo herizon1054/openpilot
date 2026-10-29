@@ -13,15 +13,15 @@ ask a jetlink server for. The bytes themselves are on comma's LFS servers,
 which is GitLab and not GitHub: each is asked in turn because which one has an
 object varies with the model's age.
 
-Since openpilot #38930 (2026-09-16) a commit can ship a precompiled tinygrad
+Since openpilot #38930 a commit can ship a precompiled tinygrad
 pkl instead, with no ONNX in the tree at all; Cinque Terre V3 is one. Its
 subject names the export ("Use f78ed37d for the precompiled eGPU driving
 model") and the ONNX is in comma's HuggingFace model repo, in the folder that
 id starts. sunnypilot's model builds find it the same way. That repo speaks
 the LFS batch protocol too, so it is one more endpoint to ask.
 
-Not every such commit names its export. ResAction's pull request (#39037,
-2026-10-05) adds the ONNX in one commit and replaces it with the pkl in the
+Not every such commit names its export. ResAction's pull request (#39037)
+adds the ONNX in one commit and replaces it with the pkl in the
 next, subject "compiled", and a squash merge's subject only names the pull
 request. The pointer is still in a diff: the one the commit's own patch
 deletes, or the last one its pull request's patch carries.
@@ -67,6 +67,9 @@ LFS_ENDPOINTS = (
 )
 # an export folder is a uuid; the subject names its first eight
 _EXPORT_ID = re.compile(r'\b[0-9a-f]{8}\b')
+# how comma's model commits name an export: the whole uuid, or its first eight
+# and the checkpoint ('8d736683/12864'). A bare eight could be any hex word
+_NAMED_EXPORT = r'\b{}[-/]'
 LFS_MEDIA_TYPE = 'application/vnd.git-lfs+json'
 POINTER_TIMEOUT = 10.0
 CONNECT_TIMEOUT = 30.0
@@ -180,17 +183,24 @@ def fetch_export_pointer(ref: str, timeout: float = POINTER_TIMEOUT, opener=None
   """The big ONNX a precompiled-pkl commit was built from. In turn: the export
   its subject names, in comma's model repo; the pointer its own diff deletes;
   and for a squash merge, the last pointer its pull request carried, or the
-  export one of that pull request's commits names."""
+  export one of that pull request's commits names.
+
+  The newest export named wins: a pull request's commits are in order, and
+  Mountain Dew's (#39047) named three before the one it shipped. One that is
+  not in the model repo yet stops the search rather than falling back to an
+  older one, a different model."""
   url = COMMIT_PATCH_URL.format(ref=ref)
   patch = http_get(url, timeout, opener, PATCH_MAX).decode('utf-8', 'replace')
   subjects = patch_subjects(patch)
   if not subjects:
     raise RegistryError(f"{url} has no subject line")
   subject = subjects[0]
-  ids = list(dict.fromkeys(_EXPORT_ID.findall(subject)))
-  if ids and (pointer := _export_pointer(ref, ids, subject, timeout, opener)) is not None:
+  ids = _newest_first(subject)
+  pointer, missing = _export_pointer(ref, ids, subject, timeout, opener)
+  if pointer is not None:
     return pointer
-  tried = [f"no folder in {DRIVING_MODELS_REPO} for {', '.join(ids)}" if ids else 'its subject names no export']
+  tried = [f"its subject {_not_uploaded(missing)}" if missing else f"no folder in {DRIVING_MODELS_REPO} for {', '.join(ids)}" if ids
+           else 'its subject names no export']
   if (pointer := diff_pointer(patch)) is not None:
     log.info("%s deletes %s %s", ref[:10], BIG_ONNX, pointer.oid[:16])
     return pointer
@@ -201,20 +211,37 @@ def fetch_export_pointer(ref: str, timeout: float = POINTER_TIMEOUT, opener=None
     if (pointer := diff_pointer(pull_patch)) is not None:
       log.info("%s merged #%s, whose last %s is %s", ref[:10], number, BIG_ONNX, pointer.oid[:16])
       return pointer
-    pull_subjects = ' '.join(patch_subjects(pull_patch))
-    pull_ids = [i for i in dict.fromkeys(_EXPORT_ID.findall(pull_subjects)) if i not in ids]
-    if pull_ids and (pointer := _export_pointer(ref, pull_ids, pull_subjects, timeout, opener)) is not None:
-      return pointer
-    tried.append(f"nor does pull request #{number}")
+    if missing is None:  # an export the subject names and the repo lacks stops the search here too
+      pull_subjects = ' '.join(patch_subjects(pull_patch))
+      pull_ids = [i for i in _newest_first(pull_subjects) if i not in ids]
+      pointer, pull_missing = _export_pointer(ref, pull_ids, pull_subjects, timeout, opener)
+      if pointer is not None:
+        return pointer
+      tried.append(f"pull request #{number} {_not_uploaded(pull_missing)}" if pull_missing else f"nor does pull request #{number}")
   raise RegistryError(f"{ref[:10]} has no {BIG_ONNX}: {'; '.join(tried)} ({subject!r})")
 
 
-def _export_pointer(ref: str, ids: list[str], subject: str, timeout: float, opener) -> Pointer | None:
-  """The ONNX in the first export folder one of `ids` starts, or None when none does."""
+def _newest_first(text: str) -> list[str]:
+  """The eight-hex ids `text` names, the last mention first."""
+  return list(dict.fromkeys(reversed(_EXPORT_ID.findall(text))))
+
+
+def _not_uploaded(export: str) -> str:
+  return f"names export {export}, which is not in {DRIVING_MODELS_REPO} yet"
+
+
+def _export_pointer(ref: str, ids: list[str], subject: str, timeout: float, opener) -> tuple[Pointer | None, str | None]:
+  """The ONNX in the first export folder one of `ids` starts, and None; or
+  None and the first id `subject` names as an export that has no folder, where
+  the search stops; or None and None when no id has a folder."""
+  if not ids:
+    return None, None
   folders = [e['path'] for e in _tree('', timeout, opener) if e.get('type') == 'directory']
   for export in ids:
     matches = [f for f in folders if f.startswith(export)]
     if not matches:
+      if re.search(_NAMED_EXPORT.format(export), subject):
+        return None, export
       continue
     if len(matches) > 1:
       raise RegistryError(f"{ref[:10]}: {export} starts {len(matches)} folders in {DRIVING_MODELS_REPO}")
@@ -230,8 +257,8 @@ def _export_pointer(ref: str, ids: list[str], subject: str, timeout: float, open
     if not is_sha256(oid) or not isinstance(size, int) or size <= 0:
       raise RegistryError(f"{files[0]['path']} is not an lfs object")
     log.info("%s names export %s: %s", ref[:10], export, files[0]['path'])
-    return Pointer(oid, size)
-  return None
+    return Pointer(oid, size), None
+  return None, None
 
 
 def lfs_resolve(endpoint: str, pointer: Pointer, timeout: float = CONNECT_TIMEOUT, opener=None) -> str | None:
@@ -274,8 +301,7 @@ def lfs_download(href: str, pointer: Pointer, dest: Path, progress: ProgressFn |
   A half-written model must never sit where the next start would hand it to a
   backend to build from. A transfer that stalls or is stopped keeps its .part,
   and the next call carries on from it with a Range request: 755 MB over a
-  car's connection need not arrive in one go (2026-10-06, one 30 s stall 85 s
-  in threw a whole download away). Only bytes that prove wrong are dropped.
+  car's connection need not arrive in one go. Only bytes that prove wrong are dropped.
   """
   opener = opener or urllib.request.urlopen
   dest = Path(dest)

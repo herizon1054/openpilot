@@ -118,7 +118,7 @@ class TcpTransport(StreamTransport):
   def listen_once(cls, host: str = '0.0.0.0', port: int = DEFAULT_PORT,
                   timeout: float | None = None) -> tuple[TcpTransport, tuple]:
     """Take exactly one incoming connection and stop listening: a phone that
-    dials us, for the bench and parity scripts run from a Mac."""
+    dials us, for the benchmark and parity scripts run from a Mac."""
     srv = cls.listen(host, port)
     try:
       srv.settimeout(timeout)

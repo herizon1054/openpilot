@@ -13,7 +13,7 @@ record also says whether the server has built the engine for the sha it names,
 so the spec and the readiness can never name different models. It must
 survive a reboot, or every ignition rebuilds a 160 s engine.
 
-A param today (Keys.spec), through the adapter's get and put.
+Stored as a param (Keys.spec), through the adapter's get and put.
 """
 from __future__ import annotations
 

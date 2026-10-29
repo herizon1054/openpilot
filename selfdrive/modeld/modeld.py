@@ -366,7 +366,7 @@ def main(demo=False):
     # handovers); the stall of one is not lag, and nor are the drops of the frame it happens on. The
     # joining model hands a large model back on this share of dropped frames, and swaps one in only
     # while nothing is in control
-    model.in_control = jetlink_adapter.in_control(sm)
+    jetlink_adapter.update_control(sm)
     model.frame_drop_ratio = frame_drop_ratio
     handovers = getattr(model, 'handovers', 0)
     big_driving = model is not small_model and getattr(model, 'chestnut', False)

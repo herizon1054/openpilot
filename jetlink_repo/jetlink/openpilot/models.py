@@ -82,11 +82,14 @@ class Models:
       return known[ref]['oid'], int(known[ref]['size'])
     oid, size = self.fetch_pointer(ref)
     known[ref] = {'oid': oid, 'size': size}
+    self._keep_pointers(known)
+    self.op.log.warning("jetlink: %s is %s, %d MB", ref[:10], oid[:16], size >> 20)
+    return oid, size
+
+  def _keep_pointers(self, known: dict[str, dict]) -> None:
     # blocking: the next lookup reads this back, and a put still in flight would be lost under it
     self.op.put(self.op.keys.pointers, known, block=True)
     self._index_cache = None
-    self.op.log.warning("jetlink: %s is %s, %d MB", ref[:10], oid[:16], size >> 20)
-    return oid, size
 
   @staticmethod
   def _row(name: str, ref: str, known: dict[str, dict]) -> dict:
@@ -125,7 +128,7 @@ class Models:
     """What runs with no pick: jetlink's default big model, else the newest the
     catalog lists. Not the chestnut's default, which is the model in the tree.
     A fork with no catalog at all (Keys.catalog None) gets jetlink's default by
-    its ref; one whose catalog has not been fetched yet waits for it, as ever."""
+    its ref; one whose catalog has not been fetched yet waits for it."""
     if self.op.keys.catalog is None:
       return self._row(DEFAULT_BIG_MODEL_NAME, DEFAULT_BIG_MODEL_REF, self._index()[1])
     models = self.model_index()
@@ -266,7 +269,10 @@ class Models:
     Never raises: a probe that fails keeps what the last one found."""
     try:
       from jetlink.registry.catalog import fetch_catalogs, merge_catalogs
-      merged = merge_catalogs([catalog, fetch_catalogs()], selector=self.op.catalog_selector)
+      fetched = fetch_catalogs()
+      self.keep_pins(fetched.get('pointers', {}))
+      merged = merge_catalogs([catalog, fetched], selector=self.op.catalog_selector)
+      merged.pop('pointers', None)  # the pins are kept above, never in the model manager's catalog
       added = len(merged.get('bundles', [])) - len(catalog.get('bundles', []))
       if added <= 0:
         return catalog
@@ -275,6 +281,17 @@ class Models:
     except Exception:
       self.op.log.exception("jetlink: could not check for newer catalogs")
       return self._found_before(catalog)
+
+  def keep_pins(self, pins: dict[str, dict]) -> None:
+    """Writes the list's pins over the kept pointers (see catalog.pinned_pointers)."""
+    known = self.pointers()
+    changed = {ref: pin for ref, pin in pins.items() if known.get(ref) != pin}
+    if not changed:
+      return
+    known.update(changed)
+    self._keep_pointers(known)
+    for ref, pin in changed.items():
+      self.op.log.warning("jetlink: %s is pinned to %s", ref[:10], pin['oid'][:16])
 
   def _found_before(self, catalog: dict) -> dict:
     """The catalog with the models the last probe found folded in again, from the

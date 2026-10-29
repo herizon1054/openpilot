@@ -154,10 +154,22 @@ def fetch_catalogs(opener=None) -> dict:
     except NotFound:
       break
   try:
-    found.append(fetch_catalog(EXTRA_CATALOG_URL, opener=opener))
+    extra = fetch_catalog(EXTRA_CATALOG_URL, opener=opener)
   except NotFound:
-    pass
-  return merge_catalogs(found)
+    extra = {}
+  merged, pins = merge_catalogs([*found, extra]), pinned_pointers(extra)
+  return {**merged, 'pointers': pins} if pins else merged
+
+
+def pinned_pointers(data: dict) -> dict[str, dict]:
+  """The extra list's well-formed pins, {ref: {'oid', 'size'}}: the ONNX jetlink
+  runs for that commit whatever a lookup said. See catalog/README.md."""
+  pins = data.get('pointers')
+  if not isinstance(pins, dict):
+    return {}
+  return {ref: {'oid': p['oid'], 'size': p['size']} for ref, p in pins.items()
+          if is_ref(ref) and isinstance(p, dict) and is_sha256(p.get('oid'))
+          and type(p.get('size')) is int and p['size'] > 0}
 
 
 def merge_catalogs(catalogs: list[dict], selector: int = REQUIRED_SELECTOR_VERSION) -> dict:

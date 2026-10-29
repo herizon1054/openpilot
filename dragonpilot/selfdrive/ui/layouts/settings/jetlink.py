@@ -20,7 +20,7 @@ import time
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget, DialogResult
-from openpilot.system.ui.widgets.list_view import multiple_button_item, text_item, toggle_item, button_item
+from openpilot.system.ui.widgets.list_view import multiple_button_item, text_item, button_item
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from dragonpilot import jetlink_adapter
@@ -60,13 +60,6 @@ class JetlinkLayout(Widget):
     self._reason_item = text_item(lambda: tr('Unavailable reason'), lambda: (ui_state.jetlink.reason if ui_state.jetlink and ui_state.jetlink.reason else none_text()))
     self._adb_item = text_item("ADB", lambda: tr('Disabled by Jetlink') if ui_state.adb_blocked else (tr('On') if ui_state.params.get_bool("AdbEnabled") else tr('Off')))
 
-    # an iPhone on a direct cable is asked to charge from the comma; off by default, some lose the link once powered
-    self._charge_item = toggle_item(lambda: tr('Power iPhone from comma'),
-                                    lambda: tr('Power a directly connected iPhone from comma. Off by default: some phones disconnect when powered.'),
-                                    initial_state=ui_state.params.get_bool(jetlink_ui.KEYS.charge_phone),
-                                    callback=lambda v: ui_state.params.put_bool(jetlink_ui.KEYS.charge_phone, bool(v)),
-                                    enabled=ui_state.is_offroad)
-
     # dp: the big-model menu (follow the far end, or a catalog model) and the far end's own models
     self._menu: list[dict] = []
     self._menu_labels: dict[str, str | None] = {}
@@ -80,7 +73,7 @@ class JetlinkLayout(Widget):
 
     self._items = [self._link_item, self._state_item, self._transport_item, self._present_item, self._port_item,
                    self._source_item, self._far_end_item, self._model_item, self._ready_item, self._progress_item,
-                   self._refresh_item, self._reason_item, self._charge_item, self._adb_item]
+                   self._refresh_item, self._reason_item, self._adb_item]
     self._scroller = Scroller(self._items, line_separator=True, spacing=0)
 
   # -- values -------------------------------------------------------------------
@@ -215,8 +208,6 @@ class JetlinkLayout(Widget):
       item.set_visible(on or (j is not None and j.present))
     self._source_item.action_item.set_enabled(ui_state.is_offroad())
     self._reason_item.set_visible(bool(j is not None and j.reason))
-    self._charge_item.set_visible(mode == "ios")
-    self._charge_item.action_item.set_state(ui_state.params.get_bool(jetlink_ui.KEYS.charge_phone))
 
     status = jetlink_ui.link_status()
     description = f"{tr(DESCRIPTION)} {status}".strip()

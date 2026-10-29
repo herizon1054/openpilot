@@ -1,3 +1,4 @@
+from dragonpilot.selfdrive.ui import jetlink_ui
 import datetime
 import math
 import time
@@ -261,8 +262,9 @@ class MiciHomeLayout(Widget):
     # dp - jetlink
     jl_state = ui_state.jetlink_state
     jl_loading = jl_state == JetlinkState.LOADING
-    self._jetlink_loading_icon.set_opacity(0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0)))
-    self._jetlink_loading_icon.set_visible(jl_loading)
+    jl_disconnected = jl_state == JetlinkState.DISCONNECTED and jetlink_ui.show_disconnected()
+    self._jetlink_loading_icon.set_opacity(0.4 if jl_disconnected else 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0)))
+    self._jetlink_loading_icon.set_visible(jl_loading or jl_disconnected)
     self._jetlink_icon.set_opacity(0.5 if jl_state == JetlinkState.WAITING else 1.0)
     self._jetlink_icon.set_visible(jl_state in (JetlinkState.READY, JetlinkState.ACTIVE, JetlinkState.WAITING))
     self._jetlink_failed_icon.set_visible(jl_state in (JetlinkState.UNCOMPILED, JetlinkState.FAILED))

@@ -11,7 +11,7 @@ has CONFIG_USB_F_FS built in, while a host needs no kernel driver at all, which
 an L4T rootfs stripped of the gadget modules does not have. See
 docs/transport.md.
 
-Bring-up (scripts/comma/jetlink-root.sh gadget does all of this):
+Bring-up (jetlink/comma/jetlink-root.sh gadget does all of this):
     configfs gadget -> functions/ffs.jetlink -> mount -t functionfs
     write descriptors + strings to ep0 -> ep1 (OUT) and ep2 (IN) appear
     echo <udc> > UDC
@@ -51,9 +51,9 @@ EP_IN = 0x82   # device -> host
 # FunctionFS kmallocs a contiguous buffer per read and frees it on return. 16 KB
 # is an order-2 page allocation, which this kernel retries without bound under
 # memory pressure; vm.extra_free_kbytes (jetlink-root.sh) keeps that from
-# stalling: no reclaim in 3,396 reads of a recording bench (2026-10-07). 8 KB
-# would come from the slab like the writes, but a reply is 8,356 bytes, so it
-# took a second read: +0.3 ms a frame at p50.
+# stalling: no reclaim in 3,396 reads while recording. 8 KB would come from
+# the slab like the writes, but a reply is 8,356 bytes, so it would take a
+# second read: +0.3 ms a frame at p50.
 READ_CHUNK = 16 * P.USB_MAX_PACKET
 # How much the reader may queue before it stops. Only bounds memory if the
 # consumer stalls: inference never needs more than one response.
@@ -108,7 +108,7 @@ _NOT_READY = (errno.EIO, errno.ESHUTDOWN, errno.ENODEV)
 # ffs_epfile_io dequeues the request and returns EINTR whatever part of it the
 # host already took, os.readv/os.writev re-issue the whole call, and the stream
 # has lost or repeated bytes. modeld's msgq raises SIGUSR2 ~160 times a second,
-# which cost one link failure per 30 s of driving when writes were synchronous.
+# enough to fail a synchronous-write link about once per 30 s of driving.
 # The reader masks every signal for its life. Writes are AIO, which never
 # waits inside a transfer, so the frame thread needs no mask.
 _IO_SIGNALS = signal.valid_signals()
@@ -171,9 +171,9 @@ class FfsTransport(StreamTransport):
   """
   # FunctionFS kmallocs one contiguous buffer per request, and AIO holds a
   # frame's worth at once. A whole frame in one needs order-7 pages, which
-  # recording rollover leaves none of (the route's stalls); 57 x 32 KB needs
-  # 15 order-3 blocks at once, and an aged comma had as few as 3 free: io_submit
-  # stalled 94 ms in compaction (2026-10-06 bench). 8 KB is the largest size
+  # recording rollover leaves none of; 57 x 32 KB needs 15 order-3 blocks at
+  # once, and an aged comma can have as few as 3 free: io_submit then stalls
+  # ~94 ms in compaction. 8 KB is the largest size
   # SLUB serves from a slab cache (kmalloc-8192), which never compacts: it
   # falls back to order-1 slabs. A whole number of 1 KB packets, so no request
   # ends on a short packet.
@@ -211,7 +211,7 @@ class FfsTransport(StreamTransport):
     read a dead link left queued keeps them busy: see _open_after_bounce); ep0
     never does, which is why the owner keeps it.
 
-    The ep0 rule is unchanged and `udc` is what keeps it: the endpoints are
+    The ep0 rule still holds and `udc` is what keeps it: the endpoints are
     still opened only once that controller reads configured. `bounce` is how a
     write with no reader is freed, since the unbind that frees it belongs to
     the owner. `owner_gadget` is the last resort for when the owner does not
@@ -353,9 +353,8 @@ class FfsTransport(StreamTransport):
   def _open_after_bounce(self, deadline: float) -> int:
     """ep1 answered EBUSY: a transport this process closed after its link died
     left a read queued on it, and FunctionFS keeps that read, and the endpoint
-    with it, until an unbind completes it. Seen when a Jetson's server
-    restarted mid-drive: some rejoins met EBUSY until the drive ended. The
-    unbind is the owner's, so a borrower asks for one, then opens once the
+    with it, until an unbind completes it, as when a Jetson's server
+    restarts mid-drive. The unbind is the owner's, so a borrower asks for one, then opens once the
     host has the gadget back and the stale read has let go."""
     log.warning("jetlink: ep1 is held by a read the last link left queued, asking the owner to bounce the gadget")
     if not self._bounce():
@@ -375,8 +374,8 @@ class FfsTransport(StreamTransport):
     An exchange leaves a read queued on the endpoint, and FunctionFS keeps it
     queued until something completes it: nobody else may read that endpoint
     until it does, and the only thing that dequeues it is the unbind. So the
-    owner gives the endpoints up like this and binds straight back - one
-    re-enumeration - without ever letting go of ep0, which is the whole point,
+    owner gives the endpoints up like this and binds straight back (one
+    re-enumeration) without ever letting go of ep0, which is the whole point,
     since the gadget exists only while somebody holds it.
 
     False when there is nothing to give up. Afterwards this transport is bare
@@ -482,7 +481,7 @@ class FfsTransport(StreamTransport):
     if self._bounce is None:
       return self.unbind()
     # A borrowed gadget: the unbind belongs to whoever owns ep0, so ask. If
-    # nobody answers - the owner died, or is wedged itself - take the gadget
+    # nobody answers (the owner died, or is wedged itself), take the gadget
     # down from here anyway: a re-enumeration costs one rejoin, where requests
     # nothing completes cost the endpoint until the comma reboots.
     if self._bounce():
@@ -666,8 +665,8 @@ class FfsTransport(StreamTransport):
     """Realtime priority, so a completed read leaves the endpoint at once.
 
     The creator has dropped to SCHED_OTHER, and under recording plus onroad load
-    the wait to be scheduled after a transfer was 17 ms mean, 23 ms max - over
-    budget on read_wait alone. The reader copies a chunk and blocks again, so it
+    the wait to be scheduled after a transfer measures 17 ms mean, 23 ms max,
+    over budget on read_wait alone. The reader copies a chunk and blocks again, so it
     never holds a core. Best effort, and open-coded because jetlink must not
     import openpilot.
     """
@@ -787,7 +786,7 @@ class FfsTransport(StreamTransport):
 
     The endpoints answer ENODEV both before a host configures the gadget and
     after it disconnects, and only the first deserves the grace period; giving
-    it to the second cost 10 s and 201 frames on a mid-drive disconnect. The UDC
+    it to the second costs a mid-drive disconnect 10 s, about 200 frames. The UDC
     state separates them, and it is set in the interrupt that disabled the
     endpoint, so it is current when the failed call returns.
     """

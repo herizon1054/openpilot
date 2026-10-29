@@ -128,11 +128,13 @@ class ProvisioningRun:
     def progress(frac: float) -> None:
       nonlocal got
       got = frac
-      parts.progress.report('download', frac, f"downloading {int(frac * size) >> 20} of {size >> 20} MB" if size
-                            else 'downloading')
+      got_mb, total_mb = int(frac * size) >> 20, size >> 20
+      parts.progress.report('download', frac, f"downloading {got_mb} of {total_mb} MB" if size else 'downloading',
+                            code='downloading', args={'got_mb': got_mb, 'total_mb': total_mb} if size else None)
 
     def retrying(error, delay: float) -> None:
-      parts.progress.report('download', got, f"download stalled, retrying in {delay:.0f} s")
+      parts.progress.report('download', got, f"download stalled, retrying in {delay:.0f} s",
+                            code='download_stalled', args={'retry_s': round(delay)})
 
     try:
       path = parts.models.fetch_shipped_model(progress=progress, should_stop=lambda: self.stop, retrying=retrying)
@@ -142,7 +144,7 @@ class ProvisioningRun:
       else:
         # the owner starts another run after its backoff, which resumes the .part
         self.log.exception("jetlink: could not fetch the large model")
-        parts.progress.report('failed', 1.0, 'download failed, retrying later')
+        parts.progress.report('failed', 1.0, 'download failed, retrying later', code='download_failed')
       self.fetch_failed = True
       return None
     if path is not None and model.get('oid'):
@@ -161,8 +163,6 @@ class ProvisioningRun:
     sha256, _ = link.identity(parts, entry)
     if parts.spec.engine_ready_for(sha256):
       return False
-    # dp: nor while the far end said it has this model built or loaded (a phone that
-    # downloaded it itself): the build answers from the sha, and 1.7 GB stays unfetched
     if sha256 in _far_end_models():
       return False
     return parts.models.shipped_model_path() is None
@@ -180,7 +180,6 @@ class ProvisioningRun:
       parts.spec.clear_ready()
       parts.progress.clear()
       return False
-
     # dp: following the far end, its hello decides, before identity() (which needs the
     # network for the comma's default) and before anything is asked of it. run() skips
     # the link only when an earlier hello is on record, and /dev/shm is empty after every
@@ -219,7 +218,7 @@ class ProvisioningRun:
 
     self.log.warning("jetlink: provisioning %s (%d MB, sha %s)",
                      entry.get('name', sha256[:16]), nbytes >> 20, sha256[:16])
-    parts.progress.report('connect', 0.0, 'connecting')
+    parts.progress.report('connect', 0.0, 'connecting', code='connecting')
 
     def ensure(path):
       return link.ensure(parts, self.client, sha256, nbytes, path, progress=parts.progress.report_with_eta,
@@ -233,15 +232,15 @@ class ProvisioningRun:
     except EngineMissing:
       # the server has nothing to build from, and neither have we: fetch the
       # model and hand it over in this run. The owner lends the link for the
-      # whole run, so leaving after the download only put the build a
-      # WORKER_BACKOFF later, five minutes of a finished download doing nothing
+      # whole run; leaving after the download would put the build a
+      # WORKER_BACKOFF later
       if model_path is not None or (model_path := self.fetch_model()) is None:
         raise
       # a download of minutes can outlast the session; a hello starts a new one
       self.hello()
       spec = ensure(model_path)
 
-    parts.progress.report('ready', 1.0, 'engine ready')
+    parts.progress.report('ready', 1.0, 'engine ready', code='engine_ready')
     self.log.warning("jetlink: engine ready for %s", spec.sha256[:16])
     return True
 
@@ -332,21 +331,24 @@ class ProvisioningRun:
 
     finished = False
     try:
-      # the bytes first, and with no Jetson: a parked car whose Jetson is
-      # switched with the ignition never has one to wait for (2026-10-06)
-      if self.needs_download() and self.fetch_model() is None:
+      # the bytes first while no host is on the cable: a parked car whose
+      # Jetson is switched with the ignition never has one to wait for. A host
+      # that is there is asked first, since one with the model built needs
+      # nothing from the comma; provision() fetches it if the host has not
+      if self.needs_download() and not gadget.host_attached() and self.fetch_model() is None:
         return False
       if not self.open_link():
         return False
       if not self.wait_for_jetson():
         self.log.warning("jetlink: no jetson within %.0f s, leaving it for the next run", WAKE_TIMEOUT)
         if self.parts.models.shipped_model_path() is not None:
-          self.parts.progress.report('waiting', 0.0, 'downloaded, builds when the jetson is on')
+          self.parts.progress.report('waiting', 0.0, 'downloaded, builds when the jetson is on',
+                                     code='downloaded_waiting_host')
         return False
       finished = self.provision()
     except Exception:
       self.log.exception("jetlink: provisioning failed")
-      self.parts.progress.report('failed', 1.0, 'see the log')
+      self.parts.progress.report('failed', 1.0, 'see the log', code='failed')
     finally:
       self.close_link()
     return finished
