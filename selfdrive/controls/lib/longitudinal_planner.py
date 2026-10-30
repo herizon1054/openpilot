@@ -87,6 +87,15 @@ E2E_ACCEL_BOOST_FACTOR = 1.5
 #   - 036 第 48 秒、037 第 54 秒：前車減速、MPC 本身也在減速時觸發，多減約 2 km/h。
 #   - 壓住 MPC 加速（MPC > +0.05 且輸出被拉低）的時間：0 秒（v12 為 13.7 秒）。
 # ⚠️ 只有國道 log 驗證過，市區低速情境尚未驗證。
+# v12.2：新增車速下限 E2E_GUARD_MIN_SPEED_KPH（70 km/h）。市區模型 e2e 常長時間維持 −0.3~−0.6、
+#   油門機率原始值雜訊大，保險在 41 km/h／定速 48 時反覆「進入 → 單幀油門機率 ≥ 0.9 或 3 秒上限退出
+#   → 0.2 秒後再進入」，輸出在 0.3~0.6 秒內上下擺動約 0.8~1.0 m/s²（log 053 市區段重播：27 秒進入
+#   7 次，4 次撞 3 秒上限），即市區縱向一頓一頓的成因。
+#   只限制「進入」：已作用中的保險在車速降到 70 以下時照原本條件退出（漸變 E2E_GUARD_RAMP_S），
+#   不會在切入煞車途中被車速條件當幀切斷。
+# v12.3：車速條件改為遲滯開關：>= E2E_GUARD_SPEED_ON_KPH（80）打開、<= E2E_GUARD_SPEED_OFF_KPH（70）關閉、
+#   70~80 維持前一狀態。避免車速在單一門檻附近時保險可進入／不可進入逐幀變動。開關狀態每幀更新（不分 mode），
+#   仍只限制「進入」，作用中的保險不受開關關閉影響。開機初始為關閉（需先達 80 km/h）。
 E2E_GUARD_ENABLED = True           # 總開關；實際運作還需要 AEM 開啟（dp_flags & DPFlags.AEM），AEM 關閉時完全不介入
 E2E_GUARD_ENTER_ACCEL = -0.2        # m/s²
 E2E_GUARD_ENTER_DIFF = -0.25        # m/s²（e2e − mpc）
@@ -96,6 +105,8 @@ E2E_GUARD_CONFIRM_FRAMES = 4        # 0.2 秒
 E2E_GUARD_MIN_HOLD_S = 0.5          # 秒
 E2E_GUARD_MAX_HOLD_S = 3.0          # v12.1：秒，硬上限
 E2E_GUARD_RAMP_S = 0.3              # 秒
+E2E_GUARD_SPEED_ON_KPH = 80.0       # v12.3：km/h，車速 >= 此值 -> 開關打開（可進入保險）
+E2E_GUARD_SPEED_OFF_KPH = 70.0      # v12.3：km/h，車速 <= 此值 -> 開關關閉；70~80 維持前一狀態
 
 class DPFlags:
   OCM = 1
@@ -151,6 +162,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     self.e2e_guard_cnt = 0
     self.e2e_guard_t = 0.0
     self.e2e_guard_w = 0.0
+    self.e2e_guard_speed_ok = False     # v12.3：車速遲滯開關（80 開／70 關），見 E2E_GUARD_SPEED_*
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -372,6 +384,13 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     if output_a_target_e2e > 0:
       output_a_target_e2e = min(output_a_target_e2e * E2E_ACCEL_BOOST_FACTOR, ACCEL_MAX)
 
+    # dp(v12.3): e2e 減速保險的車速遲滯開關，每幀更新（不分 mode）
+    v_ego_kph = v_ego * CV.MS_TO_KPH
+    if v_ego_kph >= E2E_GUARD_SPEED_ON_KPH:
+      self.e2e_guard_speed_ok = True
+    elif v_ego_kph <= E2E_GUARD_SPEED_OFF_KPH:
+      self.e2e_guard_speed_ok = False
+
     if mode == 'acc':
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
@@ -430,7 +449,8 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
   def _update_e2e_guard(self, a_mpc, a_e2e, gas_prob):
     # dp(v12.1): e2e 減速保險狀態機，見 E2E_GUARD_*；gas_prob 為 gasPressProbs[1] 原始值
     if not self.e2e_guard_active:
-      hit = (a_e2e < E2E_GUARD_ENTER_ACCEL and (a_e2e - a_mpc) < E2E_GUARD_ENTER_DIFF and
+      hit = (self.e2e_guard_speed_ok and   # v12.3：車速遲滯開關（80 開／70 關），只限制進入
+             a_e2e < E2E_GUARD_ENTER_ACCEL and (a_e2e - a_mpc) < E2E_GUARD_ENTER_DIFF and
              gas_prob < E2E_GUARD_ENTER_GAS_PROB)
       self.e2e_guard_cnt = self.e2e_guard_cnt + 1 if hit else 0
       if self.e2e_guard_cnt >= E2E_GUARD_CONFIRM_FRAMES:
