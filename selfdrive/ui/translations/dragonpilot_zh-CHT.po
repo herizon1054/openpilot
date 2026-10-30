@@ -985,3 +985,39 @@ msgstr "{model} 已就緒。ALKA 開啟中，取消巡航不會切換：關閉�
 #, python-brace-format
 msgid "{model} is ready. Cancel cruise to switch, then re-enable after about 1 second."
 msgstr "{model} 已就緒。取消巡航即切換，約 1 秒後再啟用。"
+
+msgid "Delete downloaded Jetlink models"
+msgstr "刪除已下載的 Jetlink 大模型"
+
+msgid "Delete Jetlink downloads"
+msgstr "刪除 Jetlink 下載"
+
+msgid "comma cache only"
+msgstr "僅清除 comma 快取；請先關閉 Jetlink"
+
+msgid "Clear comma ONNX downloads and partial files. Park and turn Jetlink off first. External-device models are kept."
+msgstr "清除 comma 已下載的 ONNX 與未完成暫存檔。請先停車離線並關閉 Jetlink；外部裝置的模型會保留。"
+
+msgid "No downloaded Jetlink models."
+msgstr "沒有已下載的 Jetlink 大模型。"
+
+msgid "Delete {count} comma cache files ({size} MiB)? External-device models are kept. Selected models may download again when Jetlink is enabled."
+msgstr "刪除 comma 的 {count} 個快取檔案（{size} MiB）？外部裝置的模型會保留；重新啟用 Jetlink 後，選定的模型可能再次下載。"
+
+msgid "Deleted {count} files; freed {size} MiB."
+msgstr "已刪除 {count} 個檔案，釋放 {size} MiB。"
+
+msgid "Delete failed: {reason}"
+msgstr "刪除失敗：{reason}"
+
+msgid "Park and turn Jetlink off before deleting models."
+msgstr "請先停車離線並關閉 Jetlink，再刪除模型。"
+
+msgid "Jetlink is busy. Wait for it to stop and try again."
+msgstr "Jetlink 尚未停止，請稍後重試。"
+
+msgid "The model cache must not be a symbolic link."
+msgstr "模型快取目錄為符號連結，無法清除。"
+
+msgid "Slide to delete comma cache\n{count} files / {size} MiB"
+msgstr "滑動刪除 comma 快取\n{count} 個檔案／{size} MiB"

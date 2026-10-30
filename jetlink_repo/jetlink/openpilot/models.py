@@ -192,6 +192,11 @@ class Models:
     return out + [e for e in LFS_ENDPOINTS if e not in out]
 
   def fetch_shipped_model(self, progress=None, should_stop=None, retrying=None) -> Path | None:
+    from jetlink.openpilot.model_cache import cache_lock
+    with cache_lock(self.model_dir()):
+      return self._fetch_shipped_model(progress, should_stop, retrying)
+
+  def _fetch_shipped_model(self, progress=None, should_stop=None, retrying=None) -> Path | None:
     """Download the chosen large model if it is not here yet; None when nothing
     is chosen. The registry streams it to a .part file and hashes it on the way,
     so only the whole model ever takes the name.

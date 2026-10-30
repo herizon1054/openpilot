@@ -1,5 +1,8 @@
 from dragonpilot.system.ui.lib.multilang import tr as jetlink_tr
 from cereal import log
+from dragonpilot import jetlink_adapter
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigConfirmationDialog
 
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMultiParamToggle
@@ -35,6 +38,10 @@ class TogglesLayoutMici(NavScroller):
     self._jetlink_toggle = JetlinkModeToggle("Jetlink", "JetlinkLink", ["off", "usb", "ios"])
     self._jetlink_toggle.set_enabled(lambda: ui_state.is_offroad())
 
+    self._delete_jetlink = BigButton(jetlink_tr('Delete Jetlink downloads'), jetlink_tr('comma cache only'))
+    self._delete_jetlink.set_click_callback(self._confirm_delete_jetlink)
+    self._delete_jetlink.set_enabled(lambda: ui_state.is_offroad() and jetlink_adapter.can_delete_downloads(ui_state.params))
+
     self._scroller.add_widgets([
       self._personality_toggle,
       self._experimental_btn,
@@ -45,6 +52,7 @@ class TogglesLayoutMici(NavScroller):
       record_mic,
       enable_openpilot,
       self._jetlink_toggle,
+      self._delete_jetlink,
     ])
 
     # Toggle lists
@@ -67,6 +75,32 @@ class TogglesLayoutMici(NavScroller):
       gui_app.set_show_fps(True)
 
     ui_state.add_engaged_transition_callback(self._update_toggles)
+
+  def _confirm_delete_jetlink(self):
+    if not ui_state.is_offroad() or not jetlink_adapter.can_delete_downloads(ui_state.params):
+      return
+    try:
+      count, size = jetlink_adapter.downloaded_cache_info()
+    except Exception as e:
+      gui_app.push_widget(BigDialog('Jetlink', jetlink_tr(str(e))))
+      return
+    if not count:
+      gui_app.push_widget(BigDialog('Jetlink', jetlink_tr('No downloaded Jetlink models.')))
+      return
+    title = jetlink_tr('Slide to delete comma cache\n{count} files / {size} MiB').format(count=count, size=size // (1024 * 1024))
+    gui_app.push_widget(BigConfirmationDialog(title,
+      gui_app.texture('icons_mici/settings/network/new/trash.png', 54, 64), self._delete_jetlink_cache, red=True))
+
+  def _delete_jetlink_cache(self):
+    if not ui_state.is_offroad():
+      gui_app.push_widget(BigDialog('Jetlink', jetlink_tr('Park and turn Jetlink off before deleting models.')))
+      return
+    try:
+      count, size = jetlink_adapter.delete_downloaded_models(ui_state.params)
+      text = jetlink_tr('Deleted {count} files; freed {size} MiB.').format(count=count, size=size // (1024 * 1024))
+    except Exception as e:
+      text = jetlink_tr('Delete failed: {reason}').format(reason=jetlink_tr(str(e)))
+    gui_app.push_widget(BigDialog('Jetlink', text))
 
   def _update_state(self):
     super()._update_state()

@@ -634,3 +634,22 @@ def shutdown_pending() -> bool:
 @_guarded(None)
 def model_state(ref: str) -> str | None:
   return _api().model_state(ref)
+
+
+# Local ONNX cache only: no commands are sent to the external device.
+def can_delete_downloads(params) -> bool:
+  try:
+    return params.get_bool('IsOffroad') and int(params.get(KEYS.link)) == 0
+  except (TypeError, ValueError, OSError):
+    return False
+
+
+def downloaded_cache_info() -> tuple[int, int]:
+  from jetlink.openpilot.model_cache import files
+  found = files(_model_root() / 'jetlink')
+  return len(found), sum(size for _, size in found)
+
+
+def delete_downloaded_models(params) -> tuple[int, int]:
+  from jetlink.openpilot.model_cache import clear
+  return clear(_model_root() / 'jetlink', lambda: can_delete_downloads(params))

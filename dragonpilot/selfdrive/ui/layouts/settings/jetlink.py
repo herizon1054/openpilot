@@ -21,6 +21,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.list_view import multiple_button_item, text_item, button_item
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from dragonpilot import jetlink_adapter
@@ -71,9 +72,14 @@ class JetlinkLayout(Widget):
                                      description=lambda: self._refresh_result() or tr('Fetch the sunnypilot model list (same as the Jetlink app) to identify models on the phone.'),
                                      callback=self._refresh_catalog, enabled=lambda: not self._refreshing)
 
+    self._delete_item = button_item(lambda: tr('Delete downloaded Jetlink models'), lambda: tr('Delete'),
+                                    description=lambda: tr('Clear comma ONNX downloads and partial files. Park and turn Jetlink off first. External-device models are kept.'),
+                                    callback=self._confirm_delete,
+                                    enabled=lambda: ui_state.is_offroad() and jetlink_adapter.can_delete_downloads(ui_state.params))
+
     self._items = [self._link_item, self._state_item, self._transport_item, self._present_item, self._port_item,
                    self._source_item, self._far_end_item, self._model_item, self._ready_item, self._progress_item,
-                   self._refresh_item, self._reason_item, self._adb_item]
+                   self._refresh_item, self._delete_item, self._reason_item, self._adb_item]
     self._scroller = Scroller(self._items, line_separator=True, spacing=0)
 
   # -- values -------------------------------------------------------------------
@@ -184,6 +190,37 @@ class JetlinkLayout(Widget):
         self._refreshing = False
 
     threading.Thread(target=work, daemon=True).start()
+
+  def _delete_message(self, text):
+    gui_app.push_widget(ConfirmDialog(text, tr('OK'), cancel_text=''))
+
+  def _confirm_delete(self):
+    if not ui_state.is_offroad() or not jetlink_adapter.can_delete_downloads(ui_state.params):
+      return
+    try:
+      count, size = jetlink_adapter.downloaded_cache_info()
+    except Exception as e:
+      self._delete_message(tr(str(e)))
+      return
+    if not count:
+      self._delete_message(tr('No downloaded Jetlink models.'))
+      return
+    text = tr('Delete {count} comma cache files ({size} MiB)? External-device models are kept. Selected models may download again when Jetlink is enabled.').format(count=count, size=size // (1024 * 1024))
+    gui_app.push_widget(ConfirmDialog(text, tr('Delete'), callback=self._delete_confirmed))
+
+  def _delete_confirmed(self, result):
+    if result != DialogResult.CONFIRM:
+      return
+    if not ui_state.is_offroad():
+      self._delete_message(tr('Park and turn Jetlink off before deleting models.'))
+      return
+    try:
+      count, size = jetlink_adapter.delete_downloaded_models(ui_state.params)
+      text = tr('Deleted {count} files; freed {size} MiB.').format(count=count, size=size // (1024 * 1024))
+      self._far['at'] = 0.0
+    except Exception as e:
+      text = tr('Delete failed: {reason}').format(reason=tr(str(e)))
+    self._delete_message(text)
 
   # -- events -------------------------------------------------------------------
 
