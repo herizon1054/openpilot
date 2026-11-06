@@ -33,6 +33,18 @@ dragonpilot radard 擴充（radard_ext）：在原廠 radard 的前車選擇上�
   v9.6.7 切入／大型車車道線門檻提前 0.1m：雷達點壓線（線外 0.1m 內）即為候選，釋放與本車路徑模式同步
          提前 0.1m。續命例外：視覺前車比鎖定中的雷達前車近 HOLD_BYPASS_DD 以上且視覺機率高時不續命，
          當幀換成視覺前車（log 032 藍車：遠方前車續命讓換到視覺前車晚 0.25 秒）。
+  v9.6.8 正前方靜止車救援：本車 30~60 km/h、60m 內（v9.6.9/v9.6.10 已調整）、路徑 ±0.5m 的靜止雷達點，須有視覺佐證（視覺前車
+         機率 >= 0.3、距離吻合、視覺速度也接近靜止）連續 1 秒才採用。已在救援中的目標（含移動救援目標
+         減速停下）以較寬條件維持，前車停下時救援不會中斷。
+  v9.6.9 正前方靜止車救援的進入車速上限 60 → 80 km/h（其餘條件不變）。
+  v9.6.10 正前方靜止車救援的進入距離上限隨本車速放大（30 km/h 40m → 70 km/h 以上 120m），依分支 MPC
+         閉迴路算出的「確認 1 秒後仍停得住」最短距離加約 10% 餘裕；120m 為雷達對靜止物的實測回報距離上限。
+  v9.6.11 正前方靜止車救援納入爬行車：進入的目標速度從 |v| < 1 m/s 放寬到移動救援門檻以下
+         （max(3 m/s, 0.2 × 本車速)），補上「1 m/s ~ 移動救援門檻」兩條救援都不收的速度帶（log 040
+         減速車流 4~13 km/h）；視覺速度上限同步放寬為 max(4 m/s, 門檻 + 2 m/s)。
+  v9.6.12 正前方靜止車救援的進入車速上限 80 → 130 km/h（距離上限不變，70 km/h 以上 120m）。80 km/h 以上
+         120m 不足以停住，目的是降低撞擊速度。新增「視覺前車是移動車」排除：雷達在視覺前車距離附近、
+         本車路徑上有移動目標時，視覺描述的是那台移動車，靜止點（門架／天橋）不得借用它當佐證。
 
 與原廠（cp）的刻意分歧：
   - 低速覆寫：現有雷達前車與最近目標為同一物體時不替換（原廠只要更近就替換，重複點會每幀互換）。
@@ -160,6 +172,42 @@ RADAR_RESCUE_MIN_V_EGO = 30.0 / 3.6 # m/s
 # 0.85m，線外 0.5m 的聯結車被救援採用，−2.7 m/s²）。8 段實車 log 的救援目標越線距離皆 >= 0.00m。
 RADAR_RESCUE_LINE_ENTER = 0.0       # m，進入：雷達點越過車道線
 RADAR_RESCUE_LINE_HOLD = -0.2       # m，維持：已在救援中的目標允許壓線雜訊
+# v9.6.8 正前方靜止車救援（共用上方的車道線、方向盤角度、確認幀數條件）。
+# 11 段 log 的雷達特性（本車 > 18 km/h）：靜止點佔 27.5%，VALID 99.9% 為 True（無法用來過濾）。
+# 路徑 ±1.0m 內連續 >= 1 秒的靜止點 15 件：10 件是門架／行人天橋（影片確認 045、052），55~101 km/h，
+# 84~120m 出現、15~34m 消失，橫向偏移與真車無差異；5 件是路口真停止車（33~44 km/h），視覺前車與雷達
+# 同一幀即吻合。只靠雷達（即使收窄到 ±0.5m、限 60 km/h、60m）052 門架仍會觸發；門架當下的視覺前車
+# 不是移動中的車就是不存在，因此「視覺前車距離吻合且速度接近靜止」是必要條件。
+STATIC_RESCUE_ENABLED = True
+STATIC_RESCUE_MAX_ABS_SPEED = 1.0   # m/s，目標絕對速度下限為 −此值（倒退／雜訊容許）
+# v9.6.11：進入的目標速度上限 = 移動救援門檻 max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT × 本車速)，
+# 與移動救援銜接成連續速度帶（v9.6.10 以前為 |v| < 1 m/s，1 m/s ~ 門檻的爬行車兩條救援都不收）。
+# 門架／天橋為 0 m/s，放寬速度帶不增加其誤觸；擋下它們的是視覺佐證（距離吻合 + 視覺速度低）。
+STATIC_RESCUE_VIS_SPEED_MARGIN = 2.0   # m/s，視覺速度上限 = max(VIS_MAX_SPEED, 移動救援門檻 + 此值)
+# v9.6.12 移動車排除：視覺前車距離 ± max(VIS_DIST_ABS, VIS_DIST_PCT × 距離) 內、路徑 ±TWIN_CORRIDOR 內有
+# 絕對速度 >= 移動救援門檻的雷達目標時，視覺前車就是那台移動車，靜止救援不得進入（維持不受影響）。
+# log 033／045／841：80~130 km/h 正前方靜止點 253 幀中，87 幀只靠「視覺速度」擋下（前車正好開過門架，
+# 視覺前車與門架同距離），此條件提供第二層防護。
+STATIC_RESCUE_MOVING_TWIN_CHECK = True
+STATIC_RESCUE_TWIN_CORRIDOR = 1.5      # m
+STATIC_RESCUE_MIN_V_EGO = 30.0 / 3.6   # m/s，進入：本車速下限（已在救援中不限）
+STATIC_RESCUE_MAX_V_EGO = 130.0 / 3.6  # m/s，進入：本車速上限（已在救援中不限）（v9.6.8：60、v9.6.9：80）
+# v9.6.10 進入距離上限隨本車速放大（維持沿用 RADAR_RESCUE_MAX_DIST）。分支 long_mpc + planner 閉迴路
+# （致動延遲 0.15 秒、ACCEL_MIN −3.5）對靜止車，「確認 1 秒後採用」仍能停住的最短出現距離：
+#   40 km/h 51m、50 km/h 68m、60 km/h 87m、70 km/h 109m、80 km/h 134m（MPC 最大減速約 −3.0~−3.2）。
+# 下表為上述距離加約 10% 餘裕，並以 120m 封頂：11 段 log 中靜止物最早約在 100~120m 才被雷達回報，
+# 80 km/h 需要的 134m 超出雷達能力，該車速只能提早煞車、降低撞擊速度。
+STATIC_RESCUE_MAX_DIST_BP = [30.0 / 3.6, 40.0 / 3.6, 50.0 / 3.6, 60.0 / 3.6, 70.0 / 3.6]   # m/s
+STATIC_RESCUE_MAX_DIST_V = [40.0, 56.0, 75.0, 95.0, 120.0]                                  # m
+STATIC_RESCUE_CORRIDOR = 0.5        # m，進入：正前方（路徑 ±0.5m）
+STATIC_RESCUE_CORRIDOR_HOLD = 0.8   # m，維持
+STATIC_RESCUE_VIS_PROB = 0.3        # 進入：視覺前車原始機率下限
+STATIC_RESCUE_VIS_PROB_HOLD = 0.1   # 維持
+STATIC_RESCUE_VIS_DIST_ABS = 5.0    # m，視覺與雷達距離差上限 = max(此值, PCT × 雷達距離)
+STATIC_RESCUE_VIS_DIST_PCT = 0.25
+STATIC_RESCUE_VIS_DIST_PCT_HOLD = 0.35
+STATIC_RESCUE_VIS_MAX_SPEED = 4.0   # m/s，進入：視覺前車速度上限（視覺也判定接近靜止）
+STATIC_RESCUE_VIS_MAX_SPEED_HOLD = 6.0
 
 # ==============================================================================
 # 參數：雷達切入預測（只處理 leadOne）
@@ -415,6 +463,7 @@ class TrackDP(Track):
     self.gate_last_path_y = {0: None, 1: None}  # 上一幀此目標距離處的走廊中心
     # 雷達主導救援
     self.radar_rescue_frames = 0
+    self.radar_static_frames = 0                # v9.6.8 正前方靜止車救援的連續幀數
     # 切入預測
     self.cutin_off = None                       # 濾波後相對本車路徑的橫向偏移（左正）
     self.cutin_vy = 0.0                         # 濾波後橫向速度（m/s，左正）
@@ -526,9 +575,10 @@ class TrackDP(Track):
 
   # ---------- 雷達主導救援 ----------
   def update_radar_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float,
-                          is_active: bool = False, line_intr: float | None = None) -> None:
+                          is_active: bool = False, line_intr: float | None = None, vision=None) -> None:
     # 每幀呼叫一次（leadOne）。is_active：此目標是上一幀的救援前車，走廊用維持條件。
     # line_intr：目標側車道線可靠時的越線距離（None = 車道線不可靠，不檢查）。
+    # vision：(原始機率, 距離（雷達座標）, 速度, 是否為移動車) 的視覺前車，正前方靜止車救援的佐證；None = 不判定。
     corridor = RADAR_RESCUE_CORRIDOR_HOLD if is_active else RADAR_RESCUE_CORRIDOR
     line_ok = line_intr is None or line_intr >= (RADAR_RESCUE_LINE_HOLD if is_active else RADAR_RESCUE_LINE_ENTER)
     v_ok = is_active or v_ego > RADAR_RESCUE_MIN_V_EGO
@@ -538,6 +588,40 @@ class TrackDP(Track):
                 (self.vRel + v_ego) > max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego) and
                 abs(steering_angle_deg) < RADAR_RESCUE_MAX_ANGLE)
     self.radar_rescue_frames = self.radar_rescue_frames + 1 if eligible else 0
+    self._update_static_rescue(v_ego, path_valid, path_y, steering_angle_deg, is_active, line_ok, vision)
+
+  def _update_static_rescue(self, v_ego: float, path_valid: bool, path_y: float, steering_angle_deg: float,
+                            is_active: bool, line_ok: bool, vision) -> None:
+    # v9.6.8 正前方靜止車救援，見 STATIC_RESCUE_*。
+    # 已在救援中的目標用維持條件且立即視為確認：移動中的救援目標減速停下（絕對速度掉到
+    # RADAR_RESCUE_MIN_SPEED 以下，移動救援不再成立）時由此接手，救援不中斷。
+    static_ok = False
+    if (STATIC_RESCUE_ENABLED and vision is not None and path_valid and bool(self.measured) and line_ok and
+        abs(steering_angle_deg) < RADAR_RESCUE_MAX_ANGLE):
+      vis_prob, vis_d, vis_v, vis_is_moving_car = vision
+      v_abs = self.vRel + v_ego
+      moving_thr = max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego)   # 移動救援的速度門檻
+      speed_ok = -STATIC_RESCUE_MAX_ABS_SPEED < v_abs < moving_thr                   # 靜止 + 爬行
+      if is_active:
+        ego_ok = True
+        max_d, corridor = RADAR_RESCUE_MAX_DIST, STATIC_RESCUE_CORRIDOR_HOLD
+        min_prob, d_pct = STATIC_RESCUE_VIS_PROB_HOLD, STATIC_RESCUE_VIS_DIST_PCT_HOLD
+        max_vis_v = max(STATIC_RESCUE_VIS_MAX_SPEED_HOLD, moving_thr + STATIC_RESCUE_VIS_SPEED_MARGIN)
+      else:
+        ego_ok = STATIC_RESCUE_MIN_V_EGO < v_ego < STATIC_RESCUE_MAX_V_EGO and not vis_is_moving_car
+        max_d = float(np.interp(v_ego, STATIC_RESCUE_MAX_DIST_BP, STATIC_RESCUE_MAX_DIST_V))
+        corridor = STATIC_RESCUE_CORRIDOR
+        min_prob, d_pct = STATIC_RESCUE_VIS_PROB, STATIC_RESCUE_VIS_DIST_PCT
+        max_vis_v = max(STATIC_RESCUE_VIS_MAX_SPEED, moving_thr + STATIC_RESCUE_VIS_SPEED_MARGIN)
+      static_ok = (ego_ok and speed_ok and RADAR_RESCUE_MIN_DIST < self.dRel < max_d and
+                   abs(self.yRel - path_y) < corridor and vis_prob >= min_prob and abs(vis_v) < max_vis_v and
+                   abs(vis_d - self.dRel) < max(STATIC_RESCUE_VIS_DIST_ABS, d_pct * self.dRel))
+    if not static_ok:
+      self.radar_static_frames = 0
+    elif is_active:
+      self.radar_static_frames = max(self.radar_static_frames + 1, RADAR_RESCUE_CONFIRM_FRAMES)
+    else:
+      self.radar_static_frames += 1
 
   # ---------- 切入預測 ----------
   def update_cutin(self, v_ego: float, path_valid: bool, path_y: float, gated: bool,
@@ -688,7 +772,7 @@ class TrackDP(Track):
 # 前車選擇（取代 radard.get_lead）
 # ==============================================================================
 def _update_lead_one_states(tracks, v_ego: float, ready: bool, path: _ModelPath, steering_angle_deg: float,
-                            cutin_gated: bool, lane_lines, lane_line_probs, rescue_prob: float):
+                            cutin_gated: bool, lane_lines, lane_line_probs, rescue_prob: float, vision=None):
   # leadOne 專屬的每幀更新：救援目標換 ID 繼承、大型車判定、救援/切入狀態，回傳救援候選（或 None）。
   cache0 = _LEAD_STATE_CACHE[0]
   active_rescue = cache0['track'] if cache0['rescue'] else None
@@ -699,6 +783,7 @@ def _update_lead_one_states(tracks, v_ego: float, ready: bool, path: _ModelPath,
     if len(heirs) > 0:
       heir = min(heirs, key=lambda t: abs(t.dRel - active_rescue.dRel) + abs(t.yRel - active_rescue.yRel))
       heir.radar_rescue_frames = max(heir.radar_rescue_frames, active_rescue.radar_rescue_frames)
+      heir.radar_static_frames = max(heir.radar_static_frames, active_rescue.radar_static_frames)
       cache0['track'] = heir
       active_rescue = heir
     else:
@@ -708,15 +793,27 @@ def _update_lead_one_states(tracks, v_ego: float, ready: bool, path: _ModelPath,
     _update_large_vehicle_flags(tracks, v_ego)
   lane_ctx = _build_lane_ctx(lane_lines, lane_line_probs)
 
+  # v9.6.12 視覺前車是否就是路徑上的移動車（靜止救援不得借用其佐證）
+  if vision is not None:
+    vis_d = vision[1]
+    moving_thr = max(RADAR_RESCUE_MIN_SPEED, RADAR_RESCUE_MIN_SPEED_PCT * v_ego)
+    d_tol = max(STATIC_RESCUE_VIS_DIST_ABS, STATIC_RESCUE_VIS_DIST_PCT * vis_d)
+    is_moving_car = STATIC_RESCUE_MOVING_TWIN_CHECK and any(
+      (t.vRel + v_ego) >= moving_thr and abs(t.dRel - vis_d) < d_tol and
+      abs(t.yRel - path.y_at(t.dRel)) < STATIC_RESCUE_TWIN_CORRIDOR for t in tracks.values())
+    vision = (*vision, is_moving_car)
+
   for track in tracks.values():
     path_y = path.y_at(track.dRel)
     intr, mode = _lane_intrusion(track, track.yRel - path_y, lane_ctx)
     track.update_radar_rescue(v_ego, path.valid, path_y, steering_angle_deg,
-                              is_active=track is active_rescue, line_intr=intr if mode == 'line' else None)
+                              is_active=track is active_rescue, line_intr=intr if mode == 'line' else None,
+                              vision=vision)
     track.update_cutin(v_ego, path.valid, path.y_at(track.dRel), cutin_gated,
                        is_large=track.is_large, lane_ctx=lane_ctx)
 
-  rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
+  rescue_candidates = [t for t in tracks.values() if t.radar_rescue_frames >= RADAR_RESCUE_CONFIRM_FRAMES or
+                       t.radar_static_frames >= RADAR_RESCUE_CONFIRM_FRAMES]
   if not (ready and rescue_prob >= RADAR_RESCUE_MIN_PROB and len(rescue_candidates) > 0):
     return None
   rescue_track = min(rescue_candidates, key=lambda t: t.dRel)
@@ -923,8 +1020,11 @@ def get_lead_ext(
   rescue_prob = lead_prob if raw_lead_prob is None else raw_lead_prob
   rescue_track = None
   if lead_idx == 0:
+    vision = None
+    if len(lead_msg.x) > 0 and len(lead_msg.v) > 0:
+      vision = (rescue_prob, float(lead_msg.x[0]) - RADAR_TO_CAMERA, float(lead_msg.v[0]))
     rescue_track = _update_lead_one_states(tracks, v_ego, ready, path, steering_angle_deg, is_turning or lane_change,
-                                           lane_lines, lane_line_probs, rescue_prob)
+                                           lane_lines, lane_line_probs, rescue_prob, vision)
 
   # 3. 視覺配對 + 重複點沿用 + 鎖定黏著
   matched_track = None
@@ -975,7 +1075,8 @@ def get_lead_ext(
     cloudlog.debug(
       f"[RadarD_RadarRescue_DP] 雷達主導救援！目標 {lead_idx} | 雷達 {rescue_track.identifier} " +
       f"d={rescue_track.dRel:.1f} y={rescue_track.yRel:.2f} v={rescue_track.vRel + v_ego:.1f} | " +
-      f"連續 {rescue_track.radar_rescue_frames} 幀 | 相機機率(原始/濾波): {rescue_prob:.2f}/{lead_prob:.2f} " +
+      f"連續 {rescue_track.radar_rescue_frames} 幀（靜止 {rescue_track.radar_static_frames}） | " +
+      f"相機機率(原始/濾波): {rescue_prob:.2f}/{lead_prob:.2f} " +
       f"(原門檻: {normal_thres:.2f} → {current_prob_thres:.2f}) | 原前車距離: {existing_d:.1f}"
     )
   elif matched_track is not None:
