@@ -704,6 +704,80 @@ async def save_model_selection_api(request):
     return web.json_response({'status': 'success'})
 
 
+# --- opview: 實驗模式開關 ---
+# opview（手機 App）側欄第一顆按鈕：POST /api/experimental_mode {"enabled": bool}
+# 條件比照 openpilot 設定頁（selfdrive/ui/layouts/settings/toggles.py）：
+#   - 需要 openpilot 縱向控制（ui_state.has_longitudinal_control 同邏輯：
+#     alphaLongitudinalAvailable → AlphaLongitudinalEnabled，否則 CarParams.openpilotLongitudinalControl）
+#   - 需要 ExperimentalModeConfirmed（設定頁的實驗模式說明確認；這裡不代替使用者確認）
+#   - 關閉一律允許
+# selfdrived 的 params_thread 每 0.1 秒重讀 ExperimentalMode，寫入後即生效（與原廠設定頁 / onroad 按鈕相同）。
+# 既有的 /api/settings/params/ExperimentalMode（Tesla HUD 用）不受影響。
+def experimental_long_available(params):
+    """openpilot 縱向控制是否可用；還沒有 CarParamsPersistent（從未發動）時回傳 None。"""
+    try:
+        cp_bytes = params.get("CarParamsPersistent")
+    except Exception:
+        cp_bytes = None
+    if not cp_bytes:
+        return None
+    from cereal import car
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+        if cp.alphaLongitudinalAvailable:
+            return params.get_bool("AlphaLongitudinalEnabled")
+        return bool(cp.openpilotLongitudinalControl)
+
+
+def experimental_mode_status(params, long_available):
+    return {
+        'experimental_mode': params.get_bool("ExperimentalMode"),
+        'available': bool(long_available),
+        'confirmed': params.get_bool("ExperimentalModeConfirmed"),
+    }
+
+
+def handle_experimental_mode(params, payload, long_available):
+    """回傳 (HTTP 狀態, JSON)。200 時帶寫入後的實際值。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get('enabled'), bool):
+        return 400, {'error': 'body 需為 {"enabled": true | false}'}
+    enabled = payload['enabled']
+    if enabled:
+        if long_available is None:
+            return 409, {'error': '尚未取得車輛資訊，請先發動一次再開啟實驗模式'}
+        if not long_available:
+            return 409, {'error': '此車未使用 openpilot 縱向控制，無法開啟實驗模式'}
+        if not params.get_bool("ExperimentalModeConfirmed"):
+            return 409, {'error': '請先在 comma 設定頁開啟一次實驗模式並確認說明'}
+    params.put_bool("ExperimentalMode", enabled)
+    return 200, {'experimental_mode': params.get_bool("ExperimentalMode")}
+
+
+@api_handler
+async def get_experimental_mode_api(request):
+    """GET /api/experimental_mode → {"experimental_mode", "available", "confirmed"}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    return web.json_response(experimental_mode_status(params, experimental_long_available(params)))
+
+
+@api_handler
+async def set_experimental_mode_api(request):
+    """POST /api/experimental_mode body {"enabled": bool}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    status, body = handle_experimental_mode(params, payload, experimental_long_available(params))
+    if status == 200:
+        cache.invalidate()
+        logger.info(f"opview: ExperimentalMode={body['experimental_mode']}")
+    else:
+        logger.info(f"opview: ExperimentalMode request refused ({status}): {body.get('error')}")
+    return web.json_response(body, status=status)
+
+
 # --- WebSocket endpoint for data streaming ---
 # One shared publisher task polls the dashyState SubMaster and fans out
 # to every connected client. The previous per-connection design ran
@@ -828,6 +902,8 @@ def setup_aiohttp_app(host: str, port: int, debug: bool):
     app.router.add_post("/api/settings/params/{param_name}", save_param_api)
     app.router.add_get("/api/models", get_model_list_api)
     app.router.add_post("/api/models/select", save_model_selection_api)
+    app.router.add_get("/api/experimental_mode", get_experimental_mode_api)    # opview 實驗模式開關
+    app.router.add_post("/api/experimental_mode", set_experimental_mode_api)
     app.router.add_post("/api/action/{name}", run_action_api)
     app.router.add_get("/api/ws", websocket_handler)  # WebSocket for data streaming
 
