@@ -371,6 +371,16 @@ class StreamSession:
       await self.stream.stop()
 
 
+# opview 已內建 TDX（手機 GPS + TDX API），comma 的 tdx 不再傳給 opview：
+# 請求若帶 tdx（舊版 opview）就從 bridge_services_out 拿掉，不訂閱、不轉送。tdx 只有 opview 會訂閱，
+# 其他 client 不受影響。tdxd 本身照常執行（comma 端畫面仍可使用）。
+DROPPED_OUTGOING_SERVICES = frozenset({"tdx"})
+
+
+def drop_unforwarded_services(services: list[str]) -> list[str]:
+  return [s for s in services if s not in DROPPED_OUTGOING_SERVICES]
+
+
 @dataclass
 class StreamRequestBody:
   sdp: str
@@ -394,6 +404,7 @@ async def get_stream(request: 'web.Request'):
   except TypeError as e:
     raise web.HTTPBadRequest(text=json.dumps({"error": "invalid_request", "message": str(e)}),
                              content_type="application/json") from e
+  body.bridge_services_out = drop_unforwarded_services(body.bridge_services_out)
 
   async with request.app['stream_lock']:
     # Fully disconnect any other active stream before starting the replacement.
