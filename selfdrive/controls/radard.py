@@ -11,6 +11,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from opendbc.car.hyundai.values import HyundaiFlags
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -287,6 +288,10 @@ class RadarD:
 # radard_ext 於 import 時即 monkey patch radard.Track / radard.get_lead，非啟用品牌不可 import。
 DP_RADARD_EXT_BRANDS = ("toyota",)
 
+# dp: Hyundai Custin 專用雷達融合（dragonpilot/selfdrive/controls/radard_custin.py）。False 時 Custin 退回原廠 RadarD
+# （雷達仍由 radar_interface 的 Custin 解析提供，只是前車選擇改用原廠 gate）。
+DP_RADARD_CUSTIN = True
+
 
 # fuses camera and radar data for best lead detection
 def main() -> None:
@@ -302,7 +307,13 @@ def main() -> None:
   pm = messaging.PubMaster(['radarState'])
 
   # dp: 啟用品牌使用 radard_ext 的 RadarDExt（Track / get_lead 由 radard_ext 替換），其他品牌用原廠 RadarD
-  if CP.brand in DP_RADARD_EXT_BRANDS:
+  # dp: Hyundai Custin（HyundaiFlags.CUSTIN_RADAR）使用 radard_custin 的 RadarDCustin（從 openpilot-full 移植，
+  #     不 monkey patch radard；其他 Hyundai/Kia 仍為原廠 RadarD）
+  if CP.brand == "hyundai" and DP_RADARD_CUSTIN and (CP.flags & HyundaiFlags.CUSTIN_RADAR):
+    from dragonpilot.selfdrive.controls.radard_custin import RadarDCustin
+    RD = RadarDCustin(CP.radarDelay)
+    cloudlog.info("radard: radard_custin enabled (Hyundai Custin radar fusion)")
+  elif CP.brand in DP_RADARD_EXT_BRANDS:
     from dragonpilot.selfdrive.controls.radard_ext import RadarDExt
     RD = RadarDExt(CP.radarDelay)
     cloudlog.info(f"radard: radard_ext enabled (brand={CP.brand})")

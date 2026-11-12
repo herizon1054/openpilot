@@ -1,0 +1,79 @@
+VERSION "Hyundai Custin 1st gen front radar, reverse engineered from own-car rlog 2026-08"
+
+NS_ :
+
+BS_:
+
+BU_: XXX RADAR
+
+BO_ 568 RADAR_TRACK_238: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 571 RADAR_TRACK_23b: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 574 RADAR_TRACK_23e: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 577 RADAR_TRACK_241: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 580 RADAR_TRACK_244: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 583 RADAR_TRACK_247: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 586 RADAR_TRACK_24a: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 589 RADAR_TRACK_24d: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 592 RADAR_TRACK_250: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+BO_ 595 RADAR_TRACK_253: 8 RADAR
+ SG_ FLAG : 7|2@0+ (1,0) [0|3] "" XXX
+ SG_ LONG_DIST : 5|10@0+ (0.1,0) [0|102.3] "m" XXX
+ SG_ LAT_DIST : 21|10@0- (0.0475,0) [-24.32|24.2725] "m" XXX
+ SG_ V_ABS : 38|12@0- (0.02526,2.587) [-49.145|54.294] "m/s" XXX
+ SG_ SCORE : 41|6@0+ (1,0) [0|63] "" XXX
+
+CM_ SG_ 568 V_ABS "12 bits signed from bit 38, not 11 from bit 37. Read as 11 bits a target past 102.3 km/h wrapped to -83.8 km/h, a car ahead reversing at us, and the planner braked at -3.5 on the motorway: 9 times on 2026-10-06, 19166 frames of the primary target. Bit 38 is the sign of every genuinely negative reading (339425 frames) and clear on every positive one; read as 12 bits the wrapped stretches run on from 1020 to 1024, 1027 ... 1054 raw.";
