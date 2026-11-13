@@ -81,6 +81,52 @@ def compact_model_v2(model) -> dict:
   }
 
 
+
+# opview 只讀這些欄位（opview lib/selfdrive/ui/ui_state.dart 的 apply* 函式）。其他欄位不送，
+# 省下 to_dict() 產生整個巢狀 dict 與 json.dumps 的 CPU / 記憶體（實測 rlog 每筆 JSON：longitudinalPlan 2.0 KB、
+# carState 1.6 KB、controlsState 1.6 KB、radarState 1.0 KB、roadCameraState 0.6 KB → 各約 0.05–0.3 KB）。
+# key 是 opview 端的 service 名稱（改名前的舊名稱）；欄位不存在的分支就略過該欄位（與 to_dict() 沒有該欄位相同）。
+# 表上沒有的 service 照舊整筆 to_dict()（2026-11-13 從 openpilot-test 移植，dp 分支原本全部 to_dict()）。modelV2 另由 compact_model_v2 處理。
+# 有沒有前車：dragonpilot 舊 cereal 叫 status，openpilot / sunnypilot 新版改名 present（同 @11）。兩個都列，
+# 不存在的那個會略過。只列 status 時新版分支 leadOne 沒有這個欄位，opview 判定「沒有前車」（鎖定框、車距都不見，2026-11-13）。
+OPVIEW_LEAD_FIELDS = ("status", "present", "dRel", "yRel", "vRel", "vLead", "aLeadK", "modelProb", "radar")
+OPVIEW_COMPACT_FIELDS: dict[str, dict[str, Any]] = {
+  "carState": dict.fromkeys(("vEgo", "aEgo", "steeringAngleDeg", "leftBlinker", "rightBlinker", "leftBlindspot",
+                             "rightBlindspot", "gearShifter", "standstill", "gasPressed", "vEgoCluster", "vCruiseCluster")),
+  "selfdriveState": dict.fromkeys(("enabled", "experimentalMode", "alertText1", "alertText2", "alertSize",
+                                   "alertStatus", "state")),
+  "controlsState": dict.fromkeys(("vCruiseDEPRECATED",)),
+  "radarState": {"leadOne": OPVIEW_LEAD_FIELDS, "leadTwo": OPVIEW_LEAD_FIELDS},
+  "longitudinalPlan": dict.fromkeys(("allowThrottle",)),
+  "deviceState": dict.fromkeys(("deviceType", "started")),
+  "liveCalibration": dict.fromkeys(("calStatus", "rpyCalib", "wideFromDeviceEuler", "height")),
+  "roadCameraState": dict.fromkeys(("sensor",)),
+}
+
+
+def _plain(value: Any) -> Any:
+  """capnp 值 → JSON 可序列化的值（與 to_dict() 相同：enum 用名稱字串、list 轉 list）"""
+  if value is None or isinstance(value, (bool, int, float, str)):
+    return value
+  if isinstance(value, (capnp._DynamicListReader, list, tuple)):
+    return [_plain(v) for v in value]
+  if isinstance(value, capnp._DynamicStructReader):
+    return value.to_dict()
+  return str(value)  # _DynamicEnum → 'drive'、'calibrated'…
+
+
+def compact_fields(reader: Any, fields: dict[str, Any] | tuple[str, ...]) -> dict:
+  """只取指定欄位；fields 的值是 tuple 時代表子結構只取那些欄位。不存在的欄位略過。"""
+  out: dict[str, Any] = {}
+  items = fields.items() if isinstance(fields, dict) else ((f, None) for f in fields)
+  for name, sub in items:
+    try:
+      value = getattr(reader, name)
+    except (AttributeError, capnp.KjException):
+      continue
+    out[name] = compact_fields(value, sub) if sub is not None else _plain(value)
+  return out
+
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def to_json(self, msg_content: Any):
     if isinstance(msg_content, capnp._DynamicStructReader):
@@ -139,7 +185,12 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
       if now - self.last_sent.get(service, 0.0) < self.MIN_SEND_INTERVAL:
         continue
       self.last_sent[service] = now
-      msg_dict = compact_model_v2(self.sm[service]) if service == "modelV2" else self.to_json(self.sm[service])
+      if service == "modelV2":
+        msg_dict = compact_model_v2(self.sm[service])
+      elif service in OPVIEW_COMPACT_FIELDS:
+        msg_dict = compact_fields(self.sm[service], OPVIEW_COMPACT_FIELDS[service])
+      else:
+        msg_dict = self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
       outgoing_msg = {"type": service, "logMonoTime": mono_time, "valid": valid, "data": msg_dict}
       encoded_msg = json.dumps(outgoing_msg).encode()
