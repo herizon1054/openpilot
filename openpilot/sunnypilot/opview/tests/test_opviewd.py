@@ -110,3 +110,26 @@ class TestOpviewd(OpenpilotTestCase):
     self.server.long_available = lambda p: True
     status, _ = self._req("/api/experimental_mode", {"enabled": "on"})
     assert status == 400
+
+  # --- opview Auto Hold 按鈕 ---
+  def test_auto_hold_status(self):
+    self.params.put("OpviewAutoHoldState", 1 | 4)
+    assert self._req("/api/auto_hold") == (200, {"paused": False, "available": True, "holding": True})
+
+  def test_auto_hold_bad_body(self):
+    self.params.put("OpviewAutoHoldState", 1)
+    assert self._req("/api/auto_hold", {"paused": "yes"})[0] == 400
+    assert "OpviewAutoHoldPaused" not in self.params.store
+
+  def test_auto_hold_pause_requires_available(self):
+    status, j = self._req("/api/auto_hold", {"paused": True})
+    assert status == 409 and "未啟用" in j["error"]
+    assert "OpviewAutoHoldPaused" not in self.params.store
+
+  def test_auto_hold_pause_and_resume(self):
+    self.params.put("OpviewAutoHoldState", 1)
+    status, j = self._req("/api/auto_hold", {"paused": True})
+    assert status == 200 and j["paused"] is True
+    self.params.put("OpviewAutoHoldState", 0)  # 恢復一律允許（即使已熄火 / 不可用）
+    status, j = self._req("/api/auto_hold", {"paused": False})
+    assert status == 200 and j["paused"] is False
