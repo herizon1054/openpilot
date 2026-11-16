@@ -778,6 +778,61 @@ async def set_experimental_mode_api(request):
     return web.json_response(body, status=status)
 
 
+# --- opview: Auto Hold 按鈕（暫停 / 恢復豐田自動煞車維持） ---
+# opview 直向道路畫面下方的 Auto Hold 按鈕：POST /api/auto_hold {"paused": bool}
+#   寫入 OpviewAutoHoldPaused（每次發動重置為「恢復」），card 的 params_thread 每 0.1 秒讀取並交給
+#   carcontroller 的 AutoBrakeHold：暫停 → 狀態機回到 IDLE，保持中立即放開；恢復 → 重新計時 2 秒才保持。
+#   暫停中車速超過 30 km/h 時 card 會自動清除暫停旗標（自動恢復）。
+#   實際狀態由 card 寫入 OpviewAutoHoldState（bit0 可用、bit1 已暫停、bit2 保持中），webrtcd 附在 carState 送給 opview；
+#   opview 的按鈕顏色以 webrtcd 回報為準，不以這裡的 HTTP 回應為準。
+#   恢復一律允許；暫停只在 comma 回報「可用」時允許（dp_toyota_auto_brake_hold 開啟且車輛符合條件、已發動）。
+def auto_hold_status(params):
+    try:
+        state = int(params.get("OpviewAutoHoldState") or 0)
+    except Exception:
+        state = 0
+    return {
+        'paused': params.get_bool("OpviewAutoHoldPaused"),
+        'available': bool(state & 1),
+        'holding': bool(state & 4),
+    }
+
+
+def handle_auto_hold(params, payload):
+    """回傳 (HTTP 狀態, JSON)。200 時帶寫入後的狀態。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get('paused'), bool):
+        return 400, {'error': 'body 需為 {"paused": true | false}'}
+    paused = payload['paused']
+    if paused and not auto_hold_status(params)['available']:
+        return 409, {'error': 'comma 端自動煞車維持未啟用（需開啟設定並發動車輛）'}
+    params.put_bool("OpviewAutoHoldPaused", paused)
+    return 200, auto_hold_status(params)
+
+
+@api_handler
+async def get_auto_hold_api(request):
+    """GET /api/auto_hold → {"paused", "available", "holding"}"""
+    cache: AppCache = request.app['cache']
+    return web.json_response(auto_hold_status(cache.params))
+
+
+@api_handler
+async def set_auto_hold_api(request):
+    """POST /api/auto_hold body {"paused": bool}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    status, body = handle_auto_hold(params, payload)
+    if status == 200:
+        logger.info(f"opview: OpviewAutoHoldPaused={body['paused']}")
+    else:
+        logger.info(f"opview: auto hold request refused ({status}): {body.get('error')}")
+    return web.json_response(body, status=status)
+
+
 # --- WebSocket endpoint for data streaming ---
 # One shared publisher task polls the dashyState SubMaster and fans out
 # to every connected client. The previous per-connection design ran
@@ -904,6 +959,8 @@ def setup_aiohttp_app(host: str, port: int, debug: bool):
     app.router.add_post("/api/models/select", save_model_selection_api)
     app.router.add_get("/api/experimental_mode", get_experimental_mode_api)    # opview 實驗模式開關
     app.router.add_post("/api/experimental_mode", set_experimental_mode_api)
+    app.router.add_get("/api/auto_hold", get_auto_hold_api)    # opview Auto Hold 按鈕（暫停 / 恢復）
+    app.router.add_post("/api/auto_hold", set_auto_hold_api)
     app.router.add_post("/api/action/{name}", run_action_api)
     app.router.add_get("/api/ws", websocket_handler)  # WebSocket for data streaming
 
