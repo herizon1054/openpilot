@@ -92,7 +92,8 @@ def compact_model_v2(model) -> dict:
 OPVIEW_LEAD_FIELDS = ("status", "present", "dRel", "yRel", "vRel", "vLead", "aLeadK", "modelProb", "radar")
 OPVIEW_COMPACT_FIELDS: dict[str, dict[str, Any]] = {
   "carState": dict.fromkeys(("vEgo", "aEgo", "steeringAngleDeg", "leftBlinker", "rightBlinker", "leftBlindspot",
-                             "rightBlindspot", "gearShifter", "standstill", "gasPressed", "vEgoCluster", "vCruiseCluster")),
+                             "rightBlindspot", "gearShifter", "standstill", "gasPressed", "vEgoCluster", "vCruiseCluster")) |
+              {"cruiseState": ("enabled",)},  # opview Auto Hold 按鈕：巡航中不顯示
   "selfdriveState": dict.fromkeys(("enabled", "experimentalMode", "alertText1", "alertText2", "alertSize",
                                    "alertStatus", "state")),
   "controlsState": dict.fromkeys(("vCruiseDEPRECATED",)),
@@ -127,6 +128,29 @@ def compact_fields(reader: Any, fields: dict[str, Any] | tuple[str, ...]) -> dic
     out[name] = compact_fields(value, sub) if sub is not None else _plain(value)
   return out
 
+# opview Auto Hold 按鈕：card 寫入的 OpviewAutoHoldState（bit0 可用、bit1 已暫停、bit2 保持中），
+# 附在 carState 訊息的 "opviewAutoHold" 欄位送給 opview。Params 每 0.2 秒最多讀一次。
+OPVIEW_AUTO_HOLD_READ_INTERVAL = 0.2
+
+
+class OpviewAutoHoldReader:
+  def __init__(self):
+    self.params = Params()
+    self.last_read = 0.0
+    self.value: dict[str, bool] = {"available": False, "paused": False, "holding": False}
+
+  def get(self) -> dict[str, bool]:
+    now = time.monotonic()
+    if now - self.last_read >= OPVIEW_AUTO_HOLD_READ_INTERVAL:
+      self.last_read = now
+      try:
+        state = int(self.params.get("OpviewAutoHoldState") or 0)
+      except Exception:
+        state = 0
+      self.value = {"available": bool(state & 1), "paused": bool(state & 2), "holding": bool(state & 4)}
+    return self.value
+
+
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def to_json(self, msg_content: Any):
     if isinstance(msg_content, capnp._DynamicStructReader):
@@ -156,6 +180,7 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     self.skipped = 0
     self.congested_since: float | None = None
     self.last_sent: dict[str, float] = {}
+    self.auto_hold = OpviewAutoHoldReader()
 
   def add_channel(self, channel: 'RTCDataChannel'):
     self.channels.append(channel)
@@ -189,6 +214,8 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
         msg_dict = compact_model_v2(self.sm[service])
       elif service in OPVIEW_COMPACT_FIELDS:
         msg_dict = compact_fields(self.sm[service], OPVIEW_COMPACT_FIELDS[service])
+        if service == "carState":
+          msg_dict["opviewAutoHold"] = self.auto_hold.get()
       else:
         msg_dict = self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]

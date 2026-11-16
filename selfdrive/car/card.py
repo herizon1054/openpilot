@@ -28,6 +28,9 @@ REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
 
+# opview Auto Hold 按鈕：暫停中車速超過 30 km/h 自動恢復
+OPVIEW_AUTO_HOLD_RESUME_SPEED = 30. / 3.6  # m/s
+
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
 
@@ -196,6 +199,9 @@ class Car:
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
 
+    # opview Auto Hold 按鈕：上次寫入 OpviewAutoHoldState 的值（-1 = 尚未寫入）
+    self.opview_auto_hold_state = -1
+
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
@@ -302,10 +308,34 @@ class Car:
     self.initialized_prev = initialized
     self.CS_prev = CS
 
+  def opview_auto_hold_update(self):
+    """opview Auto Hold 按鈕（10 Hz，在 params_thread 執行）
+    讀 OpviewAutoHoldPaused → 交給 carcontroller 的 AutoBrakeHold；
+    回報實際狀態到 OpviewAutoHoldState（只在變化時寫入）：bit0 可用、bit1 已暫停、bit2 保持中（真的送出 -2.0 保持指令）"""
+    abh = getattr(getattr(self.CI, 'CC', None), 'auto_brake_hold', None)
+    available = bool(abh is not None and abh.enabled)
+    paused = available and self.params.get_bool("OpviewAutoHoldPaused")
+    if paused and self.CS_prev.vEgo > OPVIEW_AUTO_HOLD_RESUME_SPEED:
+      # 暫停中車速超過 30 km/h → 自動恢復（清除暫停旗標，opview 按鈕回到紅色）
+      self.params.put_bool("OpviewAutoHoldPaused", False)
+      paused = False
+      cloudlog.info("opview auto hold: auto resumed above 30 km/h")
+    if abh is not None:
+      abh.paused = paused
+    holding = available and not paused and bool(getattr(self.CI.CS, 'auto_brake_hold_active', False))
+    state = int(available) | (int(paused) << 1) | (int(holding) << 2)
+    if state != self.opview_auto_hold_state:
+      self.params.put("OpviewAutoHoldState", state)
+      self.opview_auto_hold_state = state
+
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+      try:
+        self.opview_auto_hold_update()
+      except Exception:
+        cloudlog.exception("opview auto hold update failed")
       time.sleep(0.1)
 
   def card_thread(self):
