@@ -17,6 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
+from opendbc.car.toyota.values import ToyotaFlags
 if "TICI_DOS" in os.environ:
   from openpilot.selfdrive.pandad_tici import can_capnp_to_list, can_list_to_can_capnp
 else:
@@ -313,7 +314,9 @@ class Car:
     讀 OpviewAutoHoldPaused → 交給 carcontroller 的 AutoBrakeHold；
     回報實際狀態到 OpviewAutoHoldState（只在變化時寫入）：bit0 可用、bit1 已暫停、bit2 保持中（真的送出 -2.0 保持指令）"""
     abh = getattr(getattr(self.CI, 'CC', None), 'auto_brake_hold', None)
-    available = bool(abh is not None and abh.enabled)
+    # 僅限豐田 TSS2（interface 判定合格時才有 AUTO_BRAKE_HOLD flag；這裡再明確檢查一次 TSS2）
+    is_tss2 = self.CP.brand == "toyota" and bool(self.CP.flags & ToyotaFlags.TSS2)
+    available = bool(is_tss2 and abh is not None and abh.enabled)
     paused = available and self.params.get_bool("OpviewAutoHoldPaused")
     if paused and self.CS_prev.vEgo > OPVIEW_AUTO_HOLD_RESUME_SPEED:
       # 暫停中車速超過 30 km/h → 自動恢復（清除暫停旗標，opview 按鈕回到紅色）

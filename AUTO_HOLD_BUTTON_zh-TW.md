@@ -4,26 +4,31 @@
 
 ## 功能
 
-直向 opview 在**道路畫面正下方**（PortraitPanel 最上方，優先級最高）顯示一顆 Auto Hold 按鈕，點一下切換 comma 端
+> **僅限豐田 TSS2，舊款油電專用**（沒有原廠 Auto Hold 的舊款油電車）。汽油車實測無法保持；非 TSS2 車款 comma 不會回報可用，按鈕不會出現。
+
+直向 opview 在**儀表卡片正下方**（PortraitPanel；空間分配優先級最高，關閉儀表卡片時在最上方）顯示一顆 Auto Hold 按鈕，點一下切換 comma 端
 豐田自動煞車維持的「暫停 / 恢復」。
 
 | 按鈕 | 意義 | 點擊後 |
 |---|---|---|
-| 紅色「AUTO HOLD 恢復」 | 自動煞車維持作用中；右側「保持中」標籤 = 正在煞住車 | 暫停：保持中立即放開，之後不再保持 |
-| 綠色「AUTO HOLD 暫停」 | 已被 opview 暫停 | 恢復：停車滿 2 秒（原本的計時）才再保持 |
+| 綠色「恢復」＋手掌圖示 | 自動煞車維持作用中；正在煞住車時加粗白框並顯示白底「保持中」 | 暫停：保持中立即放開，之後不再保持 |
+| 紅色「暫停」＋暫停圖示 | 已被 opview 暫停 | 恢復：停車滿 2 秒（原本的計時）才再保持 |
+
+按鈕版面（高 56）：左側白底圓形圖示 → 小字「AUTO HOLD」＋大字狀態 →（保持中標籤）→ 右側白框動作鈕「點擊暫停」/「點擊恢復」。
+除了顏色，圖示形狀、狀態文字、白框都不同，色弱或陽光下也能分辨。
 
 **顯示條件（全部成立才出現）**
 
-1. 顯示設定 →「行車提醒」→「Auto Hold 按鈕（直向）」開啟（**預設關閉**）
+1. 顯示設定 →「行車提醒」→「Auto Hold 按鈕（TSS2 舊款油電專用）」開啟（**預設關閉**）
 2. 直向；已連線且資料未中斷（`_stale` 為 false）
-3. comma 回報「可用」（自動煞車維持設定已開啟、車輛符合條件、已發動）；舊版 comma 不回報 → 不顯示
+3. comma 回報「可用」：豐田 TSS2、自動煞車維持設定已開啟、車輛符合條件、已發動；舊版 comma 不回報 → 不顯示
 4. 車速 < 60 km/h（`carState.vEgo × 3.6`）
 5. 非巡航狀態：`selfdriveState.enabled` 與 `carState.cruiseState.enabled` 皆為 false
 
-按鈕出現時，儀表卡片 / 路況卡 / LINE / 停車面板依剩餘高度重新分配（按鈕不會被擠掉）。
+按鈕出現時，先扣掉按鈕高度，儀表卡片 / 路況卡 / LINE / 停車面板再依剩餘高度重新分配（按鈕不會被擠掉）。
 
 **按鈕顏色一律以 comma 回報的實際狀態為準**（webrtcd 附在 carState 的 `opviewAutoHold`），不是以 HTTP 回應為準。
-**自動恢復**：暫停中車速超過 30 km/h，comma 端 card 自動清除暫停旗標（按鈕回到紅色）；
+**自動恢復**：暫停中車速超過 30 km/h，comma 端 card 自動清除暫停旗標（按鈕回到綠色）；
 每次發動（onroad 開始）也會重置為「恢復」。自動恢復在 comma 端判斷，手機斷線時同樣有效。
 
 ## 資料流
@@ -76,7 +81,7 @@ Content-Type: application/json
 | `OpviewAutoHoldPaused` | BOOL | CLEAR_ON_MANAGER_START \| CLEAR_ON_ONROAD_TRANSITION | opview 寫入的暫停旗標，每次發動重置 |
 | `OpviewAutoHoldState` | INT | CLEAR_ON_MANAGER_START \| CLEAR_ON_ONROAD_TRANSITION \| CLEAR_ON_OFFROAD_TRANSITION | card 回報：bit0 可用、bit1 已暫停、bit2 保持中 |
 
-「可用」的判定：
+「可用」的判定（card 另外明確檢查 `CP.brand == "toyota"`；dp 再檢查 `ToyotaFlags.TSS2`）：
 - dp：`ToyotaFlags.AUTO_BRAKE_HOLD`（`dp_toyota_auto_brake_hold` ≠ 關閉，且 interface.py 判定合格：TSS2 相機 ACC、非 SecOC、openpilot 縱向）
 - sp：`ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD`（`ToyotaEnableAutoHold` ≠ 0）且 `ToyotaFlags.TSS2`（與原本送出條件相同）
 
@@ -121,8 +126,16 @@ Content-Type: application/json
 ## 驗證方式
 
 1. `curl http://<comma>:5088/api/auto_hold` → 已發動且設定開啟時 `available: true`
-2. 停車滿 2 秒 → opview 紅色按鈕出現「保持中」
-3. 按按鈕 → 約 0.3 秒內變綠色、「保持中」消失、車輛放開
-4. 再按 → 變紅色；停車滿 2 秒後再次「保持中」
-5. 暫停後開車超過 30 km/h → 按鈕自動變回紅色（`OpviewAutoHoldPaused` 被清除）
+2. 停車滿 2 秒 → opview 綠色按鈕加白框、出現「保持中」
+3. 按按鈕 → 約 0.3 秒內變紅色「暫停」、「保持中」消失、車輛放開
+4. 再按 → 變綠色「恢復」；停車滿 2 秒後再次「保持中」
+5. 暫停後開車超過 30 km/h → 按鈕自動變回綠色（`OpviewAutoHoldPaused` 被清除）
 6. 開啟巡航或車速超過 60 km/h → 按鈕消失
+
+## 變更紀錄
+
+- 2026-11-16 b：暫停中車速超過 30 km/h 自動恢復。
+- 2026-11-16 c：位置改到儀表卡片正下方。
+- 2026-11-16 d：顏色維持紅 = 恢復、綠 = 暫停；加強辨識（圖示形狀、大字狀態、保持中白框、動作鈕），高度 52 → 56。
+- 2026-11-16 e：顏色對調為綠 = 恢復 / 保持中、紅 = 暫停（版面與辨識設計同 d 版）。
+- 2026-11-16 f：僅限豐田 TSS2（card 明確檢查品牌與 TSS2）；opview 設定標示「TSS2 舊款油電專用」。
