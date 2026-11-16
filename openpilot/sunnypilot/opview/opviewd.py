@@ -14,6 +14,9 @@ dragonpilot 系（dp0111pre）由 dashy serverd（:5088）提供車型讀寫；s
   GET  /api/experimental_mode → {"experimental_mode": bool, "available": bool, "confirmed": bool}
   POST /api/experimental_mode   body {"enabled": bool} → 200 {"experimental_mode": bool} | 400 / 409 {"error": "<原因>"}
                               （opview 側欄第一顆按鈕；與 dp serverd 相同介面）
+  GET  /api/auto_hold       → {"paused": bool, "available": bool, "holding": bool}
+  POST /api/auto_hold         body {"paused": bool} → 200 {"paused", "available", "holding"} | 400 / 409 {"error": "<原因>"}
+                              （opview 直向道路畫面下方的 Auto Hold 按鈕：暫停 / 恢復；與 dp serverd 相同介面）
 
 車型寫入 sunnypilot 的 CarPlatformBundle（與 設定 → 車輛 → 車型選擇 相同：{**car_list[name], "name": name}），
 card.py 在每次 onroad 開始時讀取 → 不需重新開機，下次發動生效。
@@ -156,6 +159,37 @@ def handle_experimental_mode(params: Params, payload: Any, long_available: bool 
   return 200, {"experimental_mode": now}
 
 
+# --- opview: Auto Hold 按鈕（暫停 / 恢復豐田自動煞車維持 ToyotaEnableAutoHold） ---
+# 寫入 OpviewAutoHoldPaused（每次發動重置為「恢復」），card 的 params_thread 每 0.1 秒讀取並交給 Toyota carcontroller：
+#   暫停 → 不允許保持，狀態機回到 IDLE，保持中立即放開；恢復 → 重新計時 2 秒才保持。
+#   暫停中車速超過 30 km/h 時 card 會自動清除暫停旗標（自動恢復）。
+# 實際狀態由 card 寫入 OpviewAutoHoldState（bit0 可用、bit1 已暫停、bit2 保持中），webrtcd 附在 carState 送給 opview；
+# opview 的按鈕顏色以 webrtcd 回報為準，不以這裡的 HTTP 回應為準。
+# 恢復一律允許；暫停只在 comma 回報「可用」時允許（ToyotaEnableAutoHold 開啟、TSS2、已發動）。
+def handle_auto_hold_status(params: Params) -> tuple[int, dict]:
+  try:
+    state = int(params.get("OpviewAutoHoldState") or 0)
+  except (TypeError, ValueError):
+    state = 0
+  return 200, {
+    "paused": params.get_bool("OpviewAutoHoldPaused"),
+    "available": bool(state & 1),
+    "holding": bool(state & 4),
+  }
+
+
+def handle_auto_hold(params: Params, payload: Any) -> tuple[int, dict]:
+  if not isinstance(payload, dict) or not isinstance(payload.get("paused"), bool):
+    return 400, {"error": 'body 需為 {"paused": true | false}'}
+  paused = payload["paused"]
+  if paused and not handle_auto_hold_status(params)[1]["available"]:
+    return 409, {"error": "comma 端自動煞車維持未啟用（需開啟設定並發動車輛）"}
+  params.put_bool("OpviewAutoHoldPaused", paused)
+  status = handle_auto_hold_status(params)
+  logger.warning("opviewd: OpviewAutoHoldPaused=%s", status[1]["paused"])
+  return status
+
+
 class OpviewdHandler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
   server: "OpviewdHTTPServer"
@@ -197,7 +231,15 @@ class OpviewdHandler(BaseHTTPRequestHandler):
         except ValueError:
           payload = None
         result = handle_experimental_mode(params, payload, self.server.long_available(params))
-      elif path in ("/api/init", "/api/models", "/api/models/select", "/api/experimental_mode"):
+      elif self.command in ("GET", "HEAD") and path == "/api/auto_hold":
+        result = handle_auto_hold_status(params)
+      elif self.command == "POST" and path == "/api/auto_hold":
+        try:
+          payload = self._read_json()
+        except ValueError:
+          payload = None
+        result = handle_auto_hold(params, payload)
+      elif path in ("/api/init", "/api/models", "/api/models/select", "/api/experimental_mode", "/api/auto_hold"):
         result = (405, {"error": "method not allowed"})
       else:
         result = (404, {"error": "not found"})
