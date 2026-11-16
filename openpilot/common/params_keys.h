@@ -252,6 +252,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ToyotaEnforceStockLongitudinal", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ToyotaStopAndGoHack", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ToyotaEnableAutoHold", {PERSISTENT | BACKUP, INT, "0"}},
+    // opview Auto Hold 按鈕：暫停旗標（opview 經 opviewd 寫入；每次發動重置為「恢復」）
+    {"OpviewAutoHoldPaused", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL, "0"}},
+    // opview Auto Hold 按鈕：card 回報的實際狀態 bit0 = 可用、bit1 = 已暫停、bit2 = 保持中（webrtcd 轉給 opview）
+    {"OpviewAutoHoldState", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
 
 
     {"DynamicExperimentalControl", {PERSISTENT | BACKUP, BOOL, "0"}},
