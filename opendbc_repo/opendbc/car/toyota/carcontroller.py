@@ -92,6 +92,11 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self._brake_hold_counter: int = 0
     self._prev_brake_pressed: bool = False
     self._speed_gear_lock = False
+    # opview Auto Hold 按鈕：可用 = 開啟 ToyotaEnableAutoHold 且為 TSS2（與下方送出條件相同）；
+    # 暫停旗標由 card params_thread 讀 OpviewAutoHoldPaused 寫入
+    self.opview_auto_hold_available = bool(self.CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD) and \
+                                      bool(self.CP.flags & ToyotaFlags.TSS2)
+    self.opview_auto_hold_paused = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -377,7 +382,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     cruise_disabled = not CS.out.cruiseState.enabled and speed_enabled
 
-    brake_hold_allowed = standstill_ok and cruise_disabled
+    # opview 暫停：不允許保持 → 狀態機回 IDLE，保持中立即放開；恢復後重新計時才保持
+    brake_hold_allowed = standstill_ok and cruise_disabled and not self.opview_auto_hold_paused
 
     brake_pressed = CS.out.brakePressed
     brake_pressed_edge = brake_pressed and not self._prev_brake_pressed
