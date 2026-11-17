@@ -202,6 +202,8 @@ class Car:
 
     # opview Auto Hold 按鈕：上次寫入 OpviewAutoHoldState 的值（-1 = 尚未寫入）
     self.opview_auto_hold_state = -1
+    # 暫停旗標：params_thread 寫入，card 主迴圈在 CI.apply 前讀取（不修改 opendbc）
+    self.opview_auto_hold_paused = False
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -291,6 +293,7 @@ class Car:
     if self.sm.all_alive(['carControl']):
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
+      self.opview_auto_hold_apply()
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
@@ -309,9 +312,22 @@ class Car:
     self.initialized_prev = initialized
     self.CS_prev = CS
 
+  def opview_auto_hold_apply(self):
+    """opview Auto Hold 暫停（card 主迴圈，每次 CI.apply 前呼叫，100 Hz；不修改 opendbc）
+    暫停中把 carcontroller 的 AutoBrakeHold 狀態機歸零（IDLE、計數 0）。
+    AutoBrakeHold.update 每 2 frame（50 Hz）才跑，每次跑之前都已被歸零 → 計數永遠到不了 BRAKE_HOLD_TIMER，不會進入保持；
+    原本保持中則下一次就變成未保持（PRE_COLLISION_2 改回原樣轉送）→ 立即放開。
+    注意：不能用 enabled=False 來暫停 —— 那樣 openpilot 會停止轉送 0x344，而停車時 panda 已擋掉相機原始訊息。"""
+    if not self.opview_auto_hold_paused:
+      return
+    abh = getattr(getattr(self.CI, 'CC', None), 'auto_brake_hold', None)
+    if abh is not None:
+      abh.state = 0   # BRAKE_HOLD_IDLE（opendbc/car/toyota/auto_brake_hold.py）
+      abh.counter = 0
+
   def opview_auto_hold_update(self):
     """opview Auto Hold 按鈕（10 Hz，在 params_thread 執行）
-    讀 OpviewAutoHoldPaused → 交給 carcontroller 的 AutoBrakeHold；
+    讀 OpviewAutoHoldPaused → self.opview_auto_hold_paused（由主迴圈套用）；
     回報實際狀態到 OpviewAutoHoldState（只在變化時寫入）：bit0 可用、bit1 已暫停、bit2 保持中（真的送出 -2.0 保持指令）"""
     abh = getattr(getattr(self.CI, 'CC', None), 'auto_brake_hold', None)
     # 僅限豐田 TSS2（interface 判定合格時才有 AUTO_BRAKE_HOLD flag；這裡再明確檢查一次 TSS2）
@@ -323,8 +339,7 @@ class Car:
       self.params.put_bool("OpviewAutoHoldPaused", False)
       paused = False
       cloudlog.info("opview auto hold: auto resumed above 30 km/h")
-    if abh is not None:
-      abh.paused = paused
+    self.opview_auto_hold_paused = paused
     holding = available and not paused and bool(getattr(self.CI.CS, 'auto_brake_hold_active', False))
     state = int(available) | (int(paused) << 1) | (int(holding) << 2)
     if state != self.opview_auto_hold_state:

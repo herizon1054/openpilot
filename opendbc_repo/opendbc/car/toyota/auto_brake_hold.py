@@ -21,11 +21,7 @@ which is in turn based on AlexandreSato/openpilot's automatic brakehold.
   ACTIVE    --(再次踩下煞車的上升緣)-->            COUNTING（解除並重新計時）
   任何狀態  --(不再允許保持)-->                    IDLE
 
-允許保持 = D 檔 且 靜止 且 未踩油門 且 ACC 未啟用 且 (非 SPEED 模式 或 已達速度門檻) 且 未被 opview 暫停
-
-opview Auto Hold 按鈕（暫停 / 恢復）：
-  card 的 params_thread 讀 OpviewAutoHoldPaused 寫入 self.paused。暫停時「不允許保持」→ 狀態機回到 IDLE，
-  正在保持中會立即放開（PRE_COLLISION_2 改回原樣轉送）；恢復後重新從 COUNTING 計時 2 秒才進入保持。
+允許保持 = D 檔 且 靜止 且 未踩油門 且 ACC 未啟用 且 (非 SPEED 模式 或 已達速度門檻)
 """
 from opendbc.car import structs
 from opendbc.car.toyota import toyotacan
@@ -53,8 +49,6 @@ class AutoBrakeHold:
     self.active = False
     self._prev_brake_pressed = False
     self._speed_gear_lock = False
-    # opview Auto Hold 按鈕：由 card params_thread 寫入（OpviewAutoHoldPaused）
-    self.paused = False
 
   def _update_state(self, CS) -> None:
     gear = CS.out.gearShifter == GearShifter.drive
@@ -69,7 +63,7 @@ class AutoBrakeHold:
     standstill_ok = gear and CS.out.standstill and not CS.out.gasPressed
     speed_enabled = self._speed_gear_lock if self.speed_mode else True
     cruise_disabled = not CS.out.cruiseState.enabled and speed_enabled
-    brake_hold_allowed = standstill_ok and cruise_disabled and not self.paused
+    brake_hold_allowed = standstill_ok and cruise_disabled
 
     brake_pressed = CS.out.brakePressed
     brake_pressed_edge = brake_pressed and not self._prev_brake_pressed
