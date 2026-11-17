@@ -341,10 +341,20 @@ static safety_config hyundai_legacy_init(uint16_t param) {
 }
 
 // dp - ALKA: track ACC main state (SCC11 0x420, bit 0 = MainMode_ACC)
+// dp - ALKA + openpilot longitudinal: SCC11 is no longer sent by the car (the radar is disabled and
+//      openpilot transmits SCC11 itself), so the branch above never runs and lkas_on stayed false
+//      forever, blocking every LKAS11 steer request while openpilot believed ALKA was active.
+//      Mirror carstate.py exactly: under openpilot long, cruiseState.available = TCS13.ACCEnable == 0
+//      and lkas_on = cruiseState.available. TCS13 (0x394) is already an rx check, so it is
+//      counter/checksum validated before reaching this hook.
+//      ACCEnable: start bit 43, 2 bits, little endian -> data[5] bits 3..4.
 static void hyundai_rx_ext_hook(const CANPacket_t *msg) {
   if (alka_allowed && ((alternative_experience & ALT_EXP_ALKA) != 0)) {
     if ((msg->addr == 0x420U) && (msg->bus == (hyundai_camera_scc ? 2U : 0U)) && !hyundai_longitudinal) {
       lkas_on = GET_BIT(msg, 0U);  // ACC main on = ALKA enabled
+    }
+    if ((msg->addr == 0x394U) && (msg->bus == 0U) && hyundai_longitudinal) {
+      lkas_on = ((msg->data[5] >> 3) & 0x3U) == 0U;  // TCS13.ACCEnable == 0: ESC permits ACC
     }
   }
 }
