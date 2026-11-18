@@ -92,13 +92,15 @@ def compact_model_v2(model) -> dict:
 OPVIEW_LEAD_FIELDS = ("status", "present", "dRel", "yRel", "vRel", "vLead", "aLeadK", "modelProb", "radar")
 OPVIEW_COMPACT_FIELDS: dict[str, dict[str, Any]] = {
   "carState": dict.fromkeys(("vEgo", "aEgo", "steeringAngleDeg", "leftBlinker", "rightBlinker", "leftBlindspot",
-                             "rightBlindspot", "gearShifter", "standstill", "gasPressed", "vEgoCluster", "vCruiseCluster")),
+                             "rightBlindspot", "gearShifter", "standstill", "gasPressed", "vEgoCluster", "vCruiseCluster")) |
+              {"cruiseState": ("enabled",)},  # opview Auto Hold 按鈕：巡航中不顯示
   "selfdriveState": dict.fromkeys(("enabled", "experimentalMode", "alertText1", "alertText2", "alertSize",
-                                   "alertStatus", "state")),
+                                   "alertStatus", "state", "personality")),  # personality：opview 橫向 HUD（吉米）
   "controlsState": dict.fromkeys(("vCruiseDEPRECATED",)),
   "radarState": {"leadOne": OPVIEW_LEAD_FIELDS, "leadTwo": OPVIEW_LEAD_FIELDS},
   "longitudinalPlan": dict.fromkeys(("allowThrottle",)),
-  "deviceState": dict.fromkeys(("deviceType", "started")),
+  # memoryUsagePercent / cpuUsagePercent / maxTempC：opview 橫向 HUD（吉米）的 MEM / CPU / TEMP
+  "deviceState": dict.fromkeys(("deviceType", "started", "memoryUsagePercent", "cpuUsagePercent", "maxTempC")),
   "liveCalibration": dict.fromkeys(("calStatus", "rpyCalib", "wideFromDeviceEuler", "height")),
   "roadCameraState": dict.fromkeys(("sensor",)),
 }
@@ -126,6 +128,59 @@ def compact_fields(reader: Any, fields: dict[str, Any] | tuple[str, ...]) -> dic
       continue
     out[name] = compact_fields(value, sub) if sub is not None else _plain(value)
   return out
+
+# opview Auto Hold 按鈕：card 寫入的 OpviewAutoHoldState（bit0 可用、bit1 已暫停、bit2 保持中），
+# 附在 carState 訊息的 "opviewAutoHold" 欄位送給 opview。Params 每 0.2 秒最多讀一次。
+OPVIEW_AUTO_HOLD_READ_INTERVAL = 0.2
+
+
+class OpviewAutoHoldReader:
+  def __init__(self):
+    self.params = Params()
+    self.last_read = 0.0
+    self.value: dict[str, bool] = {"available": False, "paused": False, "holding": False}
+
+  def get(self) -> dict[str, bool]:
+    now = time.monotonic()
+    if now - self.last_read >= OPVIEW_AUTO_HOLD_READ_INTERVAL:
+      self.last_read = now
+      try:
+        state = int(self.params.get("OpviewAutoHoldState") or 0)
+      except Exception:
+        state = 0
+      self.value = {"available": bool(state & 1), "paused": bool(state & 2), "holding": bool(state & 4)}
+    return self.value
+
+
+# opview 橫向 HUD 的 eGPU 狀態：附在 deviceState 訊息的 "opviewEgpu" 欄位送給 opview。Params 每 1 秒最多讀一次。
+#   {"present": 偵測到 eGPU, "active": 模型正在 eGPU 上跑, "loading": 大模型載入中, "compiled": 大模型已編譯}
+# dragonpilot 系（dp0111pre）：modeld 啟動時寫入 UsbGpuPresent（偵測到 eGPU）、UsbGpuCompiled（大模型已編譯）；
+#   兩者都成立時 modeld 用 eGPU 跑大模型（modeld.py：USBGPU = _present and _compiled）。
+# 參數不存在（其他分支）一律視為 False，不會丟例外。
+OPVIEW_EGPU_READ_INTERVAL = 1.0
+
+
+class OpviewEgpuReader:
+  def __init__(self):
+    self.params = Params()
+    self.last_read = -OPVIEW_EGPU_READ_INTERVAL
+    self.value: dict[str, bool] = {"present": False, "active": False, "loading": False, "compiled": False}
+
+  def _get_bool(self, key: str) -> bool:
+    try:
+      return bool(self.params.get_bool(key))
+    except Exception:
+      return False
+
+  def get(self) -> dict[str, bool]:
+    now = time.monotonic()
+    if now - self.last_read >= OPVIEW_EGPU_READ_INTERVAL:
+      self.last_read = now
+      present = self._get_bool("UsbGpuPresent")
+      compiled = self._get_bool("UsbGpuCompiled")
+      self.value = {"present": present, "active": present and compiled, "loading": False, "compiled": compiled}
+    return self.value
+
 
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def to_json(self, msg_content: Any):
@@ -156,6 +211,8 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     self.skipped = 0
     self.congested_since: float | None = None
     self.last_sent: dict[str, float] = {}
+    self.auto_hold = OpviewAutoHoldReader()
+    self.egpu = OpviewEgpuReader()
 
   def add_channel(self, channel: 'RTCDataChannel'):
     self.channels.append(channel)
@@ -189,6 +246,10 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
         msg_dict = compact_model_v2(self.sm[service])
       elif service in OPVIEW_COMPACT_FIELDS:
         msg_dict = compact_fields(self.sm[service], OPVIEW_COMPACT_FIELDS[service])
+        if service == "carState":
+          msg_dict["opviewAutoHold"] = self.auto_hold.get()
+        elif service == "deviceState":
+          msg_dict["opviewEgpu"] = self.egpu.get()
       else:
         msg_dict = self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
