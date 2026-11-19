@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
 from cereal import messaging, log
+from cereal.services import SERVICE_LIST
 
 
 class AsyncTaskRunner:
@@ -182,6 +183,55 @@ class OpviewEgpuReader:
     return self.value
 
 
+# opview 吉米三線道模型（v2.0.9）：雷達點雲精簡版，附在 radarState 訊息的 "opviewTracks" 欄位送給 opview。
+# 用途：讓手機的相機車種辨識目標對到雷達點，40 m 內的位置改用雷達量到的距離 / 橫向。
+# 只送 measured、前方 0–45 m 的點（opview 只要求 40 m 內準確，多 5 m 給配對容錯），每點 [trackId, dRel, yRel, vRel]
+# 小數 1 位，10 Hz（radarState 20 Hz，隔一筆附一次）。實測 TSS2 rlog 每筆約 7 點、≤ 0.25 KB → ≤ 20 kbps，
+# 約影像串流（5 Mbps）的 0.4%。舊版 opview 會忽略這個欄位；沒有 radarTracks / liveTracks 的分支不附。
+OPVIEW_TRACKS_MAX_D = 45.0
+OPVIEW_TRACKS_INTERVAL = 0.1
+OPVIEW_TRACKS_STALE = 0.5
+
+
+class OpviewTracksReader:
+  def __init__(self):
+    self.name: str | None = None
+    self.sock = None
+    try:
+      for name in ("radarTracks", "liveTracks"):  # openpilot 新版改名為 radarTracks；dragonpilot 舊 cereal 為 liveTracks
+        if name in SERVICE_LIST:
+          self.name = name
+          break
+      if self.name is not None:
+        self.sock = messaging.sub_sock(self.name, conflate=True)
+    except Exception:
+      self.sock = None
+    self.last_attach = 0.0
+    self.received_at = 0.0
+    self.points: list[list[float]] = []
+
+  def get(self) -> list[list[float]] | None:
+    """None = 這次不附（10 Hz 節流或沒有雷達點資料來源）"""
+    if self.sock is None:
+      return None
+    now = time.monotonic()
+    if now - self.last_attach < OPVIEW_TRACKS_INTERVAL:
+      return None
+    self.last_attach = now
+    try:
+      msg = messaging.recv_one_or_none(self.sock)
+      if msg is not None:
+        self.points = [[int(p.trackId), round(p.dRel, 1), round(p.yRel, 1), round(p.vRel, 1)]
+                       for p in getattr(msg, self.name).points
+                       if p.measured and 0.0 < p.dRel <= OPVIEW_TRACKS_MAX_D]
+        self.received_at = now
+    except Exception:
+      self.points = []
+    if now - self.received_at > OPVIEW_TRACKS_STALE:
+      self.points = []
+    return self.points
+
+
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def to_json(self, msg_content: Any):
     if isinstance(msg_content, capnp._DynamicStructReader):
@@ -213,6 +263,7 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     self.last_sent: dict[str, float] = {}
     self.auto_hold = OpviewAutoHoldReader()
     self.egpu = OpviewEgpuReader()
+    self.tracks = OpviewTracksReader()
 
   def add_channel(self, channel: 'RTCDataChannel'):
     self.channels.append(channel)
@@ -250,6 +301,10 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
           msg_dict["opviewAutoHold"] = self.auto_hold.get()
         elif service == "deviceState":
           msg_dict["opviewEgpu"] = self.egpu.get()
+        elif service == "radarState":
+          tracks = self.tracks.get()
+          if tracks is not None:
+            msg_dict["opviewTracks"] = tracks
       else:
         msg_dict = self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
