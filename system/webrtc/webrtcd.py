@@ -67,7 +67,7 @@ def compact_model_v2(model) -> dict:
   完整 to_dict() 約 31 KB / 筆（20 Hz ≈ 5 Mbps），精簡後約 5.6 KB（≈ 0.9 Mbps），
   comma 端 json.dumps 與手機端 jsonDecode 的負擔也一起降低。
   opview 讀的欄位：position.x/y/z、laneLines[].x/y/z、laneLineProbs、roadEdges[].x/y/z、roadEdgeStds、acceleration.x、
-  leadsV3[].prob/x/y（近距離警示）
+  orientationRate.z[0]（opview v2.0.13 車型 3D 辨識：本車轉向角速度）、leadsV3[].prob/x/y（近距離警示）
   （見 opview lib/selfdrive/ui/ui_state.dart applyModelV2）。opview 之後若要用其他欄位，需在這裡一併加上。"""
   return {
     "frameId": model.frameId,
@@ -77,6 +77,8 @@ def compact_model_v2(model) -> dict:
     "roadEdges": [_xyz(e) for e in model.roadEdges],
     "roadEdgeStds": _r3(model.roadEdgeStds),
     "acceleration": {"x": _r3(model.acceleration.x)},
+    # 本車轉向角速度（opview v2.0.13 車型 3D 辨識：追蹤目標速度扣掉本車轉向、連續車頭角度）：只送 t = 0 那一點
+    "orientationRate": {"z": _r3([model.orientationRate.z[0]] if len(model.orientationRate.z) else [])},
     # 純視覺前車（近距離警示用：opview 讀 leadsV3[0] 的 x[0] / y[0] / prob）
     "leadsV3": [{"prob": round(lead.prob, 3), "x": _r3(lead.x), "y": _r3(lead.y)} for lead in model.leadsV3],
   }
