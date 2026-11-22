@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from openpilot.system.webrtc.webrtcd import OPVIEW_COMPACT_FIELDS, compact_fields
+from openpilot.system.webrtc.webrtcd import OPVIEW_COMPACT_FIELDS, compact_fields, compact_model_v2
 
 
 class TestOpviewCompact:
@@ -22,3 +22,14 @@ class TestOpviewCompact:
                          gasPressed=False, vEgoCluster=10.1, vCruiseCluster=30.0, cruiseState=object())
     d = compact_fields(cs, OPVIEW_COMPACT_FIELDS["carState"])
     assert "cruiseState" not in d and d["gearShifter"] == "drive" and len(d) == 12
+
+  def test_model_v2_orientation_rate(self):
+    # opview v2.0.13：只送 orientationRate.z 的 t = 0；模型沒有輸出時送空 list
+    xyz = SimpleNamespace(x=[1.0] * 3, y=[2.0] * 3, z=[3.0] * 3)
+    m = SimpleNamespace(frameId=1, position=xyz, laneLines=[xyz] * 4, laneLineProbs=[0.9] * 4, roadEdges=[xyz] * 2,
+                        roadEdgeStds=[0.5] * 2, acceleration=SimpleNamespace(x=[0.1]),
+                        orientationRate=SimpleNamespace(z=[0.12345, 0.2]), leadsV3=[])
+    assert compact_model_v2(m)["orientationRate"] == {"z": [0.123]}
+    m.orientationRate = SimpleNamespace(z=[])
+    assert compact_model_v2(m)["orientationRate"] == {"z": []}
+
