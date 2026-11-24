@@ -25,6 +25,27 @@ const auto MAIN_ENCODE_TYPE = Hardware::PC() ? cereal::EncodeIndex::Type::BIG_BO
 const bool LOGGERD_TEST = getenv("LOGGERD_TEST");
 const int SEGMENT_LENGTH = LOGGERD_TEST ? atoi(getenv("LOGGERD_SEGMENT_LENGTH")) : 60;
 
+// dp - opview 串流（livestream*EncodeData）解析度比照 sunnypilot（openpilot-test system/loggerd/loggerd.h）：
+//   comma 3X（tizi，AR0231 / OX03C10 1928x1208）→ 1152x720
+//   comma 4（mici，OS04C10 1344x760）         → 1280x720
+//   其他（comma 3 tici、PC）                   → -1 = 不指定，交給下方 max_frame_width 1440 上限（與 sp 不同，見下）
+// v4l 編碼器縮小不耗 CPU（"downscales are free with v4l"）。
+inline int livestream_width() {
+  switch (Hardware::get_device_type()) {
+    case cereal::InitData::DeviceType::TIZI: return 1152;
+    case cereal::InitData::DeviceType::MICI: return 1280;
+    default: return -1;
+  }
+}
+
+inline int livestream_height() {
+  switch (Hardware::get_device_type()) {
+    case cereal::InitData::DeviceType::TIZI:
+    case cereal::InitData::DeviceType::MICI: return 720;
+    default: return -1;
+  }
+}
+
 constexpr char PRESERVE_ATTR_NAME[] = "user.preserve";
 constexpr char PRESERVE_ATTR_VALUE = '1';
 
@@ -108,9 +129,11 @@ const EncoderInfo stream_road_encoder_info = {
   //.thumbnail_name = "thumbnail",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
-  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  // dp - 解析度比照 sp：tizi 1152x720、mici 1280x720（livestream_width / livestream_height）。
+  // 與 sp 的差異（刻意保留）：其他裝置（comma 3 tici）sp 不縮、送原尺寸 1928x1208，
+  // 多數手機硬體 H.264 解碼器撐不住；dp 保留寬度上限 1440 → 等比例 1440x902。frame_width 有指定時上限不起作用。
+  .frame_width = livestream_width(),
+  .frame_height = livestream_height(),
   .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamRoadEncode),
@@ -120,9 +143,11 @@ const EncoderInfo stream_wide_road_encoder_info = {
   .publish_name = "livestreamWideRoadEncodeData",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
-  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  // dp - 解析度比照 sp：tizi 1152x720、mici 1280x720（livestream_width / livestream_height）。
+  // 與 sp 的差異（刻意保留）：其他裝置（comma 3 tici）sp 不縮、送原尺寸 1928x1208，
+  // 多數手機硬體 H.264 解碼器撐不住；dp 保留寬度上限 1440 → 等比例 1440x902。frame_width 有指定時上限不起作用。
+  .frame_width = livestream_width(),
+  .frame_height = livestream_height(),
   .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamWideRoadEncode),
@@ -132,9 +157,11 @@ const EncoderInfo stream_driver_encoder_info = {
   .publish_name = "livestreamDriverEncodeData",
   .record = false,
   .adaptive_bitrate = true,
-  // dp - 串流寬度上限 1440：多數手機硬體 H.264 解碼器上限 1920 寬 / 1080p 巨集塊數，
-  // 1928x1208（AR0231 / OX03C10）會讓 MediaCodec.configure 失敗而退回軟體解碼 → 等比例縮成 1440x902。
-  // OS04C10（1344x760）未超過上限，維持原尺寸、不放大不變形。
+  // dp - 解析度比照 sp：tizi 1152x720、mici 1280x720（livestream_width / livestream_height）。
+  // 與 sp 的差異（刻意保留）：其他裝置（comma 3 tici）sp 不縮、送原尺寸 1928x1208，
+  // 多數手機硬體 H.264 解碼器撐不住；dp 保留寬度上限 1440 → 等比例 1440x902。frame_width 有指定時上限不起作用。
+  .frame_width = livestream_width(),
+  .frame_height = livestream_height(),
   .max_frame_width = 1440,
   .get_settings = [](int){return EncoderSettings::StreamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(LivestreamDriverEncode),
