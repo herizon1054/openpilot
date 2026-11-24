@@ -58,9 +58,6 @@ ALLOW_THROTTLE_HYSTERESIS_MAX_RATIO = 0.75
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
-# dp：e2e 正向加速度放大係數（見 update() 內說明）
-E2E_ACCEL_BOOST_FACTOR = 1.5
-
 # dp(v12.1): e2e 減速保險（e2e decel guard）
 # 用途：acc 模式下，模型（e2e）已經感知到應該減速，但 MPC 仍要加速／維持時，把輸出往 e2e 拉，
 # 當作一層保險。e2e 為負代表模型整體判斷「該減速了」，不依賴雷達前車選擇，因此能補到
@@ -81,7 +78,7 @@ E2E_ACCEL_BOOST_FACTOR = 1.5
 #   另有 E2E_GUARD_MAX_HOLD_S 硬上限：保險是短時保護，不該長時間接管。
 # 輸出：mpc + w × (min(mpc, e2e) − mpc)，權重 w 在 E2E_GUARD_RAMP_S 秒內 0↔1 漸變，
 #   避免進出時輸出一幀跳 0.3~1 m/s²。只會讓輸出變小（更保守），不會讓輸出超過 MPC。
-# e2e 取模型原始值（不含 E2E_ACCEL_BOOST_FACTOR 放大）。
+# e2e 取模型原始值（已恢復原版：e2e 正向加速度不再放大）。
 # 驗證（log 030/032/033/034/035/036/037，約 390 秒 acc 行駛，63~108 km/h，mpc 由 longitudinalPlan 反推）：
 #   - 032 藍車切入：第 57.5 秒觸發（駕駛踩剎車前 0.3 秒），輸出 0.25 秒內由 +0.05 降到 -0.29。
 #   - 036 第 48 秒、037 第 54 秒：前車減速、MPC 本身也在減速時觸發，多減約 2 km/h。
@@ -373,16 +370,7 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
                                                                         action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
-    output_a_target_e2e_raw = output_a_target_e2e   # dp(v12): e2e 減速保險使用未放大的原始值
-
-    # dp: 對 e2e 的正向加速度意圖放大（×E2E_ACCEL_BOOST_FACTOR），補償 desired_accel 偏保守
-    # 的傾向（它是從模型預測的 plan 軌跡微分出來的「預期值」，訓練資料是一般人類的溫和
-    # 示範；調 LONG_SMOOTH_SECONDS / ALLOW_THROTTLE_THRESHOLD 等下游參數不會改變這個值的大小）。
-    # ⚠️ 刻意分歧：送進 min() 比較的 e2e 值偏離模型原始預測。放大後仍取 min(mpc, e2e)，
-    # mpc 依然兜底，最終輸出不會超過 mpc 認為安全的範圍；效果只在「e2e 原本比 mpc 保守」
-    # 的情境讓結果更貼近 mpc。只放大正值，減速／煞車方向不受影響。
-    if output_a_target_e2e > 0:
-      output_a_target_e2e = min(output_a_target_e2e * E2E_ACCEL_BOOST_FACTOR, ACCEL_MAX)
+    output_a_target_e2e_raw = output_a_target_e2e   # dp(v12): e2e 減速保險使用的原始值（現已與 output_a_target_e2e 相同）
 
     # dp(v12.3): e2e 減速保險的車速遲滯開關，每幀更新（不分 mode）
     v_ego_kph = v_ego * CV.MS_TO_KPH
