@@ -164,7 +164,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_dev_model_list", {PERSISTENT, JSON}},
     {"dp_dev_is_rhd", {PERSISTENT, BOOL, "0"}},
     {"dp_dev_beep", {PERSISTENT, BOOL, "0"}},
-    {"dp_dev_opview", {PERSISTENT, BOOL, "0"}},
+    // dp - dp0111jetlink：預設開啟 opview（與 dp0111pre 不同，刻意）。已存檔為 0 的裝置維持使用者的設定
+    {"dp_dev_opview", {PERSISTENT, BOOL, "1"}},
     {"dp_dev_tethering", {PERSISTENT, BOOL, "0"}},
     {"dp_lat_alka", {PERSISTENT, BOOL, "0"}},
     {"dp_lat_offset_cm", {PERSISTENT, INT, "0"}},
@@ -179,4 +180,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_ui_hide_hud_speed_kph", {PERSISTENT, INT, "0"}},
     {"dp_ui_lead", {PERSISTENT, INT, "0"}},
     {"dp_ui_rainbow", {PERSISTENT, BOOL, "0"}},
+    // opview Auto Hold 按鈕（比照 dp0111pre）：本分支沒有豐田自動煞車維持（card 不寫入），
+    // 宣告這兩個鍵是為了 serverd /api/auto_hold、webrtcd opviewAutoHold 讀取時不丟例外；State 恆為 0 = 不可用，opview 不顯示按鈕
+    {"OpviewAutoHoldPaused", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL, "0"}},
+    {"OpviewAutoHoldState", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
 };

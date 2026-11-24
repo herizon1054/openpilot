@@ -18,8 +18,9 @@ standard library only; everything else is imported where it is used.
 
 dp0111pre divergences from zoompilot (search "dp:" below):
   - no sunnypilot model manager: the big-model slot and catalog are dp's own
-    params (JetlinkBigModel, JetlinkCatalog), filled from the same sunnypilot
-    catalog the phone/Mac apps list (refresh_catalog). With no pick on the comma
+    params (JetlinkBigModel, JetlinkCatalog), filled from jetlink's model index
+    (zoompilot/jetlink-model-index, jetlink v0.9.0+), the same list the phone/Mac
+    apps show (refresh_catalog). With no pick on the comma
     (the default) the link FOLLOWS THE FAR END: the model the phone or Jetson
     has loaded drives (follow_far_end), so the phone's own model menu is the menu.
   - no deviceState.chestnutPresent / chestnut helpers: chestnut_present() walks
@@ -46,8 +47,11 @@ if str(JETLINK_REPO) not in sys.path:
   sys.path.insert(0, str(JETLINK_REPO))
 
 # the version of jetlink.openpilot's API this adapter is written to; any other
-# is treated as jetlink being absent, with the reason as the offroad alert
-API = 3
+# is treated as jetlink being absent, with the reason as the offroad alert.
+# dp: API 4 = jetlink v0.9.0 (model index). API 3 (v0.8.x) is still accepted
+# by this adapter only so a half-updated checkout reports instead of breaking
+API = 4
+COMPATIBLE_APIS = frozenset({API, 3})
 
 # the gadget owner, as manager names the process and selfdrived lists it
 OWNER = 'jetlinkd'
@@ -64,7 +68,9 @@ KEYS = _Keys(link='JetlinkLink', offroad='IsOffroad', progress='AcceleratorProgr
              pointers='JetlinkModelPointers', big_model='JetlinkBigModel', catalog='JetlinkCatalog',
              charge_phone='JetlinkChargePhone')
 
-# the selector version jetlink's registry filters catalogs by (jetlink.registry.catalog.REQUIRED_SELECTOR_VERSION)
+# the selector version the catalog's bundles carry (minimum_selector_version). Since
+# jetlink v0.9.0 the list comes from the model index and the selector is only a label
+# (Models.big_catalog stamps every bundle with it); 19 keeps old JetlinkCatalog params valid
 CATALOG_SELECTOR = 19
 
 # what the catalog param holds before the first refresh: jetlink's default big model
@@ -331,6 +337,15 @@ def model_menu(params=None) -> list[dict]:
   bundles = catalog.get('bundles') if isinstance(catalog, dict) and catalog.get('bundles') else _DEFAULT_CATALOG['bundles']
   pointers = params.get(KEYS.pointers)
   pointers = pointers if isinstance(pointers, dict) else {}
+  if any(isinstance(b, dict) and b.get('ref') and b['ref'] not in pointers for b in bundles):
+    # dp: a model the pointers param does not know yet: jetlink's own copy of the
+    # model index (v0.9.0+) has its oid and size, no network
+    try:
+      from jetlink.openpilot.models import Models
+      pointers = {**{r['ref']: {'oid': r['oid'], 'size': r['size']} for r in Models(Adapter()).model_index()
+                     if r.get('ref') and r.get('oid') and r.get('size')}, **pointers}
+    except Exception:
+      pass
   loaded, built = far_end_models()
   root = _model_root() / 'jetlink'
   rows = []
@@ -368,31 +383,31 @@ def pick_model(ref: str | None, params=None) -> None:
 
 
 def refresh_catalog(params=None, resolve: bool = True) -> int:
-  """Fetch sunnypilot's chestnut catalogs (the pinned one, every newer one and
-  zoompilot's extras, as the phone apps do), keep its big models, and resolve
-  each one's sha256 and size from comma's LFS pointer once. Network, seconds to
-  a minute: run it off the UI thread. Returns the number of models listed."""
-  from jetlink.registry.catalog import fetch_catalogs, REQUIRED_SELECTOR_VERSION
-  from jetlink.registry.lfs import fetch_pointer
+  """Fetch jetlink's model index (zoompilot/jetlink-model-index: every big model
+  the phone/Mac apps list, with each ONNX's sha256 and size), keep jetlink's own
+  copy of it (<model root>/jetlink/index.json, which jetlink names, sizes and
+  resolves picks from with no network), and write dp's catalog and pointers
+  params from it. Network, seconds: run it off the UI thread. Returns the number
+  of models listed.
+
+  dp: jetlink v0.9.0 removed jetlink.registry.catalog (sunnypilot's chestnut
+  catalogs); the model index replaces it and already carries each model's oid and
+  size, so `resolve` no longer costs one LFS request per model (kept for callers)."""
+  from jetlink.openpilot.models import Models
   from openpilot.common.params import Params
   params = params or Params()
-  merged = fetch_catalogs()
-  bundles = [b for b in merged.get('bundles', []) if isinstance(b, dict) and b.get('is_big')
-             and str(b.get('minimum_selector_version')) == str(REQUIRED_SELECTOR_VERSION)]
+  models = Models(Adapter())
+  catalog = models.big_catalog(CATALOG_SELECTOR)   # fetches the index again and keeps jetlink's copy
+  bundles = [b for b in catalog.get('bundles', []) if isinstance(b, dict) and b.get('ref')]
   if not bundles:
-    raise RuntimeError("the catalog lists no big model")
+    raise RuntimeError("the model index lists no big model")
   params.put(KEYS.catalog, {'bundles': bundles})
   if resolve:
     pointers = params.get(KEYS.pointers)
     pointers = dict(pointers) if isinstance(pointers, dict) else {}
-    for b in bundles:
-      if b['ref'] in pointers:
-        continue
-      try:
-        p = fetch_pointer(b['ref'], timeout=10.0)
-        pointers[b['ref']] = {'oid': p.oid, 'size': p.size}
-      except Exception as e:
-        _log_failure(f"could not resolve {b['ref'][:10]}: {e}", None)
+    for row in models.model_index():
+      if row.get('ref') and row.get('oid') and row.get('size'):
+        pointers[row['ref']] = {'oid': row['oid'], 'size': int(row['size'])}
     params.put(KEYS.pointers, pointers, block=True)
   return len(bundles)
 
@@ -440,6 +455,16 @@ class _Absent:
   def extend_catalog(self, catalog: dict) -> dict:
     return catalog
 
+  # API 4 (jetlink v0.9.0): the model manager's list hooks, answered as the link off
+  def lists_big_models(self) -> bool:
+    return False
+
+  def big_catalog(self, selector: int):
+    return None
+
+  def listed_ref(self, ref: str):
+    return None
+
   def model_state(self, ref: str) -> str | None:
     return None
 
@@ -474,7 +499,7 @@ def _bind():
   except Exception as e:
     return _unusable(f"jetlink failed to load: {type(e).__name__}: {e}", e)
   api = getattr(jl, 'API', None)
-  if api != API:
+  if api not in COMPATIBLE_APIS:
     return _unusable(f"jetlink package API {api}, this build expects {API}")
   try:
     return jl.bind(Adapter())

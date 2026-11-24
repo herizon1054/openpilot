@@ -47,6 +47,10 @@ MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
 
+# dp - opview：webrtcd / stream_encoderd 只供 opview 手機畫面（dp_dev_opview 預設開啟），不列入 processNotRunning
+OPVIEW_PROCESSES = frozenset({'webrtcd', 'stream_encoderd'})
+
+
 class SelfdriveD:
   def __init__(self, CP=None):
     self.params = Params()
@@ -331,6 +335,7 @@ class SelfdriveD:
 
     not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
     not_running -= AcceleratorEvents.OPTIONAL_PROCESSES  # dp - jetlink: optional, never blocks engagement
+    not_running -= OPVIEW_PROCESSES  # dp - opview（移植指南 A8）：只提供手機畫面，當掉不擋啟用
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)

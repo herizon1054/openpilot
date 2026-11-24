@@ -55,7 +55,8 @@ POLL = 0.5
 # what a borrower passes on of the server's hello (Loan.note_server): the owner
 # never speaks the protocol, and sleep_after is how it knows whether letting
 # go of the gadget lets the Jetson sleep. The rest is for its status record
-SERVER_FIELDS = ('protocol', 'device', 'backend', 'runtime_version', 'trt_version', 'sleep_after', 'loaded', 'cached_models')
+SERVER_FIELDS = ('protocol', 'device', 'backend', 'runtime_version', 'trt_version', 'sleep_after', 'pick', 'fetches',
+                 'loaded', 'cached_models')  # dp: + loaded, cached_models (follow the far end)
 
 
 def _send(conn: socket.socket, msg: dict) -> None:

@@ -152,10 +152,8 @@ class ProvisioningRun:
     return path
 
   def needs_download(self) -> bool:
-    """Does the comma have to fetch the picked model before a Jetson can build
-    it? Only while its engine is not known to be built and the file is not here.
-    Asked without the Jetson: a download needs only the internet, and a car
-    whose Jetson goes off with the ignition has no Jetson while parked."""
+    """Could the Jetson need the picked model from the comma? Only while its
+    engine is not known to be built and the file is not here."""
     parts = self.parts
     entry = parts.models.selected_model()
     if entry is None:
@@ -168,28 +166,25 @@ class ProvisioningRun:
     return parts.models.shipped_model_path() is None
 
   def provision(self) -> bool:
-    """Make the Jetson ready for the selected model; a host is attached. run()
-    has fetched the file already unless the spec record said the model was
-    built; a server that lost it since asks for the bytes, and they are
-    fetched then."""
+    """Make the Jetson ready for the picked model; a host is attached. The
+    hello settles which pick that is, the comma's or a newer one made on the
+    server. A server without the model downloads it itself; only one that
+    cannot (no internet, or too old) gets the bytes from the comma, fetched
+    here then."""
     from jetlink.client import EngineMissing
     parts = self.parts
-    entry = parts.models.selected_model()
-    if entry is None:
-      # no catalog yet; not an error
-      parts.spec.clear_ready()
-      parts.progress.clear()
-      return False
+    parts.progress.report('connect', 0.0, 'connecting', code='connecting')
+    hello = self.hello()
+    self.log.warning("jetlink: server %s trt %s", hello.get('device'), hello.get('trt_version'))
     # dp: following the far end, its hello decides, before identity() (which needs the
     # network for the comma's default) and before anything is asked of it. run() skips
     # the link only when an earlier hello is on record, and /dev/shm is empty after every
     # boot: without this the first run of a boot asked the phone for the comma's default
-    # model and the phone swapped out the one its user picked (phone log, 2026-10-10)
-    hello = None
+    # model and the phone swapped out the one its user picked (phone log, 2026-10-10).
+    # v0.9.0: the hello above carries no pick while following (Models.default_chosen_at),
+    # so the server's own pick stands
     follow = getattr(parts.op, 'follow_far_end', None)
     if callable(follow) and follow():
-      parts.progress.report('connect', 0.0, 'connecting')
-      hello = self.hello()
       loaded, cached = hello.get('loaded'), hello.get('cached_models')
       if isinstance(loaded, str) and loaded:
         # one round trip: a loaded engine is answered from its sha alone, nothing is
@@ -199,7 +194,7 @@ class ProvisioningRun:
         self.log.warning("jetlink: following the far end's model %s, nothing to provision", parts.models.name_for(loaded))
         spec = link.ensure(parts, self.client, loaded, nbytes, None, progress=parts.progress.report_with_eta,
                            should_stop=lambda: self.stop)
-        parts.progress.report('ready', 1.0, 'engine ready')
+        parts.progress.report('ready', 1.0, 'engine ready', code='engine_ready')
         self.log.warning("jetlink: engine ready for %s", spec.sha256[:16])
         return True
       if isinstance(cached, list) and cached:
@@ -208,32 +203,34 @@ class ProvisioningRun:
         self.log.warning("jetlink: the far end has %d model(s) but none loaded, leaving the pick to it", len(cached))
         parts.progress.clear()
         return False
-      # a far end with nothing at all: give it the comma's default, as before
-
+      # a far end with nothing at all: give it the comma's default (or the server's pick), as before
+    parts.models.adopt()
+    entry = parts.models.selected_model()
+    if entry is None:
+      # no catalog yet; not an error
+      parts.spec.clear_ready()
+      parts.progress.clear()
+      return False
     sha256, nbytes = link.identity(parts, entry)
 
-    # only needed if the server turns out not to have this model; None is a
-    # legitimate state here, see EngineMissing below
+    # only needed if the server turns out not to have this model and cannot
+    # get it; None is a legitimate state here, see EngineMissing below
     model_path = parts.models.shipped_model_path()
 
     self.log.warning("jetlink: provisioning %s (%d MB, sha %s)",
                      entry.get('name', sha256[:16]), nbytes >> 20, sha256[:16])
-    parts.progress.report('connect', 0.0, 'connecting', code='connecting')
 
     def ensure(path):
       return link.ensure(parts, self.client, sha256, nbytes, path, progress=parts.progress.report_with_eta,
-                         should_stop=lambda: self.stop)
+                         should_stop=lambda: self.stop, ref=entry.get('ref'))
 
-    if hello is None:
-      hello = self.hello()
-    self.log.warning("jetlink: server %s trt %s", hello.get('device'), hello.get('trt_version'))
     try:
       spec = ensure(model_path)
     except EngineMissing:
-      # the server has nothing to build from, and neither have we: fetch the
-      # model and hand it over in this run. The owner lends the link for the
-      # whole run; leaving after the download would put the build a
-      # WORKER_BACKOFF later
+      # the server has nothing to build from and could not download it, and
+      # neither have we: fetch the model and hand it over in this run. The
+      # owner lends the link for the whole run; leaving after the download
+      # would put the build a WORKER_BACKOFF later
       if model_path is not None or (model_path := self.fetch_model()) is None:
         raise
       # a download of minutes can outlast the session; a hello starts a new one
@@ -245,15 +242,35 @@ class ProvisioningRun:
     return True
 
   def hello(self) -> dict:
-    """Say hello, and pass the answer on to the owner, which needs its
-    sleep_after to decide whether letting go of the gadget is worth what it
-    costs and never speaks the protocol to learn it."""
-    hello = self.client.hello(timeout=10.0)
+    """Say hello with our pick, and pass the answer on to the owner, which
+    needs its sleep_after to decide whether letting go of the gadget is worth
+    what it costs, never speaks the protocol to learn it, and keeps the
+    server's pick and whether it downloads for the comma (Models.heard)."""
+    models = self.parts.models
+    sent = models.hello_pick()
+    hello = models.heard(self.client.hello(timeout=10.0, pick=sent), sent)
     if self.loan is not None:
       self.loan.note_server(hello)
     return hello
 
   # -- the parked car -------------------------------------------------------
+
+  def without_jetson(self) -> None:
+    """No Jetson came to the bind: a car whose Jetson is switched with the
+    ignition has none while parked. Only the Jetson needs the model, and one
+    that can download it gets it itself when it is on; the comma fetches it
+    now only for a Jetson that cannot (no internet when it was last here, or
+    too old to say), so the build can start the moment it is."""
+    if not self.has_work():
+      return
+    if self.needs_download():
+      if server_fetches():
+        self.parts.progress.report('waiting', 0.0, 'the jetson downloads it when it is on', code='waiting_for_host')
+        return
+      if self.fetch_model() is None:
+        return
+    self.parts.progress.report('waiting', 0.0, 'downloaded, builds when the jetson is on',
+                               code='downloaded_waiting_host')
 
   def has_work(self) -> bool:
     """Is there a reason to wake the Jetson? Only things the link can fix count."""
@@ -325,25 +342,21 @@ class ProvisioningRun:
       self.log.warning("jetlink: following the far end's loaded model, nothing to provision")
       return True
 
-    if not self.has_work():
+    # Nothing to build, unless a model was picked on the server since: a
+    # Jetson awake on the bus is asked, which costs a hello and no wake. Not
+    # a phone's cable, which is there only once the app dials in
+    if not self.has_work() and not (gadget.host_attached() and gadget.link_kind(self.parts.settings.mode()) == 'usb'):
       self.log.warning("jetlink: nothing to provision")
       return True
 
     finished = False
     try:
-      # the bytes first while no host is on the cable: a parked car whose
-      # Jetson is switched with the ignition never has one to wait for. A host
-      # that is there is asked first, since one with the model built needs
-      # nothing from the comma; provision() fetches it if the host has not
-      if self.needs_download() and not gadget.host_attached() and self.fetch_model() is None:
-        return False
       if not self.open_link():
         return False
       if not self.wait_for_jetson():
         self.log.warning("jetlink: no jetson within %.0f s, leaving it for the next run", WAKE_TIMEOUT)
-        if self.parts.models.shipped_model_path() is not None:
-          self.parts.progress.report('waiting', 0.0, 'downloaded, builds when the jetson is on',
-                                     code='downloaded_waiting_host')
+        self.close_link()
+        self.without_jetson()
         return False
       finished = self.provision()
     except Exception:
@@ -352,6 +365,12 @@ class ProvisioningRun:
     finally:
       self.close_link()
     return finished
+
+
+def server_fetches() -> bool:
+  """Did the server the comma last spoke to say it downloads a model itself
+  (its hello's `fetches`, as the owner keeps it)? No for one too old to say."""
+  return (gadget.read_record(gadget.SERVER) or {}).get('fetches') is True
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -85,3 +85,10 @@ class TestStreamSession:
       assert abs(i + packet.pts - (start_pts + (((time.monotonic_ns() - start_ns) * VIDEO_CLOCK_RATE) // 1_000_000_000))) < 450 #5ms
       assert packet.size == 0
 
+
+
+def test_tdx_not_forwarded():
+  # opview 已內建 TDX：請求帶 tdx（舊版 opview）時拿掉，其他 service 順序不變
+  from openpilot.system.webrtc.webrtcd import drop_unforwarded_services
+  assert drop_unforwarded_services(["carState", "tdx", "modelV2"]) == ["carState", "modelV2"]
+  assert drop_unforwarded_services(["carState"]) == ["carState"]

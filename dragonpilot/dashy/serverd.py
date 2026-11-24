@@ -710,6 +710,135 @@ async def save_model_selection_api(request):
     return web.json_response({'status': 'success'})
 
 
+# --- opview: 實驗模式開關 ---
+# opview（手機 App）側欄第一顆按鈕：POST /api/experimental_mode {"enabled": bool}
+# 條件比照 openpilot 設定頁（selfdrive/ui/layouts/settings/toggles.py）：
+#   - 需要 openpilot 縱向控制（ui_state.has_longitudinal_control 同邏輯：
+#     alphaLongitudinalAvailable → AlphaLongitudinalEnabled，否則 CarParams.openpilotLongitudinalControl）
+#   - 需要 ExperimentalModeConfirmed（設定頁的實驗模式說明確認；這裡不代替使用者確認）
+#   - 關閉一律允許
+# selfdrived 的 params_thread 每 0.1 秒重讀 ExperimentalMode，寫入後即生效（與原廠設定頁 / onroad 按鈕相同）。
+# 既有的 /api/settings/params/ExperimentalMode（Tesla HUD 用）不受影響。
+def experimental_long_available(params):
+    """openpilot 縱向控制是否可用；還沒有 CarParamsPersistent（從未發動）時回傳 None。"""
+    try:
+        cp_bytes = params.get("CarParamsPersistent")
+    except Exception:
+        cp_bytes = None
+    if not cp_bytes:
+        return None
+    from cereal import car
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+        if cp.alphaLongitudinalAvailable:
+            return params.get_bool("AlphaLongitudinalEnabled")
+        return bool(cp.openpilotLongitudinalControl)
+
+
+def experimental_mode_status(params, long_available):
+    return {
+        'experimental_mode': params.get_bool("ExperimentalMode"),
+        'available': bool(long_available),
+        'confirmed': params.get_bool("ExperimentalModeConfirmed"),
+    }
+
+
+def handle_experimental_mode(params, payload, long_available):
+    """回傳 (HTTP 狀態, JSON)。200 時帶寫入後的實際值。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get('enabled'), bool):
+        return 400, {'error': 'body 需為 {"enabled": true | false}'}
+    enabled = payload['enabled']
+    if enabled:
+        if long_available is None:
+            return 409, {'error': '尚未取得車輛資訊，請先發動一次再開啟實驗模式'}
+        if not long_available:
+            return 409, {'error': '此車未使用 openpilot 縱向控制，無法開啟實驗模式'}
+        if not params.get_bool("ExperimentalModeConfirmed"):
+            return 409, {'error': '請先在 comma 設定頁開啟一次實驗模式並確認說明'}
+    params.put_bool("ExperimentalMode", enabled)
+    return 200, {'experimental_mode': params.get_bool("ExperimentalMode")}
+
+
+@api_handler
+async def get_experimental_mode_api(request):
+    """GET /api/experimental_mode → {"experimental_mode", "available", "confirmed"}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    return web.json_response(experimental_mode_status(params, experimental_long_available(params)))
+
+
+@api_handler
+async def set_experimental_mode_api(request):
+    """POST /api/experimental_mode body {"enabled": bool}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    status, body = handle_experimental_mode(params, payload, experimental_long_available(params))
+    if status == 200:
+        cache.invalidate()
+        logger.info(f"opview: ExperimentalMode={body['experimental_mode']}")
+    else:
+        logger.info(f"opview: ExperimentalMode request refused ({status}): {body.get('error')}")
+    return web.json_response(body, status=status)
+
+
+# --- opview: Auto Hold 按鈕（暫停 / 恢復豐田自動煞車維持） ---
+# opview 直向道路畫面下方的 Auto Hold 按鈕：POST /api/auto_hold {"paused": bool}
+#   寫入 OpviewAutoHoldPaused（每次發動重置為「恢復」），card 的 params_thread 每 0.1 秒讀取並交給
+#   carcontroller 的 AutoBrakeHold：暫停 → 狀態機回到 IDLE，保持中立即放開；恢復 → 重新計時 2 秒才保持。
+#   暫停中車速超過 30 km/h 時 card 會自動清除暫停旗標（自動恢復）。
+#   實際狀態由 card 寫入 OpviewAutoHoldState（bit0 可用、bit1 已暫停、bit2 保持中），webrtcd 附在 carState 送給 opview；
+#   opview 的按鈕顏色以 webrtcd 回報為準，不以這裡的 HTTP 回應為準。
+#   恢復一律允許；暫停只在 comma 回報「可用」時允許（dp_toyota_auto_brake_hold 開啟且車輛符合條件、已發動）。
+def auto_hold_status(params):
+    try:
+        state = int(params.get("OpviewAutoHoldState") or 0)
+    except Exception:
+        state = 0
+    return {
+        'paused': params.get_bool("OpviewAutoHoldPaused"),
+        'available': bool(state & 1),
+        'holding': bool(state & 4),
+    }
+
+
+def handle_auto_hold(params, payload):
+    """回傳 (HTTP 狀態, JSON)。200 時帶寫入後的狀態。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get('paused'), bool):
+        return 400, {'error': 'body 需為 {"paused": true | false}'}
+    paused = payload['paused']
+    if paused and not auto_hold_status(params)['available']:
+        return 409, {'error': 'comma 端自動煞車維持未啟用（需開啟設定並發動車輛）'}
+    params.put_bool("OpviewAutoHoldPaused", paused)
+    return 200, auto_hold_status(params)
+
+
+@api_handler
+async def get_auto_hold_api(request):
+    """GET /api/auto_hold → {"paused", "available", "holding"}"""
+    cache: AppCache = request.app['cache']
+    return web.json_response(auto_hold_status(cache.params))
+
+
+@api_handler
+async def set_auto_hold_api(request):
+    """POST /api/auto_hold body {"paused": bool}"""
+    cache: AppCache = request.app['cache']
+    params = cache.params
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    status, body = handle_auto_hold(params, payload)
+    if status == 200:
+        logger.info(f"opview: OpviewAutoHoldPaused={body['paused']}")
+    else:
+        logger.info(f"opview: auto hold request refused ({status}): {body.get('error')}")
+    return web.json_response(body, status=status)
+
+
 # --- WebSocket endpoint for data streaming ---
 # One shared publisher task polls the dashyState SubMaster and fans out
 # to every connected client. The previous per-connection design ran
@@ -840,6 +969,10 @@ def setup_aiohttp_app(host: str, port: int, debug: bool, car_brand=None,
     app.router.add_post("/api/settings/params/{param_name}", save_param_api)
     app.router.add_get("/api/models", get_model_list_api)
     app.router.add_post("/api/models/select", save_model_selection_api)
+    app.router.add_get("/api/experimental_mode", get_experimental_mode_api)    # opview 實驗模式開關
+    app.router.add_post("/api/experimental_mode", set_experimental_mode_api)
+    app.router.add_get("/api/auto_hold", get_auto_hold_api)    # opview Auto Hold 按鈕（暫停 / 恢復）
+    app.router.add_post("/api/auto_hold", set_auto_hold_api)
     app.router.add_post("/api/action/{name}", run_action_api)
     app.router.add_get("/api/ws", websocket_handler)  # WebSocket for data streaming
 

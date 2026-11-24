@@ -20,7 +20,7 @@ def load_node(path, name, env, cls=None):
 
 class PortTests(unittest.TestCase):
   def test_old_and_new_memoryview_api(self):
-    view = load_node('jetlink_repo/jetlink/openpilot/warp.py', '_zero_copy_view', {})
+    view = load_node('dragonpilot/jetlink_adapter/warp.py', '_zero_copy_view', {})  # dp: lives in the adapter's warp
     data = memoryview(bytearray(b'abc'))
     class Old:
       def as_memoryview(self, force_zero_copy=False):

@@ -8,8 +8,9 @@
   Run openpilot's large driving models on a computer connected to your comma.
 </p>
 
-**Jetlink is experimental.** It requires zoompilot's
-[`develop` branch](https://github.com/zoompilot/zoompilot/tree/develop).
+**Jetlink is experimental.** It requires a comma running an openpilot fork
+with Jetlink support: zoompilot's
+[`main` release](https://github.com/zoompilot/zoompilot/tree/main), or StarPilot.
 If the link drops or lags while engaged, the comma says **TAKE CONTROL** and
 stays engaged on the small model. Be ready to take over.
 
