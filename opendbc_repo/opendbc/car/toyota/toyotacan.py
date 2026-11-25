@@ -101,7 +101,7 @@ def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active,
   if brake_hold_active:
     values.update({
       "DSS1GDRV": BRAKE_HOLD_DECEL,
-      # 洩壓脈衝由 AutoBrakeHold._refresh 決定（candy 的 frame % 730 < 727 在 50 Hz 下只放開 1 個訊息，偶爾被 ECU 漏收）
+      # 洩壓脈衝由 AutoBrakeHold._refresh 決定：約 5 秒放開 40 ms（同 candy ac4dd42），另有確認與重送（與 candy 不同）
       "PBRTRGR": 0 if release_pulse else 1,
     })
 

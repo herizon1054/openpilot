@@ -16,7 +16,7 @@ which is in turn based on AlexandreSato/openpilot's automatic brakehold.
   2 = SPEED : 在 D 檔且本次 D 檔期間車速曾超過 5 m/s (18 km/h) 才作動（離開 D 檔即重置）
 
 洩壓（與 candy 不同，見 BRAKE_HOLD_REFRESH_* 說明）：
-  保持中每 6 秒放開 PBRTRGR 20 ms（與原版相同的脈衝），並以 BRAKE_FORCE 下降確認 ECU 有接受，沒接受就重送。
+  保持中每約 5 秒放開 PBRTRGR 40 ms（同 candy ac4dd42），並以 BRAKE_FORCE 下降確認 ECU 有接受，沒接受就重送。
 
 狀態機（與 candy 相同）：
   IDLE      --(允許保持)-->                       COUNTING
@@ -42,13 +42,15 @@ BRAKE_HOLD_TIMER = 100
 BRAKE_HOLD_SPEED_THRESHOLD = 5.
 
 # 保持中 PBRTRGR 洩壓脈衝（update 以 50 Hz 呼叫，以下單位皆為「訊息數」）
-# 與 candy 的差異：candy 用 frame % 730 < 727（設計 3 frame，但 50 Hz 下實際只放開 1 個訊息 / 20 ms）。
+# candy 原本用 frame % 730 < 727（50 Hz 下實際只放開 1 個訊息 / 20 ms）；candy/opendbc ac4dd42 已改為
+# (frame // 2) % 252 < 250（約 5 秒放開 40 ms），這裡採用相同的長度與週期。
+# 與 candy 不同（刻意）：以進入保持為起點計時、用 BRAKE_FORCE 確認 ECU 有洩壓（沒有就重送）、BRAKE_LIGHTS_ACC 熄滅時補洩壓。
 # rlog 實證（COROLLA TSS2，sptest）：
 #   - ECU 接受洩壓時 BRAKE(0xA6).BRAKE_FORCE 會短暫下降（2720 → 2280 N）
 #   - 單一訊息的脈衝偶爾被 ECU 漏收（力量沒下降）
 #   - 距上一次被接受的洩壓滿 10 秒，ESP 自行放掉 PCS 煞車，儀表跳「碰撞預防系統故障」→ 溜車
-BRAKE_HOLD_REFRESH_PERIOD = 300   # 每 6 秒洩壓一次（以進入保持 / 上次洩壓為起點）。保守版：不超過原版 7.3 秒的間隔，ECU 上限約 10 秒
-BRAKE_HOLD_REFRESH_CUT = 1        # 保守版：放開 1 個訊息（20 ms），與原版相同，是 rlog 中 ECU 已接受過的脈衝形式
+BRAKE_HOLD_REFRESH_PERIOD = 252   # 約 5 秒洩壓一次（同 candy ac4dd42；以進入保持 / 上次洩壓為起點），ECU 上限約 10 秒
+BRAKE_HOLD_REFRESH_CUT = 2        # 放開 2 個訊息（40 ms），同 candy ac4dd42「5000ms ON / 40ms OFF」
 BRAKE_HOLD_VERIFY_WINDOW = 10     # 脈衝結束後 200 ms 內要看到 BRAKE_FORCE 下降
 BRAKE_HOLD_RETRY_DELAY = 25       # 沒看到下降 → 0.5 秒後重送
 BRAKE_HOLD_MAX_RETRY = 5          # 連續重送上限，超過回到定期洩壓（BRAKE_FORCE 不反應的車型不會一直洩壓）
