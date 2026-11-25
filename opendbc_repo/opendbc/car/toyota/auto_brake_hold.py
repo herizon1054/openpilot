@@ -15,6 +15,9 @@ which is in turn based on AlexandreSato/openpilot's automatic brakehold.
   1 = ON    : 在 D 檔即可作動
   2 = SPEED : 在 D 檔且本次 D 檔期間車速曾超過 5 m/s (18 km/h) 才作動（離開 D 檔即重置）
 
+洩壓（與 candy 不同，見 BRAKE_HOLD_REFRESH_* 說明）：
+  保持中每 6 秒放開 PBRTRGR 20 ms（與原版相同的脈衝），並以 BRAKE_FORCE 下降確認 ECU 有接受，沒接受就重送。
+
 狀態機（與 candy 相同）：
   IDLE      --(允許保持)-->                       COUNTING
   COUNTING  --(持續允許 BRAKE_HOLD_TIMER 個呼叫)-->  ACTIVE
@@ -38,6 +41,21 @@ BRAKE_HOLD_TIMER = 100
 # SPEED 模式的速度門檻 (m/s)，5 m/s = 18 km/h，與 candy 相同
 BRAKE_HOLD_SPEED_THRESHOLD = 5.
 
+# 保持中 PBRTRGR 洩壓脈衝（update 以 50 Hz 呼叫，以下單位皆為「訊息數」）
+# 與 candy 的差異：candy 用 frame % 730 < 727（設計 3 frame，但 50 Hz 下實際只放開 1 個訊息 / 20 ms）。
+# rlog 實證（COROLLA TSS2，sptest）：
+#   - ECU 接受洩壓時 BRAKE(0xA6).BRAKE_FORCE 會短暫下降（2720 → 2280 N）
+#   - 單一訊息的脈衝偶爾被 ECU 漏收（力量沒下降）
+#   - 距上一次被接受的洩壓滿 10 秒，ESP 自行放掉 PCS 煞車，儀表跳「碰撞預防系統故障」→ 溜車
+BRAKE_HOLD_REFRESH_PERIOD = 300   # 每 6 秒洩壓一次（以進入保持 / 上次洩壓為起點）。保守版：不超過原版 7.3 秒的間隔，ECU 上限約 10 秒
+BRAKE_HOLD_REFRESH_CUT = 1        # 保守版：放開 1 個訊息（20 ms），與原版相同，是 rlog 中 ECU 已接受過的脈衝形式
+BRAKE_HOLD_VERIFY_WINDOW = 10     # 脈衝結束後 200 ms 內要看到 BRAKE_FORCE 下降
+BRAKE_HOLD_RETRY_DELAY = 25       # 沒看到下降 → 0.5 秒後重送
+BRAKE_HOLD_MAX_RETRY = 5          # 連續重送上限，超過回到定期洩壓（BRAKE_FORCE 不反應的車型不會一直洩壓）
+BRAKE_HOLD_DIP_N = 200.           # BRAKE_FORCE 至少下降 200 N 才算 ECU 有接受
+BRAKE_HOLD_MIN_FORCE = 1000.      # 脈衝前保持力低於此值不做確認
+BRAKE_HOLD_REARM_DELAY = 50       # 補救：進入保持 / 洩壓後 1 秒才開始檢查 BRAKE_LIGHTS_ACC
+
 
 class AutoBrakeHold:
   def __init__(self, CP):
@@ -49,6 +67,16 @@ class AutoBrakeHold:
     self.active = False
     self._prev_brake_pressed = False
     self._speed_gear_lock = False
+    self._reset_refresh()
+
+  def _reset_refresh(self) -> None:
+    self._msgs = 0            # 進入保持 / 上次洩壓後經過的訊息數
+    self._cut_left = 0        # 洩壓脈衝剩餘訊息數
+    self._verify_left = 0     # 洩壓確認視窗剩餘訊息數
+    self._ref_force = 0.      # 脈衝前的 BRAKE_FORCE
+    self._dip_seen = False    # 本次脈衝已看到 BRAKE_FORCE 下降
+    self._retries = 0         # 連續重送次數
+    self._lights_seen = False # 本次保持中 ESP 曾回報 BRAKE_LIGHTS_ACC=1
 
   def _update_state(self, CS) -> None:
     gear = CS.out.gearShifter == GearShifter.drive
@@ -79,6 +107,7 @@ class AutoBrakeHold:
         self.counter += 1
         if self.counter > BRAKE_HOLD_TIMER:
           self.state = BRAKE_HOLD_ACTIVE
+          self._reset_refresh()
 
       elif self.state == BRAKE_HOLD_ACTIVE:
         # 再次踩下煞車 -> 解除並重新計時
@@ -120,4 +149,61 @@ class AutoBrakeHold:
     # （只有真的送出 -2.0 保持指令時才算作動中）
     CS.auto_brake_hold_active = self.active
 
-    return [toyotacan.create_brake_hold_command(packer, frame, CS.pre_collision_2, self.active)]
+    release_pulse = self._refresh(CS) if self.active else False
+    return [toyotacan.create_brake_hold_command(packer, frame, CS.pre_collision_2, self.active, release_pulse)]
+
+  def _refresh(self, CS) -> bool:
+    """保持中的 PBRTRGR 洩壓脈衝，回傳 True = 這個訊息 PBRTRGR 送 0。
+    1. 定期：滿 BRAKE_HOLD_REFRESH_PERIOD 個訊息 → 放開 BRAKE_HOLD_REFRESH_CUT 個訊息。
+    2. 確認：脈衝開始到結束後 BRAKE_HOLD_VERIFY_WINDOW 內 BRAKE_FORCE 須下降 BRAKE_HOLD_DIP_N，
+       沒看到 → ECU 漏收，BRAKE_HOLD_RETRY_DELAY 後重送。
+    3. 補救：本次保持中 BRAKE_LIGHTS_ACC 亮過後熄掉（ECU 已放掉）→ 立刻再送一次。"""
+    force_min = CS.brake_force_min   # carstate 兩次讀取之間（100 Hz）所有 BRAKE_FORCE 的最小值
+    force = CS.brake_force
+    CS.brake_force_min = float('inf')
+    can_verify = force is not None
+
+    def dip_check():
+      if not self._dip_seen and force_min <= self._ref_force - BRAKE_HOLD_DIP_N:
+        self._dip_seen = True
+
+    self._msgs += 1
+
+    # 脈衝進行中
+    if self._cut_left > 0:
+      dip_check()
+      self._cut_left -= 1
+      if self._cut_left == 0:
+        self._msgs = 0
+        self._verify_left = BRAKE_HOLD_VERIFY_WINDOW if can_verify else 0
+      return True
+
+    # 脈衝後確認視窗
+    if self._verify_left > 0:
+      dip_check()
+      self._verify_left -= 1
+      if self._dip_seen:
+        self._verify_left = 0
+        self._retries = 0
+      elif self._verify_left == 0 and self._ref_force >= BRAKE_HOLD_MIN_FORCE and self._retries < BRAKE_HOLD_MAX_RETRY:
+        # ECU 沒接受這次洩壓 → 0.5 秒後重送
+        self._retries += 1
+        self._msgs = BRAKE_HOLD_REFRESH_PERIOD - BRAKE_HOLD_RETRY_DELAY
+
+    lights = CS.brake_lights_acc
+    if lights:
+      self._lights_seen = True
+    dropped = (not lights) and self._lights_seen and self._msgs >= BRAKE_HOLD_REARM_DELAY
+
+    if self._msgs >= BRAKE_HOLD_REFRESH_PERIOD or dropped:
+      if dropped:
+        self._lights_seen = False  # 等 ECU 重新亮燈才再次啟用補救
+      self._ref_force = force if force is not None else 0.
+      self._dip_seen = False
+      self._verify_left = 0
+      self._cut_left = BRAKE_HOLD_REFRESH_CUT - 1
+      if self._cut_left == 0:
+        self._msgs = 0
+        self._verify_left = BRAKE_HOLD_VERIFY_WINDOW if can_verify else 0
+      return True
+    return False
