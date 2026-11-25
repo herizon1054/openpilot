@@ -94,14 +94,15 @@ PRE_COLLISION_2_FWD_SIGNALS = (
 BRAKE_HOLD_DECEL = -2.0  # m/s^2，與 candy 相同
 
 
-def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active):
+def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active, release_pulse=False):
   # 未保持時：原封不動轉送相機的 PRE_COLLISION_2（panda 停車時會擋掉相機原始訊息，由這裡補送）
   values = {s: pre_collision_2[s] for s in PRE_COLLISION_2_FWD_SIGNALS}
 
   if brake_hold_active:
     values.update({
       "DSS1GDRV": BRAKE_HOLD_DECEL,
-      "PBRTRGR": frame % 730 < 727,  # cut actuation for 3 frames（與 candy 相同）
+      # 洩壓脈衝由 AutoBrakeHold._refresh 決定（candy 的 frame % 730 < 727 在 50 Hz 下只放開 1 個訊息，偶爾被 ECU 漏收）
+      "PBRTRGR": 0 if release_pulse else 1,
     })
 
   return packer.make_can_msg("PRE_COLLISION_2", 0, values)

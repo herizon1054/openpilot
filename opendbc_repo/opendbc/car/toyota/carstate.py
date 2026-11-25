@@ -80,6 +80,10 @@ class CarState(CarStateBase):
     self._pre_collision_2_age = PRE_COLLISION_2_MAX_AGE  # 距上次收到 PRE_COLLISION_2 的 card 週期數 (100Hz)
     # 由 carcontroller（AutoBrakeHold）寫回，card 經 carStateExt 發布給 selfdrived 產生 autoBrakeHold 事件
     self.auto_brake_hold_active = False
+    # 洩壓確認用：BRAKE(0xA6).BRAKE_FORCE（目前值 / 兩次讀取間最小值）與 ESP_CONTROL.BRAKE_LIGHTS_ACC
+    self.brake_force = None
+    self.brake_force_min = float('inf')
+    self.brake_lights_acc = False
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -268,6 +272,12 @@ class CarState(CarStateBase):
         self._pre_collision_2_age = min(self._pre_collision_2_age + 1, PRE_COLLISION_2_MAX_AGE)
       # 新鮮度保護（candy 無此保護）：開機尚未收到、或相機停止送出時不轉送，避免轉送全 0 或過期的 PCS 內容
       self.pre_collision_2_valid = self._pre_collision_2_age < PRE_COLLISION_2_MAX_AGE
+      # 洩壓確認：PCS 保持中 ESP 亮 ACC 煞車燈；ECU 接受洩壓時 BRAKE_FORCE 會短暫下降（只出現約 10 ms，取最小值）
+      self.brake_lights_acc = cp.vl["ESP_CONTROL"]["BRAKE_LIGHTS_ACC"] != 0
+      self.brake_force = cp.vl["BRAKE"]["BRAKE_FORCE"]
+      forces = cp.vl_all["BRAKE"]["BRAKE_FORCE"]
+      if len(forces):
+        self.brake_force_min = min(self.brake_force_min, min(forces))
 
     # dp - ALKA: Toyota requires main ON to use ACC/LKA, use main as switch
     self.lkas_on = ret.cruiseState.available
@@ -279,6 +289,10 @@ class CarState(CarStateBase):
     pt_messages = [
       ("BLINKERS_STATE", float('nan')),
     ]
+
+    # dp - 自動煞車維持：BRAKE(0xA6) 用來確認洩壓（ignore_alive，不影響 can_valid）
+    if CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD:
+      pt_messages.append(("BRAKE", float('nan')))
 
     parsers = {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
