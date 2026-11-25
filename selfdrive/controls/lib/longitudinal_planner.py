@@ -232,18 +232,14 @@ class LongitudinalPlanner(LongitudinalPlannerDP):
     reset_state = reset_state or not v_cruise_initialized
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
+    # 恢復原版：加速度上限不分模式都用 get_max_accel()，彎道加速度限制也不分模式都套用。
+    # dp 的動態加速度個性（accel_controller）只在 acc 模式取代上限，維持原本行為。
     if dp_accel_clip := LongitudinalPlannerDP.get_accel_clip(self, v_ego, mode):
       accel_clip = dp_accel_clip
-    elif mode == 'acc':
-      accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     else:
-      accel_clip = [ACCEL_MIN, ACCEL_MAX]
-    # dp(H3a 修正): 彎道加速度限制改為「acc 模式一律套用」。原本寫在 elif 裡，
-    # 開啟動態加速度個性（dp_accel_clip 有值）時整段被跳過，例如 AEM 在低速路口轉彎
-    # 切到 acc 時，原廠允許 0 m/s²、dp 卻允許約 1.5 m/s²。順序：先取 dp 上限，再取彎道限制。
-    if mode == 'acc':
-      steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
-      accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
+      accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
+    steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
+    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
     if reset_state:
       self.v_desired_filter.x = v_ego
