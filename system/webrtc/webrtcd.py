@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import uuid
 import logging
 from dataclasses import dataclass, field
@@ -185,11 +186,219 @@ class OpviewEgpuReader:
     return self.value
 
 
+# ===== opview 專業除錯模式（2026-11-27）=====
+# opview 開啟「專業除錯模式」時，會另外開一條 label = "opviewDebug" 的 data channel
+# （手機端建立，ordered = false、maxRetransmits = 0：不排序、不重傳，掉了就丟，只看最新的一筆）。
+# 主通道（label "data"，可靠、有序）完全不變：0–45 m 的 opviewTracks 照舊附在 radarState，給相機融合用；
+# 除錯通道另外送一份完整 0–120 m 點雲與連線統計，掉封包不會拖慢 HUD，也不影響融合結果。
+# 沒開除錯模式就沒有這條通道，comma 端不會多送任何東西。
+#
+# 除錯通道上的訊息（JSON，緊湊格式，無空白）：
+#   comma → 手機 opviewDebug（10 Hz）：
+#     {"type":"opviewDebug","t":送出時 comma 單調時鐘 ns,"seq":序號,"src":"radarTracks"|"liveTracks"|"",
+#      "n":雷達軌跡總點數,"age":最新一筆雷達軌跡距今 ms（-1 = 沒收過）,"cut":超過大小上限沒送的點數,
+#      "pts":[[trackId,dRel,yRel,vRel],...] 或 [[trackId,dRel,yRel,vRel,aRel,yvRel,measured],...]}
+#     pts 依 dRel 由近到遠、只送 0 < dRel ≤ 120 m；yRel 與 radarTracks 相同為「左正」（opview 自己取負號）。
+#     新版 openpilot / opendbc（例如 Candy0707/openpilot test 釘的 opendbc 91e7a70）RadarPoint 只剩 trackId / dRel / yRel / vRel，
+#     aRel / yvRel / measured 移進 deprecated 群組、雷達程式不再設定，所有點都是真實點 → 每點只送 4 個值。
+#     舊版（dplcc、dp0111pre：Toyota measured = VALID，分數 > 50 保留的點為 False）這一筆只要有任何點讀得到
+#     這三個欄位就送 7 個值：aRel / yvRel 不是有限值（Toyota 雷達是 NaN）時為 null；measured：1 / 0。
+#     單筆上限 OPVIEW_DEBUG_MAX_BYTES（不超過一個 SCTP 封包，不可靠通道上不拆片），超過的遠處點捨棄並記在 cut。
+#   comma → 手機 opviewDebugStats（1 Hz）：
+#     {"type":"opviewDebugStats","t":ns,"dt":統計區間秒數,"svc":{service:[訊息數,bytes]},
+#      "dbg":[除錯通道訊息數,bytes,丟棄數],"cong":[主通道壅塞次數,略過的訊息數],"loop":送出迴圈最大間隔 ms,
+#      "buf":主通道送出佇列 bytes（aiortc 才有；libdatachannel 為 null）,"trk":{"src","n","meas","rx"}}
+#     svc 是主通道「實際送出」的每個 service 訊息數與 bytes（JSON 長度），手機端除以 dt 就是每個 service 的頻寬。
+#   手機 → comma opviewDebugPing（1 Hz）：{"type":"opviewDebugPing","t0":手機時鐘 µs}
+#   comma → 手機 opviewDebugPong（收到 ping 立刻回）：{"type":"opviewDebugPong","t0":原值,"tc":comma 單調時鐘 ns}
+#     手機用 RTT 最小的那幾次估計兩台時鐘的差，之後每筆主通道訊息的 logMonoTime 都能換成「端到端延遲」。
+#     tc 用 time.monotonic_ns()：與 Python 發佈的 logMonoTime（cereal new_message）同一個時鐘；
+#     C++ 發佈的 logMonoTime 用 CLOCK_BOOTTIME，comma 行車中不會休眠，兩者相同。
+OPVIEW_DEBUG_LABEL = "opviewDebug"
+OPVIEW_DEBUG_MAX_D = 120.0
+OPVIEW_DEBUG_INTERVAL = 0.1
+OPVIEW_DEBUG_STATS_INTERVAL = 1.0
+OPVIEW_DEBUG_MAX_BYTES = 1000
+OPVIEW_DEBUG_BACKOFF_S = 0.5
+
+
+def _dbg_num(v, nd: int = 1):
+  """有限數值 → 四捨五入；NaN / inf / 讀不到 → None（JSON null）。Toyota 雷達的 aRel / yvRel 是 NaN，
+  直接 json.dumps 會輸出 NaN，手機 jsonDecode 會整筆失敗。"""
+  try:
+    f = float(v)
+  except Exception:
+    return None
+  return round(f, nd) if math.isfinite(f) else None
+
+
+def _dbg_dumps(obj) -> str:
+  return json.dumps(obj, separators=(",", ":"), allow_nan=False)
+
+
+def _dbg_attr(p, name: str):
+  try:
+    return getattr(p, name)
+  except Exception:
+    return None
+
+
+class OpviewDebugLinkBase:
+  """除錯通道的共用邏輯（aiortc / libdatachannel 各自實作 _send / attach）"""
+
+  def __init__(self, tracks):
+    self.tracks = tracks
+    self.channel = None
+    self.logger = logging.getLogger("webrtcd")
+    self._reset()
+
+  def _reset(self):
+    now = time.monotonic()
+    self.seq = 0
+    self.last_frame = 0.0
+    self.last_stats = now
+    self.backoff_until = 0.0
+    self.svc: dict[str, list[int]] = {}
+    self.dbg_msgs = 0
+    self.dbg_bytes = 0
+    self.dbg_drop = 0
+    self.cong_events = 0
+    self.skipped = 0
+    self.loop_prev: float | None = None
+    self.loop_max = 0.0
+
+  @property
+  def active(self) -> bool:
+    return self.channel is not None
+
+  # -- 主通道統計（CerealOutgoingMessageProxy 呼叫；沒開除錯通道時什麼都不做）--
+  def note_loop(self, now: float):
+    if self.channel is None:
+      self.loop_prev = None
+      return
+    prev = self.loop_prev
+    self.loop_prev = now
+    if prev is not None and now - prev > self.loop_max:
+      self.loop_max = now - prev
+
+  def count_main(self, name: str, nbytes: int):
+    if self.channel is None:
+      return
+    e = self.svc.get(name)
+    if e is None:
+      self.svc[name] = [1, nbytes]
+    else:
+      e[0] += 1
+      e[1] += nbytes
+
+  def note_congested(self):
+    if self.channel is not None:
+      self.cong_events += 1
+
+  def note_skipped(self, n: int):
+    if self.channel is not None:
+      self.skipped += n
+
+  # -- 手機 → comma --
+  def _pong(self, message) -> str | None:
+    try:
+      if isinstance(message, bytes):
+        message = message.decode()
+      payload = json.loads(message)
+      if isinstance(payload, dict) and payload.get("type") == "opviewDebugPing":
+        t0 = payload.get("t0")
+        return _dbg_dumps({"type": "opviewDebugPong", "t0": t0 if isinstance(t0, int) else None,
+                           "tc": time.monotonic_ns()})
+    except Exception:
+      pass
+    return None
+
+  # -- comma → 手機 --
+  def _frame(self, now: float) -> str:
+    cache = []
+    src = ""
+    age = -1
+    if self.tracks is not None:
+      self.tracks.poll(now)
+      cache = self.tracks.cache
+      src = self.tracks.name or ""
+      if self.tracks.received_at > 0:
+        age = int((now - self.tracks.received_at) * 1000)
+    rows = sorted((p for p in cache if 0.0 < p[1] <= OPVIEW_DEBUG_MAX_D), key=lambda p: p[1])
+    self.seq += 1
+    head = {"type": "opviewDebug", "t": time.monotonic_ns(), "seq": self.seq, "src": src, "n": len(cache), "age": age}
+    base = _dbg_dumps(head)  # ...}
+    # 預留 ,"cut":NN,"pts":[ ... ]} 的長度
+    budget = OPVIEW_DEBUG_MAX_BYTES - len(base) - len(',"cut":999,"pts":[]')
+    parts: list[str] = []
+    used = 0
+    # 舊版欄位（aRel / yvRel / measured）這一筆有沒有任何點讀得到；新版 RadarPoint 讀不到 → 每點只送 4 個值
+    legacy = any(p[4] is not None or p[5] is not None or p[6] is not None for p in rows)
+    for p in rows:
+      row = [p[0], _dbg_num(p[1]), _dbg_num(p[2]), _dbg_num(p[3])]
+      if legacy:
+        m = p[6]
+        row += [_dbg_num(p[4]), _dbg_num(p[5]), None if m is None else int(bool(m))]
+      s = _dbg_dumps(row)
+      if used + len(s) + 1 > budget:
+        break
+      parts.append(s)
+      used += len(s) + 1
+    cut = len(rows) - len(parts)
+    return f'{base[:-1]},"cut":{cut},"pts":[{",".join(parts)}]}}'
+
+  def _stats(self, now: float, buffered: int | None) -> str:
+    trk = None
+    if self.tracks is not None:
+      cache = self.tracks.cache
+      # meas：新版 RadarPoint 沒有 measured（全部是真實點）→ null
+      meas = sum(1 for p in cache if p[6]) if any(p[6] is not None for p in cache) else None
+      trk = {"src": self.tracks.name or "", "n": len(cache), "meas": meas, "rx": self.tracks.dbg_rx}
+      self.tracks.dbg_rx = 0
+    out = {"type": "opviewDebugStats", "t": time.monotonic_ns(), "dt": round(now - self.last_stats, 3),
+           "svc": self.svc, "dbg": [self.dbg_msgs, self.dbg_bytes, self.dbg_drop],
+           "cong": [self.cong_events, self.skipped], "loop": round(self.loop_max * 1000, 1),
+           "buf": buffered, "trk": trk}
+    self.last_stats = now
+    self.svc = {}
+    self.dbg_msgs = self.dbg_bytes = self.dbg_drop = 0
+    self.cong_events = self.skipped = 0
+    self.loop_max = 0.0
+    return _dbg_dumps(out)
+
+  def tick(self, now: float, buffered: int | None = None):
+    """送出迴圈每輪呼叫（約 100 Hz）：10 Hz 點雲、1 Hz 統計"""
+    if self.channel is None:
+      return
+    try:
+      if now - self.last_stats >= OPVIEW_DEBUG_STATS_INTERVAL:
+        self._send(self._stats(now, buffered))
+      if now - self.last_frame >= OPVIEW_DEBUG_INTERVAL:
+        self.last_frame = now
+        if now < self.backoff_until:
+          self.dbg_drop += 1
+        else:
+          self._send(self._frame(now))
+    except Exception:
+      self.logger.exception("opview debug channel failure")
+      self.detach(self.channel)
+
+  def _send(self, text: str) -> bool:
+    raise NotImplementedError
+
+  def detach(self, channel):
+    if channel is not None and self.channel is channel:
+      self.channel = None
+      self.logger.warning("opview debug channel closed")
+
+
 # opview 吉米三線道模型（v2.0.9）：雷達點雲精簡版，附在 radarState 訊息的 "opviewTracks" 欄位送給 opview。
 # 用途：讓手機的相機車種辨識目標對到雷達點，40 m 內的位置改用雷達量到的距離 / 橫向。
 # 只送 measured、前方 0–45 m 的點（opview 只要求 40 m 內準確，多 5 m 給配對容錯），每點 [trackId, dRel, yRel, vRel]
 # 小數 1 位，10 Hz（radarState 20 Hz，隔一筆附一次）。實測 TSS2 rlog 每筆約 7 點、≤ 0.25 KB → ≤ 20 kbps，
 # 約影像串流（5 Mbps）的 0.4%。舊版 opview 會忽略這個欄位；沒有 radarTracks / liveTracks 的分支不附。
+# 2026-11-27：雷達軌跡改由 poll() 讀進 cache（每點完整欄位），主通道 get()（0–45 m、measured）與
+#   專業除錯模式（OpviewDebugLink，0–120 m 全部點）共用同一個 conflate socket，不會互搶訊息。主通道輸出不變。
 OPVIEW_TRACKS_MAX_D = 45.0
 OPVIEW_TRACKS_INTERVAL = 0.1
 OPVIEW_TRACKS_STALE = 0.5
@@ -211,6 +420,26 @@ class OpviewTracksReader:
     self.last_attach = 0.0
     self.received_at = 0.0
     self.points: list[list[float]] = []
+    # 最新一筆雷達軌跡的全部點：(trackId, dRel, yRel, vRel, aRel, yvRel, measured)
+    self.cache: list[tuple] = []
+    self.dbg_rx = 0  # 除錯統計：這一秒收到幾筆雷達軌跡訊息
+
+  def poll(self, now: float):
+    """讀最新一筆雷達軌跡進 cache（conflate：只留最新）；超過 OPVIEW_TRACKS_STALE 沒有新資料就清空"""
+    if self.sock is None:
+      return
+    try:
+      msg = messaging.recv_one_or_none(self.sock)
+      if msg is not None:
+        self.cache = [(int(p.trackId), float(p.dRel), float(p.yRel), float(p.vRel),
+                       _dbg_attr(p, "aRel"), _dbg_attr(p, "yvRel"), _dbg_attr(p, "measured"))
+                      for p in getattr(msg, self.name).points]
+        self.received_at = now
+        self.dbg_rx += 1
+    except Exception:
+      self.cache = []
+    if now - self.received_at > OPVIEW_TRACKS_STALE:
+      self.cache = []
 
   def get(self) -> list[list[float]] | None:
     """None = 這次不附（10 Hz 節流或沒有雷達點資料來源）"""
@@ -220,18 +449,50 @@ class OpviewTracksReader:
     if now - self.last_attach < OPVIEW_TRACKS_INTERVAL:
       return None
     self.last_attach = now
-    try:
-      msg = messaging.recv_one_or_none(self.sock)
-      if msg is not None:
-        self.points = [[int(p.trackId), round(p.dRel, 1), round(p.yRel, 1), round(p.vRel, 1)]
-                       for p in getattr(msg, self.name).points
-                       if p.measured and 0.0 < p.dRel <= OPVIEW_TRACKS_MAX_D]
-        self.received_at = now
-    except Exception:
-      self.points = []
-    if now - self.received_at > OPVIEW_TRACKS_STALE:
-      self.points = []
+    self.poll(now)
+    # 與改版前相同：只送 measured、0 < dRel ≤ 45 m
+    self.points = [[p[0], round(p[1], 1), round(p[2], 1), round(p[3], 1)]
+                   for p in self.cache if p[6] and 0.0 < p[1] <= OPVIEW_TRACKS_MAX_D]
     return self.points
+
+
+class OpviewDebugLink(OpviewDebugLinkBase):
+  """aiortc 版（dragonpilot 系）：事件都在 asyncio 迴圈上，直接處理"""
+  MAX_BUFFERED = 64 * 1024  # 除錯通道送出佇列超過就丟這一筆（不可靠通道，丟了不影響任何功能）
+
+  def attach(self, channel: 'RTCDataChannel'):
+    self._reset()
+    self.channel = channel
+    self.logger.warning("opview debug channel attached (ordered=%s, maxRetransmits=%s)",
+                        getattr(channel, "ordered", None), getattr(channel, "maxRetransmits", None))
+
+    def on_message(message):
+      reply = self._pong(message)
+      if reply is not None:
+        self._send(reply)
+
+    channel.on("message", on_message)
+    channel.on("close", lambda: self.detach(channel))
+
+  def _send(self, text: str) -> bool:
+    ch = self.channel
+    if ch is None:
+      return False
+    try:
+      if ch.readyState != "open":
+        return False
+      if ch.bufferedAmount > self.MAX_BUFFERED:
+        self.dbg_drop += 1
+        self.backoff_until = time.monotonic() + OPVIEW_DEBUG_BACKOFF_S
+        return False
+      ch.send(text)
+    except Exception:
+      # 除錯通道已關閉（InvalidStateError 等）：只停用除錯通道，絕不讓例外傳到主通道的送出迴圈
+      self.detach(ch)
+      return False
+    self.dbg_msgs += 1
+    self.dbg_bytes += len(text)
+    return True
 
 
 class CerealOutgoingMessageProxy(AsyncTaskRunner):
@@ -266,6 +527,7 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     self.auto_hold = OpviewAutoHoldReader()
     self.egpu = OpviewEgpuReader()
     self.tracks = OpviewTracksReader()
+    self.debug = OpviewDebugLink(self.tracks)  # opview 專業除錯模式（opview 開了除錯通道才有作用）
 
   def add_channel(self, channel: 'RTCDataChannel'):
     self.channels.append(channel)
@@ -273,6 +535,7 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def update(self):
     # this is blocking in async context...
     self.sm.update(0)
+    self.debug.note_loop(time.monotonic())
     ready = [ch for ch in self.channels if ch.bufferedAmount <= self.MAX_BUFFERED_BYTES]
     n_updated = sum(1 for updated in self.sm.updated.values() if updated)
     if len(ready) < len(self.channels):
@@ -280,15 +543,19 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
         self.congested_since = time.monotonic()
         buffered = max(ch.bufferedAmount for ch in self.channels)
         self.logger.warning("data channel congested (%d bytes queued), dropping stale messages", buffered)
+        self.debug.note_congested()
       self.skipped += n_updated
+      self.debug.note_skipped(n_updated)
     elif self.congested_since is not None:
       self.logger.warning("data channel recovered after %.1fs, dropped %d messages",
                           time.monotonic() - self.congested_since, self.skipped)
       self.congested_since = None
       self.skipped = 0
+    now = time.monotonic()
+    if self.debug.active:
+      self.debug.tick(now, max((ch.bufferedAmount for ch in self.channels), default=0))
     if not ready:
       return
-    now = time.monotonic()
     for service, updated in self.sm.updated.items():
       if not updated:
         continue
@@ -314,6 +581,7 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
       encoded_msg = json.dumps(outgoing_msg).encode()
       for channel in ready:
         channel.send(encoded_msg)
+      self.debug.count_main(service, len(encoded_msg))
 
   async def run(self):
     from aiortc.exceptions import InvalidStateError
@@ -454,6 +722,9 @@ class StreamSession:
     if len(outgoing_services) > 0:
       self.outgoing_bridge = CerealOutgoingMessageProxy(messaging.SubMaster(outgoing_services))
     self.bitrate_controller = LivestreamBitrateController(self.stream.peer_connection)
+    # opview 專業除錯模式：手機另外開的 "opviewDebug" 通道（teleoprtc 只接 label "data"，其他通道會被忽略，
+    # 所以在這裡另外監聽；pyee 允許多個監聽者，teleoprtc 原本的處理不受影響）
+    self.stream.peer_connection.on("datachannel", self._on_opview_datachannel)
 
     self.run_task: asyncio.Task | None = None
     self._cleanup_lock = asyncio.Lock()
@@ -463,6 +734,14 @@ class StreamSession:
       "New stream session (%s), init camera %s, incoming services %s, outgoing services %s",
       self.identifier, init_camera, incoming_services, outgoing_services,
     )
+
+  def _on_opview_datachannel(self, channel: 'RTCDataChannel'):
+    if channel.label != OPVIEW_DEBUG_LABEL:
+      return
+    if self.outgoing_bridge is None:
+      self.logger.warning("opview debug channel ignored: no outgoing services")
+      return
+    self.outgoing_bridge.debug.attach(channel)
 
   def start(self):
     self.run_task = asyncio.create_task(self.run())
