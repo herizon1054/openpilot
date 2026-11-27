@@ -209,6 +209,32 @@ class OpviewEgpuReader:
 #      "dbg":[除錯通道訊息數,bytes,丟棄數],"cong":[主通道壅塞次數,略過的訊息數],"loop":送出迴圈最大間隔 ms,
 #      "buf":主通道送出佇列 bytes（aiortc 才有；libdatachannel 為 null）,"trk":{"src","n","meas","rx"}}
 #     svc 是主通道「實際送出」的每個 service 訊息數與 bytes（JSON 長度），手機端除以 dt 就是每個 service 的頻寬。
+#   comma → 手機 opviewDebugErr（有錯誤時）：errorLogMessage（logmessaged：任何程序 cloudlog ERROR 以上，含 Python 程序崩潰時
+#     launcher 的 cloudlog.exception("crash")）。dp / sp 都有、格式相同，一筆一則：
+#     {"type":"opviewDebugErr","t":ns,"wall":發生時間（unix 秒）,"lvl":"ERROR","d":程序名稱,"src":"檔名:行號",
+#      "msg":訊息,"exc":traceback（有例外時；過長保留結尾）,"drop":這一秒因限速沒送的筆數}
+#     每秒最多 OPVIEW_DEBUG_ERR_PER_SEC 筆；單筆上限 OPVIEW_DEBUG_ERR_MAX_BYTES（traceback 保留最後的部分）。
+#     注意：除錯通道不重傳，錯誤訊息也可能遺失（區網通常很少）；完整紀錄仍以 comma 端 swaglog 為準。
+#   comma → 手機 opviewDebugProc（程序狀態改變時）：managerState，例如 C++ 程序 segfault（exitCode -11）沒有 traceback，
+#     只有這裡看得到：{"type":"opviewDebugProc","t":ns,"name":"modeld","running":false,"should":true,"exit":-11}
+#     剛連上時只送異常的（應該在跑卻沒在跑），之後每次 running / shouldBeRunning / exitCode 改變都送。
+#   comma → 手機 opviewDebugAccel（20 Hz）：加速度趨勢圖（同 Candy0707 sunnypilot onroad/trend_ui/trend.py 的三條線）
+#     {"type":"opviewDebugAccel","t":ns,"e":carState.aEgo,"c":carControl.actuators.accel,"o":carOutput.actuatorsOutput.accel}
+#     （m/s²，小數 3 位；讀不到為 null）。約 70 B × 20 Hz ≈ 11 kbps。
+#   comma → 手機 opviewDebugLat（10 Hz）：轉向角、橫向加速度（同 Candy0707 sunnypilot onroad/developer_ui 右側欄位）
+#     {"type":"opviewDebugLat","t":ns,"sa":carState.steeringAngleDeg,"sp":steeringPressed(0/1),"la":carControl.latActive(0/1),
+#      "mode":"torque"|"angle"|"pid"|"other"（controlsState.lateralControlState.which()）,
+#      "dsa":目標轉向角（angle：angleState.steeringAngleDesiredDeg；pid：pidState.steeringAngleDesiredDeg；其他 null）,
+#      "lat":實際橫向加速度 = curvature·v² − roll·g,"dlat":目標橫向加速度 = desiredCurvature·v² − roll·g}
+#     roll：liveParameters（dp）或 vehicleParameters（新版 sunnypilot），讀不到用 0（同 Candy：sm.valid 不成立時 0）。
+#     刻意不同：Candy 的 DesiredSteeringAngleElement 讀 angleState.steeringAngleDeg（那是實際角度），這裡用 steeringAngleDesiredDeg。
+#   comma → 手機 opviewDebugEvents（selfdrived 每秒一次或有變化時）：目前的 onroadEvents（新版 sunnypilot 另有 onroadEventsSP）
+#     {"type":"opviewDebugEvents","t":ns,"ev":[["steerOverride","o"],...],"sp":[["...","w"],...] 或 null}
+#     每個事件 [名稱, 類型旗標]：e=enable n=noEntry w=warning u=userDisable s=softDisable i=immediateDisable
+#     p=preEnable P=permanent L=overrideLateral G=overrideLongitudinal（OnroadEvent 的 Bool 欄位，有設的才列）
+#   comma → 手機 opviewDebugDev（1 Hz）：裝置狀態（deviceState，dp / sp 欄位相同）
+#     {"type":"opviewDebugDev","t":ns,"cpu":max(cpuTempC) °C,"max":maxTempC °C,"mem":memoryUsagePercent %,
+#      "fan":fanSpeedPercentDesired %,"free":freeSpacePercent %}（讀不到為 null）
 #   手機 → comma opviewDebugPing（1 Hz）：{"type":"opviewDebugPing","t0":手機時鐘 µs}
 #   comma → 手機 opviewDebugPong（收到 ping 立刻回）：{"type":"opviewDebugPong","t0":原值,"tc":comma 單調時鐘 ns}
 #     手機用 RTT 最小的那幾次估計兩台時鐘的差，之後每筆主通道訊息的 logMonoTime 都能換成「端到端延遲」。
@@ -220,6 +246,11 @@ OPVIEW_DEBUG_INTERVAL = 0.1
 OPVIEW_DEBUG_STATS_INTERVAL = 1.0
 OPVIEW_DEBUG_MAX_BYTES = 1000
 OPVIEW_DEBUG_BACKOFF_S = 0.5
+OPVIEW_DEBUG_ERR_PER_SEC = 10
+OPVIEW_DEBUG_ERR_MAX_BYTES = 4000
+OPVIEW_DEBUG_PROC_INTERVAL = 0.25
+OPVIEW_DEBUG_ACCEL_INTERVAL = 0.05
+OPVIEW_DEBUG_LAT_INTERVAL = 0.1
 
 
 def _dbg_num(v, nd: int = 1):
@@ -250,7 +281,34 @@ class OpviewDebugLinkBase:
     self.tracks = tracks
     self.channel = None
     self.logger = logging.getLogger("webrtcd")
+    # errorLogMessage / managerState：除錯通道接上時才訂閱（沒開除錯模式不多開 socket）
+    self.err_sock = None
+    self.proc_sock = None
+    self.accel_socks: dict[str, object] = {}
+    self.event_socks: dict[str, object] = {}
+    self.dev_sock = None
+    self.accel = {"carState": None, "carControl": None, "carOutput": None}
+    # 最新一筆（_dyn 讀進來）：carState / carControl / controlsState / 參數（roll）
+    self.dyn: dict[str, object] = {}
     self._reset()
+
+  def _open_socks(self):
+    try:
+      if self.err_sock is None and "errorLogMessage" in SERVICE_LIST:
+        self.err_sock = messaging.sub_sock("errorLogMessage", conflate=False)
+      if self.proc_sock is None and "managerState" in SERVICE_LIST:
+        self.proc_sock = messaging.sub_sock("managerState", conflate=False)
+      if self.dev_sock is None and "deviceState" in SERVICE_LIST:
+        self.dev_sock = messaging.sub_sock("deviceState", conflate=True)
+      for name in ("onroadEvents", "onroadEventsSP"):
+        if name not in self.event_socks and name in SERVICE_LIST:
+          self.event_socks[name] = messaging.sub_sock(name, conflate=True)
+      roll_src = "vehicleParameters" if "vehicleParameters" in SERVICE_LIST else "liveParameters"
+      for name in ("carState", "carControl", "carOutput", "controlsState", roll_src):
+        if name not in self.accel_socks and name in SERVICE_LIST:
+          self.accel_socks[name] = messaging.sub_sock(name, conflate=True)
+    except Exception:
+      self.logger.exception("opview debug: subscribe errorLogMessage / managerState failed")
 
   def _reset(self):
     now = time.monotonic()
@@ -266,6 +324,16 @@ class OpviewDebugLinkBase:
     self.skipped = 0
     self.loop_prev: float | None = None
     self.loop_max = 0.0
+    self.err_window = 0.0
+    self.err_sent = 0
+    self.err_drop = 0
+    self.last_proc = 0.0
+    self.last_accel = 0.0
+    self.last_lat = 0.0
+    self.last_events = 0.0
+    self.last_dev = 0.0
+    self.events_cur: dict[str, list] = {}
+    self.procs: dict[str, tuple] | None = None  # name → (running, shouldBeRunning, exitCode)；None = 還沒讀到第一筆
 
   @property
   def active(self) -> bool:
@@ -366,11 +434,208 @@ class OpviewDebugLinkBase:
     self.loop_max = 0.0
     return _dbg_dumps(out)
 
+  def _errors(self, now: float):
+    """errorLogMessage：每筆都讀出來（不是只留最新），限速後送出"""
+    if self.err_sock is None:
+      return
+    if now - self.err_window >= 1.0:
+      self.err_window = now
+      self.err_sent = 0
+    for evt in messaging.drain_sock(self.err_sock):
+      if self.err_sent >= OPVIEW_DEBUG_ERR_PER_SEC:
+        self.err_drop += 1
+        continue
+      self.err_sent += 1
+      self._send(self._err_msg(evt.errorLogMessage))
+
+  def _err_msg(self, text) -> str:
+    try:
+      rec = json.loads(text)
+    except Exception:
+      rec = {"msg": str(text)}
+    if not isinstance(rec, dict):
+      rec = {"msg": str(rec)}
+    ctx = rec.get("ctx") if isinstance(rec.get("ctx"), dict) else {}
+    msg = rec.get("msg")
+    msg = msg if isinstance(msg, str) else json.dumps(msg, ensure_ascii=False, default=str)
+    exc = rec.get("exc_info") if isinstance(rec.get("exc_info"), str) else ""
+    src = f'{rec.get("filename", "")}:{rec.get("lineno", "")}' if rec.get("filename") else ""
+    out = {"type": "opviewDebugErr", "t": time.monotonic_ns(), "wall": rec.get("created"),
+           "lvl": rec.get("levelname", ""), "d": ctx.get("daemon") or rec.get("name", ""), "src": src,
+           "msg": msg[:600], "exc": "", "drop": self.err_drop}
+    self.err_drop = 0
+    # traceback 過長：保留結尾（最後幾層呼叫與例外本身最有用）。JSON 跳脫（\n、\"）會變長，以編碼後的長度為準
+    def enc() -> str:
+      return json.dumps(out, separators=(",", ":"), ensure_ascii=False, default=str)
+    text = enc()
+    if exc:
+      out["exc"] = exc
+      text = enc()
+      while len(text.encode()) > OPVIEW_DEBUG_ERR_MAX_BYTES and len(exc) > 80:
+        over = len(text.encode()) - OPVIEW_DEBUG_ERR_MAX_BYTES
+        exc = exc[min(len(exc) - 80, over + 16):]
+        out["exc"] = "…" + exc
+        text = enc()
+      if len(text.encode()) > OPVIEW_DEBUG_ERR_MAX_BYTES:
+        out["exc"] = ""
+        text = enc()
+    return text
+
+  def _procs(self, now: float):
+    """managerState：程序狀態改變（含 C++ 程序 segfault，沒有 traceback）"""
+    if self.proc_sock is None or now - self.last_proc < OPVIEW_DEBUG_PROC_INTERVAL:
+      return
+    self.last_proc = now
+    for evt in messaging.drain_sock(self.proc_sock):
+      cur = {p.name: (bool(p.running), bool(p.shouldBeRunning), int(p.exitCode)) for p in evt.managerState.processes}
+      prev = self.procs
+      self.procs = cur
+      for name, st in cur.items():
+        old = None if prev is None else prev.get(name)
+        if prev is None:
+          if not (st[1] and not st[0]):
+            continue  # 剛連上：只送異常的
+        elif old == st:
+          continue
+        self._send(_dbg_dumps({"type": "opviewDebugProc", "t": time.monotonic_ns(), "name": name,
+                               "running": st[0], "should": st[1], "exit": st[2]}))
+
+  def _accel(self, now: float):
+    """加速度趨勢（20 Hz）：aEgo / 控制命令 / 實際送出"""
+    if not self.accel_socks or now - self.last_accel < OPVIEW_DEBUG_ACCEL_INTERVAL:
+      return
+    self.last_accel = now
+    for name, sock in self.accel_socks.items():
+      msg = messaging.recv_one_or_none(sock)
+      if msg is None:
+        continue
+      self.dyn[name] = getattr(msg, name)
+      if name not in self.accel:
+        continue
+      try:
+        if name == "carState":
+          self.accel[name] = getattr(msg, name).aEgo
+        elif name == "carControl":
+          self.accel[name] = getattr(msg, name).actuators.accel
+        else:
+          self.accel[name] = getattr(msg, name).actuatorsOutput.accel
+      except Exception:
+        self.accel[name] = None
+    if now - self.last_lat >= OPVIEW_DEBUG_LAT_INTERVAL:
+      self.last_lat = now
+      try:
+        lat = self._lat_msg()
+      except Exception:
+        lat = None  # 欄位不齊（其他分支）：只略過這一筆，不影響除錯通道
+      if lat is not None:
+        self._send(lat)
+    a = self.accel
+    if a["carState"] is None and a["carControl"] is None and a["carOutput"] is None:
+      return
+    self._send(_dbg_dumps({"type": "opviewDebugAccel", "t": time.monotonic_ns(), "e": _dbg_num(a["carState"], 3),
+                           "c": _dbg_num(a["carControl"], 3), "o": _dbg_num(a["carOutput"], 3)}))
+
+  def _lat_msg(self) -> str | None:
+    cs, cc, ctl = self.dyn.get("carState"), self.dyn.get("carControl"), self.dyn.get("controlsState")
+    if cs is None:
+      return None
+    params = self.dyn.get("vehicleParameters") or self.dyn.get("liveParameters")
+    try:
+      roll = float(params.roll) if params is not None else 0.0
+    except Exception:
+      roll = 0.0
+    v = float(cs.vEgo)
+    mode, dsa, lat, dlat = "other", None, None, None
+    if ctl is not None:
+      try:
+        lcs = ctl.lateralControlState
+        w = lcs.which()
+        mode = {"torqueState": "torque", "angleState": "angle", "pidState": "pid"}.get(w, "other")
+        if mode == "angle":
+          dsa = lcs.angleState.steeringAngleDesiredDeg
+        elif mode == "pid":
+          dsa = lcs.pidState.steeringAngleDesiredDeg
+      except Exception:
+        pass
+      try:
+        lat = ctl.curvature * v ** 2 - roll * 9.81
+        dlat = ctl.desiredCurvature * v ** 2 - roll * 9.81
+      except Exception:
+        pass
+    la = None
+    if cc is not None:
+      try:
+        la = int(bool(cc.latActive))
+      except Exception:
+        la = None
+    return _dbg_dumps({"type": "opviewDebugLat", "t": time.monotonic_ns(), "sa": _dbg_num(cs.steeringAngleDeg, 1),
+                       "sp": int(bool(cs.steeringPressed)), "la": la, "mode": mode, "dsa": _dbg_num(dsa, 1),
+                       "lat": _dbg_num(lat, 2), "dlat": _dbg_num(dlat, 2)})
+
+  _EVENT_FLAGS = (("enable", "e"), ("noEntry", "n"), ("warning", "w"), ("userDisable", "u"), ("softDisable", "s"),
+                  ("immediateDisable", "i"), ("preEnable", "p"), ("permanent", "P"), ("overrideLateral", "L"),
+                  ("overrideLongitudinal", "G"))
+
+  def _onroad_events(self, now: float):
+    """onroadEvents / onroadEventsSP：selfdrived 每秒或有變化時發一次，收到就轉送（不可靠通道，下一秒會再送一次）"""
+    if not self.event_socks or now - self.last_events < 0.25:
+      return
+    self.last_events = now
+    got = False
+    for name, sock in self.event_socks.items():
+      msg = messaging.recv_one_or_none(sock)
+      if msg is None:
+        continue
+      got = True
+      rows = []
+      for e in getattr(msg, name):
+        flags = ""
+        for field, code in self._EVENT_FLAGS:
+          try:
+            if getattr(e, field):
+              flags += code
+          except Exception:
+            pass
+        rows.append([str(e.name), flags])
+      self.events_cur[name] = rows
+    if got:
+      self._send(_dbg_dumps({"type": "opviewDebugEvents", "t": time.monotonic_ns(),
+                             "ev": self.events_cur.get("onroadEvents", []),
+                             "sp": self.events_cur.get("onroadEventsSP") if "onroadEventsSP" in self.event_socks else None}))
+
+  def _device(self, now: float):
+    """deviceState（2 Hz）→ 每秒送一次 CPU 溫度、RAM、風扇、磁碟剩餘"""
+    if self.dev_sock is None or now - self.last_dev < 1.0:
+      return
+    self.last_dev = now
+    msg = messaging.recv_one_or_none(self.dev_sock)
+    if msg is None:
+      return
+    ds = msg.deviceState
+
+    def get(fn):
+      try:
+        return fn()
+      except Exception:
+        return None
+    temps = get(lambda: [float(t) for t in ds.cpuTempC]) or []
+    self._send(_dbg_dumps({"type": "opviewDebugDev", "t": time.monotonic_ns(),
+                           "cpu": _dbg_num(max(temps), 1) if temps else None,
+                           "max": _dbg_num(get(lambda: ds.maxTempC), 1),
+                           "mem": _dbg_num(get(lambda: ds.memoryUsagePercent), 0),
+                           "fan": _dbg_num(get(lambda: ds.fanSpeedPercentDesired), 0),
+                           "free": _dbg_num(get(lambda: ds.freeSpacePercent), 1)}))
+
   def tick(self, now: float, buffered: int | None = None):
-    """送出迴圈每輪呼叫（約 100 Hz）：10 Hz 點雲、1 Hz 統計"""
+    """送出迴圈每輪呼叫（約 100 Hz）：10 Hz 點雲、1 Hz 統計、錯誤與程序狀態隨到隨送"""
     if self.channel is None:
       return
     try:
+      self._errors(now)
+      self._procs(now)
+      self._accel(now)
+      self._onroad_events(now)
+      self._device(now)
       if now - self.last_stats >= OPVIEW_DEBUG_STATS_INTERVAL:
         self._send(self._stats(now, buffered))
       if now - self.last_frame >= OPVIEW_DEBUG_INTERVAL:
@@ -462,6 +727,7 @@ class OpviewDebugLink(OpviewDebugLinkBase):
 
   def attach(self, channel: 'RTCDataChannel'):
     self._reset()
+    self._open_socks()
     self.channel = channel
     self.logger.warning("opview debug channel attached (ordered=%s, maxRetransmits=%s)",
                         getattr(channel, "ordered", None), getattr(channel, "maxRetransmits", None))
