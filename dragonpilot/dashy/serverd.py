@@ -36,6 +36,7 @@ import asyncio
 import json
 import operator
 import os
+import signal
 import logging
 import time
 from datetime import datetime
@@ -711,8 +712,17 @@ async def save_model_selection_api(request):
 #     alphaLongitudinalAvailable → AlphaLongitudinalEnabled，否則 CarParams.openpilotLongitudinalControl）
 #   - 需要 ExperimentalModeConfirmed（設定頁的實驗模式說明確認；這裡不代替使用者確認）
 #   - 關閉一律允許
+# 回應（2026-11-28，opview 三個問題第 2 節）：
+#   GET  → {"experimental_mode", "available", "confirmed", "reason"}；available=false 時 reason 是不能開的原因，
+#          opview 依此把按鈕變灰、按下只顯示 reason 不送 POST
+#   POST → 不能開（縱向不可用 / 尚未取得車輛資訊）回 403；只有「尚未確認實驗模式說明」回 409
 # selfdrived 的 params_thread 每 0.1 秒重讀 ExperimentalMode，寫入後即生效（與原廠設定頁 / onroad 按鈕相同）。
 # 既有的 /api/settings/params/ExperimentalMode（Tesla HUD 用）不受影響。
+EXP_REASON_NO_CP = '尚未取得車輛資訊，請先發動一次再開啟實驗模式'
+EXP_REASON_NO_LONG = '此車未使用 openpilot 縱向控制，無法開啟實驗模式'
+EXP_REASON_NOT_CONFIRMED = '請先在 comma 設定頁開啟一次實驗模式並確認說明'
+
+
 def experimental_long_available(params):
     """openpilot 縱向控制是否可用；還沒有 CarParamsPersistent（從未發動）時回傳 None。"""
     try:
@@ -728,11 +738,21 @@ def experimental_long_available(params):
         return bool(cp.openpilotLongitudinalControl)
 
 
+def experimental_unavailable_reason(long_available):
+    """不能開實驗模式的原因；可以開時回傳空字串。"""
+    if long_available is None:
+        return EXP_REASON_NO_CP
+    if not long_available:
+        return EXP_REASON_NO_LONG
+    return ''
+
+
 def experimental_mode_status(params, long_available):
     return {
         'experimental_mode': params.get_bool("ExperimentalMode"),
         'available': bool(long_available),
         'confirmed': params.get_bool("ExperimentalModeConfirmed"),
+        'reason': experimental_unavailable_reason(long_available),
     }
 
 
@@ -742,19 +762,18 @@ def handle_experimental_mode(params, payload, long_available):
         return 400, {'error': 'body 需為 {"enabled": true | false}'}
     enabled = payload['enabled']
     if enabled:
-        if long_available is None:
-            return 409, {'error': '尚未取得車輛資訊，請先發動一次再開啟實驗模式'}
-        if not long_available:
-            return 409, {'error': '此車未使用 openpilot 縱向控制，無法開啟實驗模式'}
+        reason = experimental_unavailable_reason(long_available)
+        if reason:
+            return 403, {'error': reason}
         if not params.get_bool("ExperimentalModeConfirmed"):
-            return 409, {'error': '請先在 comma 設定頁開啟一次實驗模式並確認說明'}
+            return 409, {'error': EXP_REASON_NOT_CONFIRMED}
     params.put_bool("ExperimentalMode", enabled)
     return 200, {'experimental_mode': params.get_bool("ExperimentalMode")}
 
 
 @api_handler
 async def get_experimental_mode_api(request):
-    """GET /api/experimental_mode → {"experimental_mode", "available", "confirmed"}"""
+    """GET /api/experimental_mode → {"experimental_mode", "available", "confirmed", "reason"}"""
     cache: AppCache = request.app['cache']
     params = cache.params
     return web.json_response(experimental_mode_status(params, experimental_long_available(params)))
@@ -976,15 +995,50 @@ def setup_aiohttp_app(host: str, port: int, debug: bool):
     return app
 
 
+# opview 三個問題第 2 節：手機熱點時 comma 常同時有 IPv6 位址，App 可能拿 IPv6 連 :5088；
+# 原本只綁 0.0.0.0（IPv4），IPv6 連線被拒（errno 111）。預設改成 IPv4 + IPv6 兩個 socket
+# （asyncio 會對 AF_INET6 設 IPV6_V6ONLY，兩個不會互搶）；沒有 IPv6 時只聽 IPv4，不會整個起不來。
+DEFAULT_HOSTS = ("0.0.0.0", "::")
+
+
+async def serve(app, hosts, port):
+    runner = web.AppRunner(app)
+    await runner.setup()
+    bound = []
+    for host in hosts:
+        try:
+            await web.TCPSite(runner, host, port).start()
+            bound.append(host)
+        except OSError as e:
+            logger.warning(f"serverd: cannot listen on [{host}]:{port}: {e}")
+    if not bound:
+        await runner.cleanup()
+        raise RuntimeError(f"serverd: no address to listen on port {port}")
+    logger.info(f"serverd listening on {', '.join(f'[{h}]:{port}' for h in bound)}")
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):  # 與 web.run_app 相同：收到訊號時正常收尾（執行 on_cleanup）
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+    try:
+        await stop.wait()
+    finally:
+        await runner.cleanup()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Dashy Server")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to listen on")
+    parser.add_argument("--host", type=str, action="append", default=None,
+                        help="Host to listen on (repeatable; default: 0.0.0.0 and ::)")
     parser.add_argument("--port", type=int, default=5088, help="Port to listen on")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
-    app = setup_aiohttp_app(args.host, args.port, args.debug)
-    web.run_app(app, host=args.host, port=args.port)
+    hosts = tuple(args.host) if args.host else DEFAULT_HOSTS
+    app = setup_aiohttp_app(hosts[0], args.port, args.debug)
+    asyncio.run(serve(app, hosts, args.port))
 
 
 if __name__ == "__main__":

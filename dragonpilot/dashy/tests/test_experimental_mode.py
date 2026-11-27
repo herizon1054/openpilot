@@ -23,9 +23,9 @@ def test_bad_body():
 def test_enable_requires_long_and_confirmation():
   p = FakeParams(ExperimentalModeConfirmed=True)
   status, body = handle_experimental_mode(p, {"enabled": True}, None)
-  assert status == 409 and "發動" in body["error"]
+  assert status == 403 and "發動" in body["error"]
   status, body = handle_experimental_mode(p, {"enabled": True}, False)
-  assert status == 409 and "縱向" in body["error"]
+  assert status == 403 and "縱向" in body["error"]
   assert "ExperimentalMode" not in p.store
 
   p = FakeParams()
@@ -37,7 +37,15 @@ def test_enable_requires_long_and_confirmation():
 def test_enable_and_disable():
   p = FakeParams(ExperimentalModeConfirmed=True)
   assert handle_experimental_mode(p, {"enabled": True}, True) == (200, {"experimental_mode": True})
-  assert experimental_mode_status(p, True) == {"experimental_mode": True, "available": True, "confirmed": True}
+  assert experimental_mode_status(p, True) == {"experimental_mode": True, "available": True, "confirmed": True, "reason": ""}
   # 關閉一律允許（即使縱向不可用 / 未確認）
   p = FakeParams(ExperimentalMode=True)
   assert handle_experimental_mode(p, {"enabled": False}, None) == (200, {"experimental_mode": False})
+
+
+def test_status_reports_reason():
+  p = FakeParams(ExperimentalModeConfirmed=True)
+  st = experimental_mode_status(p, False)
+  assert st["available"] is False and "縱向" in st["reason"]
+  st = experimental_mode_status(p, None)
+  assert st["available"] is False and "發動" in st["reason"]
