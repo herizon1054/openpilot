@@ -402,6 +402,10 @@ struct CarControl {
     rightLaneDepart @8: Bool;
     leftLaneDepart @9: Bool;
     leadDistanceBars @10: Int8;  # 1-3: 1 is closest, 3 is farthest. some ports may utilize 2-4 bars instead
+    # dp: real lead for the dash (from carrot, ajouatom/openpilot carrot-wip). carrot numbers these @12/@13
+    # with its own activeCarrot @11; dp has no activeCarrot, and capnp ordinals cannot skip, so @11/@12 here.
+    leadDistance @11: Float32;  # m, radarState.leadOne.dRel, 0 = no lead
+    leadRelSpeed @12: Float32;  # m/s, radarState.leadOne.vRel, 0 = no lead
 
     # not used with the dash, TODO: separate structs for dash UI and device UI
     audibleAlert @5: AudibleAlert;

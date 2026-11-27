@@ -125,6 +125,24 @@ def create_lfahda_mfc(packer, enabled):
   return packer.make_can_msg("LFAHDA_MFC", 0, values)
 
 
+# dp: send the real lead to the dash (from carrot, ajouatom/openpilot carrot-wip hyundaican.create_acc_commands).
+# Upstream sends a fixed close lead (ObjValid/ObjStatus 1, ObjDist 1 m, RelSpd 0, ObjGap 2 whenever leadVisible);
+# with that the cluster does not draw the lead-car icon on some cars (Custin). False restores upstream exactly.
+DP_DASH_REAL_LEAD = True
+
+
+def _dash_lead(hud_control):
+  """-> (obj_valid, obj_dist, obj_rel_spd, obj_gap, obj_dist_stat), carrot's mapping, clipped to the DBC ranges."""
+  d = hud_control.leadDistance
+  if not hud_control.leadVisible or d <= 0.:
+    return 0, 0, 0., 0, 0
+  obj_gap = 2 if d < 25 else 3 if d < 40 else 4 if d < 70 else 5
+  obj_dist_stat = 2 if hud_control.leadRelSpeed < -0.2 else 1  # 2: approaching, 1: receding
+  obj_dist = int(min(d, 204.))                                  # ACC_ObjDist 0..204.7 m
+  obj_rel_spd = min(max(hud_control.leadRelSpeed, -170.), 239.)  # ACC_ObjRelSpd -170..239.5 m/s
+  return 1, obj_dist, obj_rel_spd, obj_gap, obj_dist_stat
+
+
 def create_acc_commands(packer, enabled, accel, upper_jerk, idx, hud_control, set_speed, stopping, long_override, use_fca, CP):
   commands = []
 
@@ -139,6 +157,14 @@ def create_acc_commands(packer, enabled, accel, upper_jerk, idx, hud_control, se
     "ACC_ObjRelSpd": 0,
     "ACC_ObjDist": 1, # close lead makes controls tighter
     }
+  if DP_DASH_REAL_LEAD:
+    obj_valid, obj_dist, obj_rel_spd, obj_gap, obj_dist_stat = _dash_lead(hud_control)
+    scc11_values.update({
+      "ObjValid": obj_valid,
+      "ACC_ObjStatus": obj_valid,
+      "ACC_ObjRelSpd": obj_rel_spd,
+      "ACC_ObjDist": obj_dist,
+    })
   commands.append(packer.make_can_msg("SCC11", 0, scc11_values))
 
   scc12_values = {
@@ -168,6 +194,9 @@ def create_acc_commands(packer, enabled, accel, upper_jerk, idx, hud_control, se
     "ACCMode": 2 if enabled and long_override else 1 if enabled else 4, # stock will always be 4 instead of 0 after first disengage
     "ObjGap": 2 if hud_control.leadVisible else 0, # 5: >30, m, 4: 25-30 m, 3: 20-25 m, 2: < 20 m, 0: no lead
   }
+  if DP_DASH_REAL_LEAD:
+    scc14_values["ObjGap"] = obj_gap            # carrot bands: <25 m 2, <40 m 3, <70 m 4, else 5
+    scc14_values["ObjDistStat"] = obj_dist_stat  # 0 no object, 1 receding, 2 approaching
   commands.append(packer.make_can_msg("SCC14", 0, scc14_values))
 
   # Only send FCA11 on cars where it exists on the bus

@@ -45,7 +45,7 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'carStateExt'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'carStateExt', 'radarState'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState', 'controlsStateExt'])
 
     self.steer_limited_by_safety = False
@@ -215,6 +215,10 @@ class Controls:
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
+    # dp: real lead distance / relative speed for the dash (carrot); same lead as hasLead (leadOne.status)
+    lead_one = self.sm['radarState'].leadOne
+    hudControl.leadDistance = float(lead_one.dRel) if lead_one.status else 0.
+    hudControl.leadRelSpeed = float(lead_one.vRel) if lead_one.status else 0.
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
 
     hudControl.rightLaneVisible = True
