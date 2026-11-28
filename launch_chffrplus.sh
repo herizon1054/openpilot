@@ -179,8 +179,8 @@ function launch {
     set_tici_hw
     set_lite_hw
     agnos_init
-    set_model_fingerprint
   fi
+  set_model_fingerprint
 
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
