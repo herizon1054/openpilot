@@ -18,3 +18,11 @@ params_keys:
     flags: PERSISTENT
     type: INT
     default: "0"
+  - key: OpviewAutoHoldPaused
+    flags: CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION
+    type: BOOL
+    default: "0"
+  - key: OpviewAutoHoldState
+    flags: CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION
+    type: INT
+    default: "0"
