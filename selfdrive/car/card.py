@@ -330,9 +330,8 @@ class Car:
     讀 OpviewAutoHoldPaused → self.opview_auto_hold_paused（由主迴圈套用）；
     回報實際狀態到 OpviewAutoHoldState（只在變化時寫入）：bit0 可用、bit1 已暫停、bit2 保持中（真的送出 -2.0 保持指令）"""
     abh = getattr(getattr(self.CI, 'CC', None), 'auto_brake_hold', None)
-    # 僅限豐田 TSS2（interface 判定合格時才有 AUTO_BRAKE_HOLD flag；這裡再明確檢查一次 TSS2）
-    is_tss2 = self.CP.brand == "toyota" and bool(self.CP.flags & ToyotaFlags.TSS2)
-    available = bool(is_tss2 and abh is not None and abh.enabled)
+    # 放寬條件：只要是 Toyota 且 interface.py 判定合格（abh.enabled 為 True）即回報可用，支援混裝 TSS2 鏡頭的 4.5 代 Prius
+    available = bool(self.CP.brand == "toyota" and abh is not None and abh.enabled)
     paused = available and self.params.get_bool("OpviewAutoHoldPaused")
     if paused and self.CS_prev.vEgo > OPVIEW_AUTO_HOLD_RESUME_SPEED:
       # 暫停中車速超過 30 km/h → 自動恢復（清除暫停旗標，opview 按鈕回到紅色）
