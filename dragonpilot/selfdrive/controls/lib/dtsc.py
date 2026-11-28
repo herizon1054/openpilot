@@ -1,46 +1,6 @@
 """
-Dynamic Turn Speed Controller (DTSC) - v29 出彎狀態機重新設計版
-基於 v28 台灣路況強化版修改，v28 基於 v27 物理重生版 (Golden Right Foot Hybrid)。
-
-=== v29 變更紀錄 (相對於 v28 的刻意分歧，供其他 fork 開發者參照) ===
-1. [修正既有漏洞] _smooth_yaw_rate() 原本的中位數濾波迴圈為
-   range(1, n-1)，頭尾兩點（index 0 與 -1）完全沒被濾波。index 0
-   正是「現在」這個時間點，也是出彎判斷唯一使用的輸入，等於出彎判斷
-   吃的正好是唯一沒被雜訊防護覆蓋到的點。v29 補上邊界點的平均濾波。
-2. [重新設計] 出彎節流閥從「二元判斷 + 固定值 0.8」改為連續、逐幀
-   重新評估的比例控制：記錄本次彎道的曲率峰值 peak_curvature_active，
-   每一幀用「現在曲率 / 峰值曲率」算出比例（做 EMA 平滑），線性映射到
-   EXIT_CEILING_MIN(彎心，接近收油) ~ EXIT_CEILING_FULL(接近出彎，
-   0.8) 之間，取代原本的一次性二元切換。
-3. [新增] 出彎確認 debounce（STRAIGHT_RATIO_THRESHOLD /
-   STRAIGHT_CONFIRM_FRAMES）：比例連續多幀低於門檻才判定「真的出彎
-   完成」，此時完全解除節流閥限制，把控制權交還上游，而非永遠卡在
-   0.8 上限。
-   ⚠️ 這套比例仍然只反映曲率的相對變化，不代表車輛此時處於安全狀態的
-   絕對保證；EXIT_CEILING_FULL/MIN 的實際數值同樣是初步方向性設計，
-   未經實測調校，需以路測 log 迭代驗證。
-
-=== v28 變更紀錄 (相對於 v27 的刻意分歧，供其他 fork 開發者參照) ===
-1. [新增] _smooth_yaw_rate()：對 horizon 上的 yaw_rate 陣列套用 window=3
-   中位數濾波，消除模型在單一 frame（常見於下坡接彎的相機 pitch 角瞬變）
-   產生的孤立曲率尖峰。這是「防單點雜訊」的第一道防線，在資料源頭處理。
-2. [新增] EMERGENCY_CONFIRM_FRAMES 時序確認機制：原本只要當前這一幀判定
-   「臨界彎距 ≤ MIN_CURVE_DISTANCE」就立刻解除 -2.0 舒適上限、放行到
-   -3.0，單幀雜訊會直接造成一次重踩。v28 改為要求該判定連續
-   EMERGENCY_CONFIRM_FRAMES 個規劃週期都成立才真正升級為 EMERGENCY，
-   未達確認次數前一律鎖在 COMFORT 的 -2.0 上限內。真實存在的近距離彎道
-   會持續被偵測到，不受影響；單幀誤判會被過濾掉。
-   ⚠️ 已知限制：目前 get_mpc_constraints() 沒有坡度/pitch 資料輸入
-   （longitudinal_planner.py 呼叫時只傳入 model_msg/v_ego/base_a_min/
-   base_a_max），因此本版本無法對下坡做真正的重力分量補償，此為架構
-   限制而非本次修正遺漏，若要做需額外從 liveLocationKalman 等服務接入
-   坡度資訊並重新設計 decel_by_distance 的物理模型。
-3. [調整] LAT_LIMIT_V 表格中高速段（15~30 m/s，約 54~108km/h）數值上調，
-   低速段（5~10 m/s，市區路口/巷弄）維持原值不變。此調整為初步方向性
-   修正，非精確驗證值，建議以實際路測 log（suggested_speed vs 實際限速/
-   彎道行為）持續迭代。
-
-原 v27 特色：
+Dynamic Turn Speed Controller (DTSC) - v27 物理重生版 (Golden Right Foot Hybrid)
+特色：
 1. 融合 v27 MPC 陣列規劃與 10 秒低頻 UI 開關檢查，架構最現代化。
 2. 融合 Candy 版「老司機黃金右腳」：引進加速度低通濾波 (LPF) 與速度階梯爬升。
 3. 採用「出彎實體壓制」+「狀態死咬 (Hysteresis Recovery)」雙重出彎防護。
@@ -65,29 +25,15 @@ DT_MPC = 0.05
 FILE_LOG_ENABLED = False
 
 LAT_LIMIT_BP = [5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0, 25.0, 30.0]
-LAT_LIMIT_V  = [1.9, 1.9, 2.0,  2.3,  2.3,  2.3,  2.3,  2.4,  2.5]
+LAT_LIMIT_V  = [1.9, 1.9, 2.0,  2.2,  2.2,  2.3,  2.3,  2.4,  2.4]
 
 DECEL_BP = np.array([1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.3, 2.6, 3.0])
 DECEL_V  = np.array([0.0, -0.1, -0.3, -0.5, -0.8, -1.2, -1.4, -1.6, -2.0])
 
 MAX_COMFORT_DECEL = -2.0       
-EMERGENCY_DECEL   = -3.0       
+EMERGENCY_DECEL   = -2.0       
 MIN_CURVE_DISTANCE = 10.0      
 MAX_EXIT_ACCEL = 0.8  # [優化] 出彎最大加速度從 0.6 放寬至 0.8，改善動力銜接         
-
-# [v28 新增] EMERGENCY 時序確認所需的連續規劃週期數（防單點雜訊核心參數）。
-# 3 幀 * DT_MPC(0.05s) ≈ 150ms 延遲，用來過濾單幀雜訊尖峰；
-# 真實存在的近距離彎道會持續被偵測到，不受此延遲影響安全性。
-EMERGENCY_CONFIRM_FRAMES = 3
-
-# ==========================================================
-# [v29 新增：出彎節流閥狀態機參數]
-# ==========================================================
-EXIT_CEILING_MIN = 0.3   # 仍在彎心附近（曲率比例接近峰值）時的節流閥上限，近似收油滑行
-EXIT_CEILING_FULL = MAX_EXIT_ACCEL  # 曲率比例趨近 0（快出彎）時的節流閥上限，沿用原 0.8
-EXIT_RATIO_LPF_ALPHA = 0.2   # 「現在曲率/峰值曲率」比例的 EMA 平滑係數，避免逐幀跳動造成油門忽大忽小
-STRAIGHT_RATIO_THRESHOLD = 0.15   # 比例低於此值視為候選「已出彎」
-STRAIGHT_CONFIRM_FRAMES = 3       # 連續多少幀候選成立才真正判定出彎完成、解除節流閥限制
 
 # ==========================================================
 # [二、防變道急煞與狀態平滑參數 (保留 v27 免疫幽靈急煞設定)]
@@ -143,19 +89,11 @@ class DTSC:
         self.output_v_target = V_CRUISE_MAX
         self.output_a_target = 0.0 
 
-        # [v28 新增] EMERGENCY 時序確認計數器（防單點雜訊）
-        self.emergency_confirm_counter = 0
-
-        # [v29 新增] 出彎節流閥狀態機變數
-        self.peak_curvature_active = 0.0   # 本次彎道事件中觀測到的曲率峰值
-        self.exit_ratio_smoothed = 0.0     # 「現在曲率/峰值曲率」的 EMA 平滑值
-        self.straight_confirm_counter = 0  # 連續判定「已出彎」的幀數
-
         self.params = Params()
         self.is_enabled = self.params.get_bool("dp_lon_dtsc")
         self.toggle_check_timer = 0.0
         
-        cloudlog.info(f"DTSC (v29 Exit State Machine): 初始化完成. Aggressiveness={self.aggressiveness:.2f}")
+        cloudlog.info(f"DTSC (v27 Golden Right Foot Hybrid): 初始化完成. Aggressiveness={self.aggressiveness:.2f}")
 
     def set_aggressiveness(self, value):
         self.aggressiveness = clamp(value, 0.5, 1.8)
@@ -168,27 +106,6 @@ class DTSC:
         except Exception:
             return False
 
-    def _smooth_yaw_rate(self, yaw_arr):
-        """
-        [v28 新增：防單點雜訊]
-        對 yaw_rate 陣列做 window=3 的中位數濾波，消除模型在單一 frame
-        （例如緩降坡接彎道的相機 pitch 角瞬變）產生的孤立曲率尖峰。
-        真實存在的彎道曲率會延續在相鄰多個時間點，中位數濾波不會將其抹除，
-        僅對「僅單一時間點異常」的雜訊有效。
-        """
-        n = len(yaw_arr)
-        if n < 3:
-            return yaw_arr
-        smoothed = yaw_arr.copy()
-        for i in range(1, n - 1):
-            smoothed[i] = np.median(yaw_arr[i - 1:i + 2])
-        # [v29 修正] 邊界點（尤其 index 0，即「現在」這個時間點，出彎判斷
-        # 直接使用此點）原本完全未濾波，改用僅有的兩個相鄰點取平均
-        # （邊界只有 2 點可用，中位數對 2 點無意義，故用平均）。
-        smoothed[0] = (yaw_arr[0] + yaw_arr[1]) / 2.0
-        smoothed[-1] = (yaw_arr[-2] + yaw_arr[-1]) / 2.0
-        return smoothed
-
     def _compute_model_arrays(self, model_msg):
         v_arr = np.array(model_msg.velocity.x)
         pos_x_arr = np.array(model_msg.position.x)
@@ -199,7 +116,6 @@ class DTSC:
         pos_x = np.interp(T_IDXS_MPC, MODEL_T_IDXS, pos_x_arr)
         pos_y = np.interp(T_IDXS_MPC, MODEL_T_IDXS, pos_y_arr) 
         yaw = np.interp(T_IDXS_MPC, MODEL_T_IDXS, yaw_arr)
-        yaw = self._smooth_yaw_rate(yaw)  # [v28] 防單點雜訊濾波
 
         rel_pos = pos_x - pos_x[0]
         rel_pos = np.maximum(rel_pos, 0.0)
@@ -229,9 +145,7 @@ class DTSC:
 
     def _compute_dtsc_decel(self, v_ego, v_pred, rel_pos, safe_speeds):
         speed_excess = v_pred - safe_speeds
-        if np.all(speed_excess <= 0.0):
-            self.emergency_confirm_counter = 0  # [v28] 無超速候選時歸零確認計數
-            return 0.0, None, None
+        if np.all(speed_excess <= 0.0): return 0.0, None, None
 
         critical_idx = int(np.argmax(speed_excess))
         critical_rel_dist = max(rel_pos[critical_idx], 1.0)
@@ -239,21 +153,7 @@ class DTSC:
         decel_by_distance = (safe_speeds[critical_idx] ** 2 - v_ego ** 2) / (2.0 * critical_rel_dist)
         decel_by_distance = min(decel_by_distance, 0.0)
 
-        is_emergency_candidate = critical_rel_dist <= MIN_CURVE_DISTANCE
-
-        # ==========================================================
-        # [v28 新增：EMERGENCY 時序確認機制 — 防單點雜訊第二道防線]
-        # 近距離急彎候選需連續 EMERGENCY_CONFIRM_FRAMES 個規劃週期都成立，
-        # 才真正解除 -2.0 舒適上限、授權到 -3.0。單幀雜訊尖峰無法連續
-        # 重現，會被擋在 COMFORT 分支內；真實存在的近距離彎道會持續被
-        # 偵測到，僅多付出約 EMERGENCY_CONFIRM_FRAMES * DT_MPC 秒的反應延遲。
-        # ==========================================================
-        if is_emergency_candidate:
-            self.emergency_confirm_counter = min(self.emergency_confirm_counter + 1, EMERGENCY_CONFIRM_FRAMES)
-        else:
-            self.emergency_confirm_counter = 0
-
-        if is_emergency_candidate and self.emergency_confirm_counter >= EMERGENCY_CONFIRM_FRAMES:
+        if critical_rel_dist <= MIN_CURVE_DISTANCE:
             mode = 'EMERGENCY'
         else:
             mode = 'COMFORT'
@@ -280,10 +180,6 @@ class DTSC:
             self.output_v_target = V_CRUISE_MAX
             self.output_a_target = a_max[0]
             self.smoothed_a_target = 0.0
-            self.emergency_confirm_counter = 0
-            self.peak_curvature_active = 0.0
-            self.exit_ratio_smoothed = 0.0
-            self.straight_confirm_counter = 0
             return a_min, a_max
 
         if not self._is_model_valid(model_msg):
@@ -305,10 +201,6 @@ class DTSC:
             self.smoothed_a_target = 0.0
             self.output_v_target = V_CRUISE_MAX
             self.output_a_target = 0.0
-            self.emergency_confirm_counter = 0
-            self.peak_curvature_active = 0.0
-            self.exit_ratio_smoothed = 0.0
-            self.straight_confirm_counter = 0
             return a_min, a_max
 
         v_pred, rel_pos, yaw_rates, pred_y = self._compute_model_arrays(model_msg)
@@ -365,10 +257,6 @@ class DTSC:
             self.smoothed_a_target = 0.0
             final_required_decel = 0.0
             raw_suggested_speed = V_CRUISE_MAX
-            self.emergency_confirm_counter = 0
-            self.peak_curvature_active = 0.0
-            self.exit_ratio_smoothed = 0.0
-            self.straight_confirm_counter = 0
 
         # ==========================================================
         # [Candy 融合：狀態死咬 (Hysteresis Recovery)]
@@ -414,11 +302,6 @@ class DTSC:
         else:
             self.smoothed_a_target = 0.0
             self.output_v_target = V_CRUISE_MAX
-            # [v29] 非 active 狀態時，出彎狀態機一併歸零，避免殘留峰值曲率
-            # 影響下一次真正進彎事件的比例計算基準。
-            self.peak_curvature_active = 0.0
-            self.exit_ratio_smoothed = 0.0
-            self.straight_confirm_counter = 0
 
         self.suggested_speed = self.output_v_target
         self.output_a_target = self.smoothed_a_target  # 供 Planner 判斷煞車狀態
@@ -430,43 +313,22 @@ class DTSC:
             pass_decel = self.smoothed_a_target if self.smoothed_a_target < 0 else 0.0
             # [修復] critical_idx 為 None (代表已無需煞車超速) 時，改用 0.0 而非 np.max(rel_pos)，
             # 否則會讓 rel_pos[i] <= critical_distance 對整個 horizon 恆成立，導致下方
-            # 出彎節流閥壓制永遠進不了 else 分支而失效。
+            # is_physically_in_curve 的出彎油門壓制永遠進不了 else 分支而失效。
             critical_distance = rel_pos[critical_idx] if critical_idx is not None else 0.0
             critical_distance = max(critical_distance, 1e-3)
 
-            # ==========================================================
-            # [v29 重新設計：連續式出彎節流閥狀態機]
-            # 取代原本「方向盤是否回正」的二元判斷 + 固定 0.8 上限。
-            # 邏輯：記錄本次彎道曲率峰值，逐幀用「現在曲率/峰值曲率」算出
-            # 比例（越接近 1 代表還在彎心，越接近 0 代表快出彎），做 EMA
-            # 平滑後線性映射到節流閥上限；比例連續多幀低於門檻才判定真正
-            # 出彎完成，此時完全解除限制、把控制權交還上游。
-            # ==========================================================
-            current_curvature = float(curvatures[0])
-            self.peak_curvature_active = max(self.peak_curvature_active, current_curvature)
-            raw_ratio = current_curvature / max(self.peak_curvature_active, 1e-4)
-            raw_ratio = clamp(raw_ratio, 0.0, 1.0)
-            self.exit_ratio_smoothed = (EXIT_RATIO_LPF_ALPHA * raw_ratio) + \
-                                        ((1.0 - EXIT_RATIO_LPF_ALPHA) * self.exit_ratio_smoothed)
-
-            if self.exit_ratio_smoothed < STRAIGHT_RATIO_THRESHOLD:
-                self.straight_confirm_counter = min(self.straight_confirm_counter + 1, STRAIGHT_CONFIRM_FRAMES)
-            else:
-                self.straight_confirm_counter = 0
-
-            curve_confirmed_straight = self.straight_confirm_counter >= STRAIGHT_CONFIRM_FRAMES
-            # 比例 1(彎心) -> 上限 EXIT_CEILING_MIN；比例 0(快出彎) -> 上限 EXIT_CEILING_FULL
-            exit_accel_ceiling = interp_clamped(self.exit_ratio_smoothed, [0.0, 1.0],
-                                                 [EXIT_CEILING_FULL, EXIT_CEILING_MIN])
+            # 實體車身檢測：方向盤尚未回正，車身還在明顯彎中
+            # [修復] 門檻改為隨 aggressiveness 縮放，避免高攻擊性設定下出彎油門解放過慢
+            curve_exit_threshold = 1.0 * self.aggressiveness
+            is_physically_in_curve = predicted_lat_accels[0] > curve_exit_threshold
 
             for i in range(horizon_len):
                 if rel_pos[i] <= critical_distance + 1e-6:
                     if pass_decel < 0:
                         a_max[i] = min(a_max[i], pass_decel)
                 else:
-                    if not curve_confirmed_straight:
-                        a_max[i] = min(a_max[i], exit_accel_ceiling)
-                    # 已確認出彎完成：不再施加任何節流閥限制，控制權交還上游
+                    if is_physically_in_curve:
+                        a_max[i] = min(a_max[i], MAX_EXIT_ACCEL)
 
         for i in range(horizon_len):
             if a_max[i] < a_min[i]:
