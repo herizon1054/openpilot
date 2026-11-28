@@ -25,13 +25,13 @@ DT_MPC = 0.05
 FILE_LOG_ENABLED = False
 
 LAT_LIMIT_BP = [5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0, 25.0, 30.0]
-LAT_LIMIT_V  = [1.9, 1.9, 2.0,  2.3,  2.3,  2.3,  2.3,  2.4,  2.5]
+LAT_LIMIT_V  = [1.9, 1.9, 2.0,  2.2,  2.2,  2.3,  2.3,  2.4,  2.4]
 
 DECEL_BP = np.array([1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.3, 2.6, 3.0])
 DECEL_V  = np.array([0.0, -0.1, -0.3, -0.5, -0.8, -1.2, -1.4, -1.6, -2.0])
 
 MAX_COMFORT_DECEL = -2.0       
-EMERGENCY_DECEL   = -3.0       
+EMERGENCY_DECEL   = -2.0       
 MIN_CURVE_DISTANCE = 10.0      
 MAX_EXIT_ACCEL = 0.8  # [優化] 出彎最大加速度從 0.6 放寬至 0.8，改善動力銜接         
 
