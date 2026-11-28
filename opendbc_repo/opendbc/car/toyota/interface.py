@@ -60,15 +60,15 @@ class CarInterface(CarInterfaceBase):
     if Ecu.hybrid in found_ecus:
       ret.flags |= ToyotaFlags.HYBRID.value
 
-    # 0x343 should not be present on bus 2 on cars other than TSS2_CAR unless we are re-routing DSU
+    # 0x343 should not be present on bus 2 on cars other than TSS2_CAR unless we are re-routing DSU or using TSS2 camera
     dsu_bypass = False
     if (0x343 in fingerprint[2] or 0x4CB in fingerprint[2]) and candidate not in TSS2_CAR:
       print("----------------------------------------------")
-      print("dragonpilot: DSU_BYPASS detected!")
+      print("dragonpilot: DSU_BYPASS / TSS2 Cam on TSS1 detected!")
       print("----------------------------------------------")
-      # rick - disable for now, breaks TOYOTA_AVALON_2019 model tests.
-      # dsu_bypass = True
-      # ret.flags |= ToyotaFlags.DSU_BYPASS.value
+      if candidate == CAR.TOYOTA_PRIUS:
+        dsu_bypass = True
+        ret.flags |= ToyotaFlags.DSU_BYPASS.value
 
     if 0x23 in fingerprint[0]:
       print("----------------------------------------------")
@@ -180,11 +180,8 @@ class CarInterface(CarInterfaceBase):
     # dp - 自動煞車維持 (Auto Brake Hold), ported from sunnypilot-candy (ToyotaEnableAutoHold / SP_AUTO_BRAKE_HOLD)
     # 原理：停車時由 panda 攔截 ADAS 相機 (bus 2) 送出的 PRE_COLLISION_2 (0x344)，改由 openpilot 轉送並在需要時
     # 寫入 DSS1GDRV=-2.0 / PBRTRGR 觸發 PCS 煞車保持。
-    # 與 candy 的刻意差異（安全收斂）：只在以下條件同時成立時才啟用，否則整個功能（含 panda 攔截）都不生效：
-    #   - TSS2 相機 ACC 車型（PRE_COLLISION_2 由 bus 2 相機發出，panda 才攔得到；RADAR_ACC 車型的 0x344 在 bus 0）
-    #   - 非 SecOC（SecOC 的 PRE_COLLISION_2 為帶 MAC 的格式，無法偽造）
-    #   - openpilot 縱向控制（0x344 僅在 LONG TX 白名單內）
-    auto_brake_hold_eligible = (candidate in (TSS2_CAR - RADAR_ACC_CAR) and
+    # 單獨放行已換裝 TSS2 鏡頭並取得 openpilot 縱向控制權的 4.5 代 Prius (CAR.TOYOTA_PRIUS)
+    auto_brake_hold_eligible = ((candidate in (TSS2_CAR - RADAR_ACC_CAR) or candidate == CAR.TOYOTA_PRIUS) and
                                 not (ret.flags & ToyotaFlags.SECOC.value) and
                                 not (ret.flags & ToyotaFlags.DISABLE_RADAR.value) and
                                 ret.openpilotLongitudinalControl)
